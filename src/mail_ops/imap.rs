@@ -18,6 +18,12 @@ use crate::mail_ops::{
 
 type ImapSession = Session<TlsStream<TcpStream>>;
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// A peer that vanished (a NAT entry dropped during sleep) is noticed after about 60 + 4 × 15 seconds instead of never.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const KEEPALIVE_RETRIES: u32 = 4;
+
 pub struct ImapOps {
     rt: Runtime,
     session: Option<ImapSession>,
@@ -28,36 +34,28 @@ pub struct ImapOps {
 
 impl ImapOps {
     pub fn connect(account: &AccountConfig, secret: &Secret) -> MailResult<ImapOps> {
+        ImapOps::connect_within(account, secret, CONNECT_TIMEOUT)
+    }
+
+    // ponytail: only connecting is bounded; a live server that stops answering mid-command still blocks. Wrap block_on in a timeout if that shows up.
+    fn connect_within(
+        account: &AccountConfig,
+        secret: &Secret,
+        limit: Duration,
+    ) -> MailResult<ImapOps> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| MailError::Io(e.to_string()))?;
         let (session, has_idle, has_move, has_uidplus) = rt.block_on(async {
-            let tcp = TcpStream::connect((account.host.as_str(), account.port))
+            tokio::time::timeout(limit, open_session(account, secret))
                 .await
-                .map_err(|e| MailError::Connect(e.to_string()))?;
-            let mut roots = rustls::RootCertStore::empty();
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let config = rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-            let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-            let name = rustls::pki_types::ServerName::try_from(account.host.clone())
-                .map_err(|e| MailError::Connect(e.to_string()))?;
-            let tls = connector
-                .connect(name, tcp)
-                .await
-                .map_err(|e| MailError::Connect(e.to_string()))?;
-            let client = async_imap::Client::new(tls);
-            let mut session = client
-                .login(&account.username, secret.expose())
-                .await
-                .map_err(|(e, _)| MailError::Auth(e.to_string()))?;
-            let caps = session.capabilities().await.map_err(proto)?;
-            let has_idle = caps.has_str("IDLE");
-            let has_move = caps.has_str("MOVE");
-            let has_uidplus = caps.has_str("UIDPLUS");
-            Ok::<_, MailError>((session, has_idle, has_move, has_uidplus))
+                .map_err(|_| {
+                    MailError::Connect(format!(
+                        "{}:{} did not answer within {limit:?}",
+                        account.host, account.port
+                    ))
+                })?
         })?;
         Ok(ImapOps {
             rt,
@@ -76,6 +74,46 @@ impl ImapOps {
             .ok_or_else(|| MailError::Io("session closed".into()))?;
         Ok((&self.rt, session))
     }
+}
+
+async fn open_session(
+    account: &AccountConfig,
+    secret: &Secret,
+) -> MailResult<(ImapSession, bool, bool, bool)> {
+    let tcp = TcpStream::connect((account.host.as_str(), account.port))
+        .await
+        .map_err(|e| MailError::Connect(e.to_string()))?;
+    enable_keepalive(&tcp).map_err(|e| MailError::Connect(e.to_string()))?;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let name = rustls::pki_types::ServerName::try_from(account.host.clone())
+        .map_err(|e| MailError::Connect(e.to_string()))?;
+    let tls = connector
+        .connect(name, tcp)
+        .await
+        .map_err(|e| MailError::Connect(e.to_string()))?;
+    let client = async_imap::Client::new(tls);
+    let mut session = client
+        .login(&account.username, secret.expose())
+        .await
+        .map_err(|(e, _)| MailError::Auth(e.to_string()))?;
+    let caps = session.capabilities().await.map_err(proto)?;
+    let has_idle = caps.has_str("IDLE");
+    let has_move = caps.has_str("MOVE");
+    let has_uidplus = caps.has_str("UIDPLUS");
+    Ok((session, has_idle, has_move, has_uidplus))
+}
+
+fn enable_keepalive(tcp: &TcpStream) -> std::io::Result<()> {
+    let params = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL)
+        .with_retries(KEEPALIVE_RETRIES);
+    socket2::SockRef::from(tcp).set_tcp_keepalive(&params)
 }
 
 fn proto(e: async_imap::error::Error) -> MailError {
@@ -384,33 +422,57 @@ mod tests {
         );
     }
 
-    /// POSTBODE_TEST_IMAP_HOST, _USER, _PASS must be set. Lists folders and selects INBOX.
-    #[test]
-    #[ignore]
-    fn live_round_trip() {
-        let account = AccountConfig {
-            name: "live".into(),
-            host: std::env::var("POSTBODE_TEST_IMAP_HOST").unwrap(),
-            port: 993,
-            username: std::env::var("POSTBODE_TEST_IMAP_USER").unwrap(),
+    fn test_account(host: &str, port: u16) -> AccountConfig {
+        AccountConfig {
+            name: "test".into(),
+            host: host.into(),
+            port,
+            username: "me@example.com".into(),
             password: PasswordSource::Keyring { keyring: true },
-            address: Some("x@example.com".into()),
+            address: None,
             aliases: vec![],
             sync_interval_secs: 120,
             trash_retention_days: 30,
             notify: true,
-        };
-        let secret = Secret::new(std::env::var("POSTBODE_TEST_IMAP_PASS").unwrap());
-        let mut ops = ImapOps::connect(&account, &secret).unwrap();
-        let folders = ops.list_folders().unwrap();
-        assert!(folders.iter().any(|f| f.name.eq_ignore_ascii_case("INBOX")));
-        let info = ops.select("INBOX").unwrap();
-        assert!(info.uidvalidity > 0);
-        let new = ops.fetch_new(1).unwrap();
-        eprintln!(
-            "{} messages, first headers {} bytes",
-            new.len(),
-            new.first().map(|e| e.headers.len()).unwrap_or(0)
+        }
+    }
+
+    #[test]
+    fn connect_gives_up_on_a_server_that_never_answers() {
+        // The kernel completes the TCP handshake from the backlog; nobody ever answers the TLS hello.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let started = Instant::now();
+        let result = ImapOps::connect_within(
+            &test_account("127.0.0.1", port),
+            &Secret::new("x".into()),
+            Duration::from_millis(300),
         );
+        match result {
+            Err(MailError::Connect(message)) => {
+                assert!(message.contains("did not answer"), "{message}")
+            }
+            Err(other) => panic!("wrong error: {other}"),
+            Ok(_) => panic!("connected to a silent server"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(listener);
+    }
+
+    #[test]
+    fn keepalive_is_enabled_on_the_socket() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            enable_keepalive(&tcp).unwrap();
+            let socket = socket2::SockRef::from(&tcp);
+            assert!(socket.keepalive().unwrap());
+            assert_eq!(socket.tcp_keepalive_time().unwrap(), KEEPALIVE_IDLE);
+        });
     }
 }

@@ -1495,6 +1495,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_rusqlite",
+ "socket2",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

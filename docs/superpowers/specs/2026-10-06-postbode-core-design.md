@@ -298,6 +298,7 @@ Plain text, one record per line, so it pipes into grep and fzf. `--json` output 
 - Secrets never implement `Debug`. Status enums for logging use a `log_label()` rather than `Debug`.
 - `Paths` from `directories::ProjectDirs("", "", "postbode")`, directories created with mode 0700. `Paths::under(tempdir)` roots everything for tests. `Paths::account(name)` gives the per-account state dir holding `mail.db` and `trash/`.
 - All file writes: tmp in the same dir, then rename.
+- IMAP connections give up after 30s while connecting (TCP, TLS and login together) and use TCP keepalive (60s idle, then 4 probes 15s apart), so a dead connection fails within about two minutes and the run loop reconnects. A live server that stops answering mid-command is not bounded yet.
 
 ## 13. Testing
 

@@ -31,6 +31,7 @@ schemars = "1"                                       # JSON Schema for rules.tom
 serde = { version = "1", features = ["derive"] }     # config, rules, rows
 serde_json = "1"                                     # --json output
 serde_rusqlite = "0.43"                              # rows to structs
+socket2 = { version = "0.6", features = ["all"] }     # TCP keepalive on the IMAP socket so dead connections fail; "all" exposes the retry count
 thiserror = "2"                                      # user-facing error enums
 tokio = { version = "1", features = ["rt", "net", "time", "macros"] }  # runtime for async-imap only
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }  # TLS stream for tokio
