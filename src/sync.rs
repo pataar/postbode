@@ -279,7 +279,8 @@ pub fn run_rules(
             let new_ref = new
                 .iter()
                 .find(|n| n.folder == msg.folder && n.uid == msg.uid);
-            if needs_body && msg.body_text.is_none() && new_ref.is_some() {
+            // Mail found by a first sync or resync already sat on the server; fetching it would download the whole folder.
+            if needs_body && msg.body_text.is_none() && new_ref.is_some_and(|n| !n.initial) {
                 match ensure_raw(&msg, ops, store) {
                     Ok(raw) => msg.body_text = Some(body_text(&raw)),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
@@ -810,7 +811,9 @@ mod tests {
 
     #[test]
     fn body_rule_fetches_bodies_for_new_messages() {
-        let mut ops = ops_with_inbox();
+        let mut ops = RecordingOps::new()
+            .with_folder("INBOX", None)
+            .with_folder("Trash", Some("Trash"));
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_in_memory().unwrap();
         let trash = Trash::new(dir.path().to_path_buf());
@@ -818,6 +821,14 @@ mod tests {
         let identity = acc.identity().unwrap();
         let toml = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
         let rules = rules_from(toml, &store, 0);
+        sync_all(&mut ops, &store).unwrap();
+        ops.add_mail(
+            "INBOX",
+            2,
+            11 * H,
+            &headers("noreply@login.x", "Your sign-in code", "m2@x"),
+            Some("From: noreply@login.x\r\n\r\ncode 1234"),
+        );
         let new = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
@@ -832,21 +843,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(run.actions, 1);
+        let m = store.message("INBOX", 2).unwrap().unwrap();
+        assert!(m.body_text.is_some());
+        assert!(m.flags.contains("\\Flagged"));
+    }
+
+    #[test]
+    fn body_rule_skips_body_fetch_on_first_sync() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let toml = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
+        let rules = rules_from(toml, &store, 0);
+        let new = sync_all(&mut ops, &store).unwrap().0;
+        run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
         assert!(
-            store
-                .message("INBOX", 2)
-                .unwrap()
-                .unwrap()
-                .body_text
-                .is_some()
-        );
-        assert!(
-            store
-                .message("INBOX", 2)
-                .unwrap()
-                .unwrap()
-                .flags
-                .contains("\\Flagged")
+            !ops.calls.iter().any(|c| c.starts_with("fetch_raw")),
+            "{:?}",
+            ops.calls
         );
     }
 
