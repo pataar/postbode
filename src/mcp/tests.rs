@@ -1,0 +1,281 @@
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation,
+};
+use rmcp::service::RunningService;
+use rmcp::{RoleClient, ServiceExt};
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+use super::{Backend, Server, parse_scopes};
+use crate::config::Config;
+use crate::paths::Paths;
+use crate::store::{Folder, Message, Store};
+
+pub(super) struct Fixture {
+    pub paths: Paths,
+    _dir: TempDir,
+}
+
+/// A temp home with one account per name, each with an empty INBOX; port 1 refuses, so any connection attempt fails fast.
+pub(super) fn fixture(accounts: &[&str]) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    let mut config = String::new();
+    for name in accounts {
+        config.push_str(&format!(
+            "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"{name}@example.com\"\npassword = {{ command = \"printf x\" }}\n\n"
+        ));
+    }
+    std::fs::write(paths.config_file(), config).unwrap();
+    let fx = Fixture { paths, _dir: dir };
+    for name in accounts {
+        fx.folder(name, "INBOX", None);
+    }
+    fx
+}
+
+impl Fixture {
+    pub fn config(&self) -> Config {
+        Config::load(&self.paths.config_file()).unwrap()
+    }
+
+    pub fn store(&self, account: &str) -> Store {
+        self.paths.ensure_account(account).unwrap();
+        Store::open(&self.paths.mail_db(account)).unwrap()
+    }
+
+    pub fn folder(&self, account: &str, name: &str, special_use: Option<&str>) {
+        let folder = Folder {
+            name: name.into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: special_use.map(str::to_string),
+        };
+        self.store(account).upsert_folder(&folder).unwrap();
+    }
+
+    pub fn add(&self, account: &str, message: Message) {
+        self.store(account).insert_message(&message).unwrap();
+    }
+}
+
+/// An unread message with a stored body; a higher uid is newer.
+pub(super) fn fixture_message(folder: &str, uid: u32, subject: &str, body: &str) -> Message {
+    let at = 1_790_000_000 + i64::from(uid) * 60;
+    Message {
+        folder: folder.into(),
+        uid,
+        message_id: Some(format!("<{uid}@example.com>")),
+        from_addr: Some(format!("Sender {uid} <sender{uid}@example.com>")),
+        to_addr: Some("me@example.com".into()),
+        cc_addr: None,
+        delivered_to: None,
+        in_reply_to: None,
+        refs: None,
+        thread_id: format!("<{uid}@example.com>"),
+        subject: Some(subject.into()),
+        date: Some(at),
+        internaldate: at,
+        flags: String::new(),
+        size: Some(100),
+        headers: format!("Subject: {subject}\r\n\r\n").into_bytes(),
+        body_text: Some(body.into()),
+    }
+}
+
+/// An in-process client named `test-host`, talking to the server over a duplex pipe.
+pub(super) async fn connect(
+    fx: &Fixture,
+    scopes: &str,
+    only: &[&str],
+) -> RunningService<RoleClient, ClientConfig> {
+    let only: Vec<String> = only.iter().map(|s| s.to_string()).collect();
+    let backend = Backend::new(&fx.config(), &fx.paths, &only).unwrap();
+    let server = Server::new(backend, parse_scopes(scopes).unwrap());
+    let (server_io, client_io) = tokio::io::duplex(1 << 20);
+    tokio::spawn(async move {
+        if let Ok(running) = server.serve(server_io).await {
+            let _ = running.waiting().await;
+        }
+    });
+    ClientConfig::new(
+        ClientCapabilities::default(),
+        Implementation::new("test-host", "1.0"),
+    )
+    .serve(client_io)
+    .await
+    .unwrap()
+}
+
+pub(super) async fn call(
+    client: &RunningService<RoleClient, ClientConfig>,
+    name: &str,
+    arguments: Value,
+) -> CallToolResult {
+    let params = CallToolRequestParams::new(name.to_string())
+        .with_arguments(arguments.as_object().unwrap().clone());
+    client.call_tool(params).await.unwrap()
+}
+
+pub(super) fn rows(result: &CallToolResult) -> Vec<Value> {
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    result.structured_content.as_ref().unwrap()["rows"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+pub(super) fn error_text(result: &CallToolResult) -> String {
+    assert_eq!(result.is_error, Some(true), "{result:?}");
+    serde_json::to_string(&result.content).unwrap()
+}
+
+#[test]
+fn scopes_parse_and_unknown_ones_name_the_valid_ones() {
+    let scopes = parse_scopes("read, rules:propose").unwrap();
+    assert_eq!(scopes.len(), 2);
+    let err = parse_scopes("read,mail:everything")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("mail:everything") && err.contains("read:bodies"),
+        "{err}"
+    );
+}
+
+#[test]
+fn backend_refuses_no_accounts_and_unknown_accounts() {
+    let fx = fixture(&[]);
+    assert!(Backend::new(&fx.config(), &fx.paths, &[]).is_err());
+    let fx = fixture(&["work"]);
+    let err = Backend::new(&fx.config(), &fx.paths, &["play".into()])
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(err.contains("play"), "{err}");
+}
+
+#[tokio::test]
+async fn server_info_carries_the_agent_guide() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read", &[]).await;
+    let info = client.peer_info().unwrap();
+    assert_eq!(info.server_info.as_ref().unwrap().name, "postbode");
+    assert!(
+        info.instructions
+            .as_deref()
+            .unwrap()
+            .starts_with("# Agent guide")
+    );
+}
+
+#[tokio::test]
+async fn folders_and_list_rows_carry_the_account_and_no_body() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Invoice", "pay me"));
+    let client = connect(&fx, "read", &[]).await;
+    let folders = rows(&call(&client, "folders", json!({})).await);
+    assert_eq!(
+        folders,
+        vec![
+            json!({ "account": "work", "folder": "INBOX", "total": 1, "unread": 1, "special_use": null })
+        ]
+    );
+    let list = rows(&call(&client, "list", json!({ "folder": "INBOX" })).await);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["subject"], "Invoice");
+    assert_eq!(list[0]["account"], "work");
+    assert!(list[0].get("body_text").is_none());
+}
+
+#[tokio::test]
+async fn list_threads_adds_depth() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Hi", "x"));
+    let client = connect(&fx, "read", &[]).await;
+    let list = rows(&call(&client, "list", json!({ "threads": true })).await);
+    assert_eq!(list[0]["depth"], 0);
+}
+
+#[tokio::test]
+async fn search_without_bodies_matches_headers_only() {
+    let fx = fixture(&["work"]);
+    fx.add(
+        "work",
+        fixture_message("INBOX", 1, "Invoice", "the secret word"),
+    );
+    let headers = connect(&fx, "read", &[]).await;
+    assert_eq!(
+        rows(&call(&headers, "search", json!({ "query": "invoice" })).await).len(),
+        1
+    );
+    assert!(rows(&call(&headers, "search", json!({ "query": "secret" })).await).is_empty());
+    let bodies = connect(&fx, "read,read:bodies", &[]).await;
+    assert_eq!(
+        rows(&call(&bodies, "search", json!({ "query": "secret" })).await).len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn account_filter_hides_other_accounts_everywhere() {
+    let fx = fixture(&["home", "work"]);
+    fx.add("home", fixture_message("INBOX", 1, "Family", "x"));
+    fx.add("work", fixture_message("INBOX", 1, "Invoice", "x"));
+    let client = connect(&fx, "read", &["work"]).await;
+    let list = rows(&call(&client, "list", json!({})).await);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["account"], "work");
+    assert!(
+        rows(&call(&client, "log", json!({})).await)
+            .iter()
+            .all(|r| r["account"] == "work")
+    );
+    let hidden = error_text(&call(&client, "list", json!({ "account": "home" })).await);
+    assert!(hidden.contains("no account named 'home'"), "{hidden}");
+}
+
+#[tokio::test]
+async fn mail_strings_are_cleaned_of_control_characters() {
+    let fx = fixture(&["work"]);
+    fx.add(
+        "work",
+        fixture_message("INBOX", 1, "Re: \u{1b}]0;pwned\u{7}hi", "x"),
+    );
+    let client = connect(&fx, "read", &[]).await;
+    assert_eq!(
+        rows(&call(&client, "list", json!({})).await)[0]["subject"],
+        "Re: ]0;pwnedhi"
+    );
+}
+
+#[tokio::test]
+async fn out_of_scope_calls_are_refused_and_unknown_args_are_errors() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "rules:propose", &[]).await;
+    assert!(
+        error_text(&call(&client, "folders", json!({})).await)
+            .contains("not allowed with these scopes")
+    );
+    let client = connect(&fx, "read", &[]).await;
+    assert!(
+        error_text(&call(&client, "list", json!({ "colour": "red" })).await).contains("colour")
+    );
+}
+
+#[tokio::test]
+async fn limit_clamps_to_five_hundred() {
+    let fx = fixture(&["work"]);
+    let store = fx.store("work");
+    for uid in 1..=501 {
+        store
+            .insert_message(&fixture_message("INBOX", uid, "bulk", "x"))
+            .unwrap();
+    }
+    let client = connect(&fx, "read", &[]).await;
+    assert_eq!(
+        rows(&call(&client, "list", json!({ "limit": 10_000 })).await).len(),
+        500
+    );
+}

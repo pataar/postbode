@@ -30,6 +30,7 @@ log = "0.4"                                          # logging facade
 mail-parser = "0.11"                                 # RFC 5322 header and body parsing
 notify-rust = "4"                                    # desktop notifications from `run`
 regex = "1"                                          # rule regex conditions
+rmcp = { version = "3.5", optional = true, default-features = false, features = ["server", "transport-io"] }  # MCP server for `postbode mcp`, hand-written handler on stdio
 rpassword = "7"                                      # hidden password prompt in `account add`
 rusqlite = { version = "0.40", features = ["bundled"] }       # SQLite, bundled build includes FTS5
 rusqlite_migration = { version = "2", features = ["from-directory"] }  # numbered SQL migrations
@@ -56,14 +57,16 @@ zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypt
 [dev-dependencies]
 clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
 egui_kittest = "0.36"                                # headless GUI tests: press keys, find widgets by label
+rmcp = { version = "3.5", default-features = false, features = ["client", "server", "transport-async-rw"] }  # in-process MCP client for the server tests
 tempfile = "3"                                       # temp dirs for store and paths tests
 
 [lints.rust]
 unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way
 
 [features]
-default = ["gui"]
+default = ["gui", "mcp"]
 gui = ["dep:eframe"]                                 # `postbode gui`; off builds the CLI alone
+mcp = ["dep:rmcp"]                                   # `postbode mcp`; off builds without the MCP server
 testing = []                                         # exposes RecordingOps to integration tests
 
 [profile.dev.package."*"]

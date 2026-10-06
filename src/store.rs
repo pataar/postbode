@@ -446,6 +446,20 @@ impl Store {
             .or_else(|_| self.search_fts(&quote_words(query), folder, limit))
     }
 
+    /// Search over subject and addresses only; every word is quoted, because FTS5 syntax could escape the column filter.
+    pub fn search_headers(
+        &self,
+        query: &str,
+        folder: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Message>, StoreError> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let scoped = format!("{{subject from_addr to_addr}} : ({})", quote_words(query));
+        self.search_fts(&scoped, folder, limit)
+    }
+
     fn search_fts(
         &self,
         query: &str,
@@ -908,6 +922,30 @@ mod tests {
         assert_eq!(s.search("alice@x", None, 10).unwrap().len(), 1);
         assert!(s.search("re: lunch", None, 10).unwrap().is_empty());
         assert!(s.search("\"unbalanced", None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn header_search_ignores_bodies_even_through_fts_syntax() {
+        let store = store_with_inbox();
+        let mut m = msg("INBOX", 1, 100);
+        m.subject = Some("hello".into());
+        m.body_text = Some("secret word".into());
+        store.insert_message(&m).unwrap();
+        assert_eq!(store.search_headers("hello", None, 10).unwrap().len(), 1);
+        assert!(store.search_headers("secret", None, 10).unwrap().is_empty());
+        assert!(
+            store
+                .search_headers("x) OR (body_text:secret", None, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .search_headers("x) OR body_text:secret", None, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.search("secret", None, 10).unwrap().len(), 1);
     }
 
     #[test]

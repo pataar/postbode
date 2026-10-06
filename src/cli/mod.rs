@@ -165,6 +165,16 @@ enum Command {
     },
     /// Print the agent guide: how an LLM should drive Postbode
     Guide,
+    /// Serve Postbode to an agent host over MCP on stdio; hosts start this, see `postbode mcp install`
+    #[command(args_conflicts_with_subcommands = true)]
+    Mcp {
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+        #[arg(long, default_value = postbode::help::MCP_DEFAULT_SCOPES)]
+        scopes: String,
+        /// Only this account; repeatable; default every account
+        #[arg(long)]
+        account: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -442,6 +452,7 @@ pub fn run() -> Result<()> {
             print!("{}", include_str!("../../docs/src/agent-guide.md"));
             Ok(())
         }
+        Command::Mcp { scopes, account } => cmd_mcp(&config, &paths, &scopes, &account),
     }
 }
 
@@ -690,6 +701,16 @@ fn cmd_gui(config: &Config, paths: &Paths) -> Result<()> {
 #[cfg(not(feature = "gui"))]
 fn cmd_gui(_config: &Config, _paths: &Paths) -> Result<()> {
     bail!("this postbode was built without the GUI; install it with the default features")
+}
+
+#[cfg(feature = "mcp")]
+fn cmd_mcp(config: &Config, paths: &Paths, scopes: &str, accounts: &[String]) -> Result<()> {
+    postbode::mcp::run(config, paths, scopes, accounts)
+}
+
+#[cfg(not(feature = "mcp"))]
+fn cmd_mcp(_config: &Config, _paths: &Paths, _scopes: &str, _accounts: &[String]) -> Result<()> {
+    bail!("this postbode was built without the MCP server; install it with the default features")
 }
 
 fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {

@@ -601,3 +601,47 @@ fn run_exits_nonzero_when_every_account_is_synced_elsewhere() {
         "{stderr}"
     );
 }
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_speaks_only_json_rpc_on_stdout() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("config")).unwrap();
+    std::fs::write(
+        home.path().join("config/config.toml"),
+        "[[accounts]]\nname = \"work\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .args(["mcp", "--scopes", "read"])
+        .env("POSTBODE_HOME", home.path())
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let requests = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"folders","arguments":{}}}"#,
+    ];
+    let mut stdin = child.stdin.take().unwrap();
+    for line in requests {
+        writeln!(stdin, "{line}").unwrap();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let replies: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON-RPC: {l}: {e}")))
+        .collect();
+    assert!(replies.iter().any(|r| r["id"] == 3), "{stdout}");
+    assert!(replies.iter().all(|r| r["jsonrpc"] == "2.0"), "{stdout}");
+}

@@ -6,6 +6,8 @@ pub mod engine;
 pub mod gui;
 pub mod help;
 pub mod mail_ops;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod message;
 pub mod notify;
 pub mod output;
