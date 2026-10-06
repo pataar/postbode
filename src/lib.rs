@@ -2,6 +2,8 @@ pub mod actions;
 pub mod config;
 pub mod credentials;
 pub mod engine;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod mail_ops;
 pub mod message;
 pub mod notify;

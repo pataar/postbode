@@ -36,6 +36,7 @@ jobs:
           tool: cargo-audit,cargo-machete
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo check --no-default-features --all-targets
       - run: cargo machete
       - run: cargo audit
 

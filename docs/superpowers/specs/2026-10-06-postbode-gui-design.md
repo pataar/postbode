@@ -39,7 +39,7 @@ The SQLCipher row settles the open question in core §17. The `egui_kittest` row
 
 ## 3. Engine and packaging
 
-`Cargo.toml` gains feature `gui = ["dep:eframe"]`, in `default`. `eframe` 0.36 with its default glow backend is the only new runtime dependency. `egui_kittest` 0.36 is a dev-dependency. `cargo build --no-default-features` builds the CLI without the GUI; CI builds it once.
+`Cargo.toml` gains feature `gui = ["dep:eframe"]`, in `default`. `eframe` 0.36 with its default features (wgpu backend, X11 and Wayland loaded at runtime) is the only new runtime dependency. `egui_kittest` 0.36 is a dev-dependency. `cargo build --no-default-features` builds the CLI without the GUI; CI builds it once.
 
 `postbode gui` opens the window. Bare `postbode` keeps printing help.
 

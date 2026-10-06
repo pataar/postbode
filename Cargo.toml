@@ -19,6 +19,7 @@ async-imap = { version = "0.12", default-features = false, features = ["runtime-
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }         # INTERNALDATE comes back as chrono; also list output
 clap = { version = "4", features = ["derive"] }      # CLI
 directories = "6"                                    # platform config/state/cache dirs
+eframe = { version = "0.36", optional = true }       # the GUI window (egui); default features: wgpu, winit with runtime-loaded X11/Wayland
 env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
 futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
 globset = "0.4"                                      # alias globs
@@ -54,12 +55,15 @@ zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypt
 
 [dev-dependencies]
 clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
+egui_kittest = "0.36"                                # headless GUI tests: press keys, find widgets by label
 tempfile = "3"                                       # temp dirs for store and paths tests
 
 [lints.rust]
 unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way
 
 [features]
+default = ["gui"]
+gui = ["dep:eframe"]                                 # `postbode gui`; off builds the CLI alone
 testing = []                                         # exposes RecordingOps to integration tests
 
 [profile.dev.package."*"]

@@ -54,6 +54,8 @@ enum Mark {
 enum Command {
     /// Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
     Run,
+    /// Open the mail window; syncs every account like `run`
+    Gui,
     /// Sync once, apply rules, exit
     Sync {
         #[arg(long)]
@@ -265,6 +267,7 @@ pub fn run() -> Result<()> {
     let config = Config::load(&paths.config_file())?;
     match cli.command {
         Command::Run => cmd_run(&config, &paths),
+        Command::Gui => cmd_gui(&config, &paths),
         Command::Sync { account } => {
             let (tx, rx) = mpsc::channel();
             let mut failed = false;
@@ -710,6 +713,19 @@ fn print_event(event: &Event) {
         Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
         Event::ActionDone { .. } | Event::BodyReady { .. } | Event::Restored { .. } => {}
     }
+}
+
+#[cfg(feature = "gui")]
+fn cmd_gui(config: &Config, paths: &Paths) -> Result<()> {
+    if config.accounts.is_empty() {
+        bail!("no accounts configured; run `postbode account add`");
+    }
+    postbode::gui::run(config, paths)
+}
+
+#[cfg(not(feature = "gui"))]
+fn cmd_gui(_config: &Config, _paths: &Paths) -> Result<()> {
+    bail!("this postbode was built without the GUI; install it with the default features")
 }
 
 fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {

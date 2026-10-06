@@ -6,6 +6,7 @@ This document contains the help content for the `postbode` command-line program.
 
 * [`postbode`↴](#postbode)
 * [`postbode run`↴](#postbode-run)
+* [`postbode gui`↴](#postbode-gui)
 * [`postbode sync`↴](#postbode-sync)
 * [`postbode attachment`↴](#postbode-attachment)
 * [`postbode attachment list`↴](#postbode-attachment-list)
@@ -45,6 +46,7 @@ A fast, simple mail client with automatic mailbox rules
 ###### **Subcommands:**
 
 * `run` — Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
+* `gui` — Open the mail window; syncs every account like `run`
 * `sync` — Sync once, apply rules, exit
 * `attachment` — List or save a message's attachments
 * `rules` — Inspect and test rules.toml
@@ -68,6 +70,14 @@ A fast, simple mail client with automatic mailbox rules
 Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
 
 **Usage:** `postbode run`
+
+
+
+## `postbode gui`
+
+Open the mail window; syncs every account like `run`
+
+**Usage:** `postbode gui`
 
 
 
