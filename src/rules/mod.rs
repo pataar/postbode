@@ -133,8 +133,6 @@ pub fn load(path: &Path) -> Result<RuleFile, RulesError> {
 }
 
 #[derive(Debug, Clone)]
-// used by rules::engine (next task)
-#[allow(dead_code)]
 pub(crate) enum Matcher {
     Contains(String),
     Equals(String),
@@ -142,8 +140,6 @@ pub(crate) enum Matcher {
 }
 
 impl Matcher {
-    // used by rules::engine (next task)
-    #[allow(dead_code)]
     pub(crate) fn is_match(&self, text: &str) -> bool {
         match self {
             Matcher::Contains(needle) => text.to_lowercase().contains(needle),
@@ -184,8 +180,6 @@ impl Matcher {
 }
 
 #[derive(Debug, Clone)]
-// used by rules::engine (next task)
-#[allow(dead_code)]
 pub struct CompiledRule {
     pub rule: Rule,
     pub first_seen_at: i64,
