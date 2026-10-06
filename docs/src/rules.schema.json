@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RuleFile",
+  "type": "object",
+  "properties": {
+    "rules": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Rule"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Action": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": []
+        },
+        {
+          "description": "Back up as .eml locally, then remove from the server; stops later rules",
+          "type": "string",
+          "const": "delete"
+        },
+        {
+          "description": "Set \\Seen",
+          "type": "string",
+          "const": "mark_read"
+        },
+        {
+          "description": "Set \\Flagged",
+          "type": "string",
+          "const": "flag"
+        },
+        {
+          "description": "Move to the server's Archive folder",
+          "type": "string",
+          "const": "archive"
+        },
+        {
+          "description": "Notify even when the message was moved",
+          "type": "string",
+          "const": "notify"
+        },
+        {
+          "description": "Never notify",
+          "type": "string",
+          "const": "silent"
+        },
+        {
+          "description": "Move to this folder, creating it if needed",
+          "type": "object",
+          "properties": {
+            "move": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "move"
+          ]
+        }
+      ]
+    },
+    "HeaderMatch": {
+      "type": "object",
+      "properties": {
+        "contains": {
+          "description": "Case-insensitive substring",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "equals": {
+          "description": "The whole value, case-insensitive; on from, to and cc also any single address",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Header name, e.g. List-Id",
+          "type": "string"
+        },
+        "regex": {
+          "description": "Rust regex syntax; (?i) makes it case-insensitive",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "Match": {
+      "type": "object",
+      "properties": {
+        "alias": {
+          "description": "Sent to this alias; * is a wildcard",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "description": "The plain-text body; HTML mail is converted",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cc": {
+          "description": "The Cc header",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "from": {
+          "description": "The From header",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "header": {
+          "description": "Any header, by name",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeaderMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "older_than": {
+          "description": "Arrived at least this long ago, e.g. 30m, 1h, 2days",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seen": {
+          "description": "Read (true) or unread (false)",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "subject": {
+          "description": "The subject",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "to": {
+          "description": "The To header",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "to_me": {
+          "description": "To, Cc or Delivered-To holds your address or an alias",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Rule": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "description": "Only for this account; default all accounts",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actions": {
+          "description": "What to do; at least one",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Action"
+          }
+        },
+        "enabled": {
+          "description": "Disabled rules are skipped; proposals start disabled",
+          "type": "boolean",
+          "default": true
+        },
+        "folder": {
+          "description": "The folder the rule watches; default INBOX",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "match": {
+          "description": "Conditions that must all hold; at least one",
+          "$ref": "#/$defs/Match"
+        },
+        "name": {
+          "description": "Unique name; renaming a rule restarts its clock",
+          "type": "string"
+        },
+        "proposed_by": {
+          "description": "Who proposed the rule; set by `rules propose`",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "match",
+        "actions"
+      ]
+    },
+    "TextMatch": {
+      "description": "Exactly one of contains, equals, regex",
+      "type": "object",
+      "properties": {
+        "contains": {
+          "description": "Case-insensitive substring",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "equals": {
+          "description": "The whole value, case-insensitive; on from, to and cc also any single address",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regex": {
+          "description": "Rust regex syntax; (?i) makes it case-insensitive",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

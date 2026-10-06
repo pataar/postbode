@@ -378,6 +378,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn schema_file_is_current() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src/rules.schema.json");
+        if std::env::var_os("POSTBODE_BLESS").is_some() {
+            std::fs::write(path, schema()).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            schema(),
+            "docs/src/rules.schema.json is stale; run POSTBODE_BLESS=1 cargo test"
+        );
+    }
+
+    #[test]
     fn schema_describes_rules_and_rejects_unknown_keys() {
         let text = schema();
         let schema: serde_json::Value = serde_json::from_str(&text).unwrap();

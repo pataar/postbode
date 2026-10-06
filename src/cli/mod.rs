@@ -161,6 +161,8 @@ enum Command {
         #[command(subcommand)]
         command: AccountCommand,
     },
+    /// Print the agent guide: how an LLM should drive Postbode
+    Guide,
 }
 
 #[derive(Subcommand)]
@@ -438,6 +440,10 @@ pub fn run() -> Result<()> {
         Command::Account { command } => match command {
             AccountCommand::Add => cmd_account_add(config, &paths),
         },
+        Command::Guide => {
+            print!("{}", include_str!("../../docs/src/agent-guide.md"));
+            Ok(())
+        }
     }
 }
 
@@ -1007,6 +1013,20 @@ fn prompt(label: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_reference_is_current() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src/cli.md");
+        let generated = clap_markdown::help_markdown::<Cli>();
+        if std::env::var_os("POSTBODE_BLESS").is_some() {
+            std::fs::write(path, &generated).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            generated,
+            "docs/src/cli.md is stale; run POSTBODE_BLESS=1 cargo test"
+        );
+    }
 
     #[test]
     fn clean_strips_control_characters() {
