@@ -175,6 +175,47 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     actions
 }
 
+/// The `?` window. Keys are spelled out, since the default fonts lack some arrow and modifier glyphs.
+pub(crate) const KEYS: [(&str, &str); 13] = [
+    ("j / k, Down / Up", "next or previous row"),
+    ("Right / Left", "expand or collapse a thread"),
+    ("x", "add the row to the selection, or take it out"),
+    ("e", "archive"),
+    ("# or Delete", "delete (to Trash, with an .eml backup)"),
+    ("m", "move to a folder"),
+    ("u", "mark read or unread"),
+    ("s", "flag or unflag"),
+    ("/", "search this account"),
+    ("Esc", "close a popup, leave search, clear the selection"),
+    ("Tab", "next pane: folders, list, body"),
+    ("Ctrl+R (Cmd+R on macOS)", "sync every account now"),
+    ("?", "show these keys"),
+];
+
+pub(crate) fn show_help(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
+    if !app.help_open {
+        return Vec::new();
+    }
+    let mut open = true;
+    egui::Window::new("Keys")
+        .open(&mut open)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            egui::Grid::new("keys").num_columns(2).show(ui, |ui| {
+                for (key, what) in KEYS {
+                    ui.strong(key);
+                    ui.label(what);
+                    ui.end_row();
+                }
+            });
+        });
+    if open {
+        Vec::new()
+    } else {
+        vec![UiAction::ToggleHelp]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};

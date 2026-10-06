@@ -11,13 +11,13 @@ use crate::engine::{Engine, StartState};
 use crate::message::{self, Attachment, clean};
 use crate::paths::Paths;
 use crate::rules::{self as rule_file, Action, RulesError};
-use crate::store::{Message, Store, StoreError};
+use crate::store::{LogEntry, Message, Store, StoreError};
 use crate::sync::{self, Activity, Command, Event};
 
 use super::body;
 use super::folders;
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
-use super::rules::{self, RulesState};
+use super::rules::{self, RulesState, TrashRow};
 use super::status;
 
 /// Lines kept for the history window.
@@ -123,6 +123,7 @@ pub(crate) enum UiAction {
     OpenMovePicker,
     OpenRulesFile,
     RejectRule(String),
+    Restore(usize, PathBuf),
     SaveAttachment(usize),
     SearchFocused,
     SearchFor(String),
@@ -134,6 +135,7 @@ pub(crate) enum UiAction {
     StepFolder(isize),
     SyncNow,
     ToggleFlag,
+    ToggleHelp,
     ToggleHistory,
     ToggleMark,
     ToggleRead,
@@ -148,6 +150,7 @@ pub(crate) enum Focus {
 
 pub struct App {
     pub(crate) accounts: Vec<Account>,
+    pub(crate) activity_log: Vec<(String, LogEntry)>,
     pub(crate) body: Option<BodyState>,
     pub(crate) config_changed: bool,
     pub(crate) config_mtime: Option<SystemTime>,
@@ -157,6 +160,7 @@ pub struct App {
     pub(crate) events: Receiver<Event>,
     pub(crate) focus: Focus,
     pub(crate) focus_search: bool,
+    pub(crate) help_open: bool,
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
     pub(crate) last_poll: f64,
@@ -170,6 +174,7 @@ pub struct App {
     pub(crate) search: Option<String>,
     pub(crate) theme: egui::ThemePreference,
     pub(crate) theme_applied: bool,
+    pub(crate) trash: Vec<TrashRow>,
     pub(crate) view: View,
     pub(crate) view_dirty: bool,
 }
@@ -202,6 +207,7 @@ impl App {
         let (config_mtime, rules_mtime) = (mtime(&paths.config_file()), mtime(&rules_path));
         let mut app = App {
             accounts,
+            activity_log: Vec::new(),
             body: None,
             config_changed: false,
             config_mtime,
@@ -211,6 +217,7 @@ impl App {
             events,
             focus: Focus::List,
             focus_search: false,
+            help_open: false,
             history: VecDeque::new(),
             history_open: false,
             last_poll: 0.0,
@@ -224,6 +231,7 @@ impl App {
             search: None,
             theme: preference(config.ui.theme),
             theme_applied: false,
+            trash: Vec::new(),
             view: View::Folder {
                 account: 0,
                 folder: "INBOX".into(),
@@ -288,11 +296,17 @@ impl App {
                 egui::CentralPanel::default()
                     .show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
             }
-            View::Activity | View::Trash => {
-                egui::CentralPanel::default().show(ui, |_ui| {});
+            View::Activity => {
+                egui::CentralPanel::default()
+                    .show(ui, |ui| actions.extend(rules::show_activity(self, ui)));
+            }
+            View::Trash => {
+                egui::CentralPanel::default()
+                    .show(ui, |ui| actions.extend(rules::show_trash(self, ui)));
             }
         }
         actions.extend(list::show_move_picker(self, &ctx));
+        actions.extend(status::show_help(self, &ctx));
         for action in actions {
             self.apply(&ctx, action);
         }
@@ -369,14 +383,22 @@ impl App {
                 self.refresh(index);
             }
             Event::BodyReady { folder, uid, .. } => self.reload_body(index, (folder, uid)),
-            Event::Restored { .. } => {}
+            Event::Restored { folder, .. } => {
+                let line = format!(
+                    "{}: restored to {}",
+                    self.accounts[index].name,
+                    clean(&folder, false)
+                );
+                self.push_history(line);
+                self.refresh(index);
+            }
         }
     }
 
     /// The account's mail changed: reload its unread counts, and the shown rows at the start of the next frame.
     pub(crate) fn refresh(&mut self, index: usize) {
         self.accounts[index].reload_folders();
-        if self.view_account() == Some(index) {
+        if self.view_account() == Some(index) || matches!(self.view, View::Activity | View::Trash) {
             self.view_dirty = true;
         }
     }
@@ -422,6 +444,8 @@ impl App {
             UiAction::Escape => {
                 if self.move_picker.is_some() {
                     self.move_picker = None;
+                } else if self.help_open {
+                    self.help_open = false;
                 } else if self.history_open {
                     self.history_open = false;
                 } else if self.search.is_some() {
@@ -464,6 +488,14 @@ impl App {
             UiAction::OpenRulesFile => self.open_rules_file(),
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
+            }
+            UiAction::Restore(account, file) => {
+                if self.ensure_can_act(account) && !self.send(account, Command::Restore { file }) {
+                    self.note_error(
+                        Some(account),
+                        "the sync thread has stopped; restart Postbode".into(),
+                    );
+                }
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
             UiAction::SearchFocused => self.focus_search = false,
@@ -515,6 +547,7 @@ impl App {
                     });
                 }
             }
+            UiAction::ToggleHelp => self.help_open = !self.help_open,
             UiAction::ToggleHistory => {
                 self.history_open = !self.history_open;
                 self.error = None;
@@ -555,6 +588,9 @@ impl App {
             }
             if input.consume_key(none, egui::Key::Tab) {
                 actions.push(UiAction::NextFocus);
+            }
+            if typed(input, "?") {
+                actions.push(UiAction::ToggleHelp);
             }
             if typed(input, "/") {
                 actions.push(UiAction::StartSearch);
@@ -635,6 +671,18 @@ impl App {
     /// Loads the shown view's rows from the store. Runs on view changes and when events mark the view dirty, never
     /// per frame: `thread_summaries` scans the folder.
     pub(crate) fn reload_view(&mut self) {
+        match &self.view {
+            View::Activity => {
+                self.activity_log = rules::activity_log(&self.accounts);
+                return;
+            }
+            View::Trash => {
+                self.trash = rules::trash_rows(&self.accounts, &self.paths);
+                return;
+            }
+            View::Rules => return,
+            View::Folder { .. } => {}
+        }
         let View::Folder { account, folder } = &self.view else {
             return;
         };

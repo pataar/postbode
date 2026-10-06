@@ -1,12 +1,23 @@
-//! The Rules view, and in Task 9 the Activity and Trash views: what replaces the list and body columns.
+//! The Rules, Activity and Trash views: what replaces the list and body columns.
+use std::io::Read;
 use std::path::Path;
 
 use eframe::egui;
 
-use crate::message::clean;
+use crate::message::{clean, parse_headers};
+use crate::paths::Paths;
 use crate::rules::{self, Rule, RuleFile};
+use crate::store::LogEntry;
+use crate::trash::{Trash, TrashEntry};
 
-use super::app::{App, UiAction};
+use super::app::{Account, App, UiAction};
+use super::status::local_time;
+
+/// Entries shown in the Activity view.
+const LOG_LIMIT: u32 = 500;
+
+/// How much of a backup is read to find its sender and subject.
+const HEADER_BYTES: u64 = 64 * 1024;
 
 pub(crate) struct RulesState {
     pub error: Option<String>,
@@ -124,16 +135,145 @@ pub(crate) fn show_rules(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     actions
 }
 
+pub(crate) struct TrashRow {
+    pub account: usize,
+    pub entry: TrashEntry,
+    pub from: String,
+    pub subject: String,
+}
+
+/// Every account's rule and action log, newest first.
+pub(crate) fn activity_log(accounts: &[Account]) -> Vec<(String, LogEntry)> {
+    let mut entries = Vec::new();
+    for account in accounts {
+        let Ok(store) = &account.store else { continue };
+        match store.log(LOG_LIMIT) {
+            Ok(found) => {
+                entries.extend(found.into_iter().map(|entry| (account.name.clone(), entry)));
+            }
+            Err(e) => log::warn!("[{}] could not read the log: {e}", account.name),
+        }
+    }
+    entries.sort_by_key(|(_, entry)| std::cmp::Reverse(entry.at));
+    entries.truncate(LOG_LIMIT as usize);
+    entries
+}
+
+/// Every account's `.eml` backups, newest first, with sender and subject from their headers.
+pub(crate) fn trash_rows(accounts: &[Account], paths: &Paths) -> Vec<TrashRow> {
+    let mut rows = Vec::new();
+    for (index, account) in accounts.iter().enumerate() {
+        match Trash::new(paths.trash_dir(&account.name)).list() {
+            Ok(entries) => rows.extend(entries.into_iter().map(|entry| {
+                let (from, subject) = eml_summary(&entry.path);
+                TrashRow {
+                    account: index,
+                    entry,
+                    from,
+                    subject,
+                }
+            })),
+            Err(e) => log::warn!("[{}] could not list the trash: {e}", account.name),
+        }
+    }
+    rows.sort_by_key(|row| std::cmp::Reverse(row.entry.saved_at));
+    rows
+}
+
+/// Sender and subject of a backup; reads only the start of the file.
+fn eml_summary(path: &Path) -> (String, String) {
+    let mut head = Vec::new();
+    if let Ok(file) = std::fs::File::open(path) {
+        let _ = file.take(HEADER_BYTES).read_to_end(&mut head);
+    }
+    let parsed = parse_headers(&head);
+    (
+        parsed.from.unwrap_or_default(),
+        parsed.subject.unwrap_or_default(),
+    )
+}
+
+pub(crate) fn show_activity(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
+    if app.activity_log.is_empty() {
+        ui.weak("No rule or action has run yet.");
+        return Vec::new();
+    }
+    egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+        egui::Grid::new("log")
+            .striped(true)
+            .num_columns(6)
+            .show(ui, |ui| {
+                for heading in ["Time", "Account", "Rule", "Action", "Folder", "Subject"] {
+                    ui.strong(heading);
+                }
+                ui.end_row();
+                for (account, entry) in &app.activity_log {
+                    ui.label(local_time(entry.at, "%Y-%m-%d %H:%M"));
+                    ui.label(account);
+                    ui.label(clean(&entry.rule_name, false));
+                    ui.label(clean(&entry.action, false));
+                    ui.label(clean(&entry.folder, false));
+                    ui.label(
+                        entry
+                            .subject
+                            .as_deref()
+                            .map(|subject| clean(subject, false))
+                            .unwrap_or_default(),
+                    );
+                    ui.end_row();
+                }
+            });
+    });
+    Vec::new()
+}
+
+pub(crate) fn show_trash(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
+    let mut actions = Vec::new();
+    if app.trash.is_empty() {
+        ui.weak(
+            "Trash is empty. Deleted mail is kept here as .eml for the account's retention period.",
+        );
+        return actions;
+    }
+    egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+        egui::Grid::new("trash")
+            .striped(true)
+            .num_columns(6)
+            .show(ui, |ui| {
+                for heading in ["Deleted", "Account", "Folder", "From", "Subject", ""] {
+                    ui.strong(heading);
+                }
+                ui.end_row();
+                for row in &app.trash {
+                    ui.label(local_time(row.entry.saved_at, "%Y-%m-%d %H:%M"));
+                    ui.label(&app.accounts[row.account].name);
+                    ui.label(clean(&row.entry.folder, false));
+                    ui.label(clean(&row.from, false));
+                    ui.label(clean(&row.subject, false));
+                    if ui.button("Restore").clicked() {
+                        actions.push(UiAction::Restore(row.account, row.entry.path.clone()));
+                    }
+                    ui.end_row();
+                }
+            });
+    });
+    actions
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
+    use eframe::egui;
     use egui_kittest::kittest::Queryable;
 
+    use crate::engine::StartState;
     use crate::gui::app::View;
     use crate::gui::test_support::Fixture;
-    use crate::sync::Command;
+    use crate::store::LogEntry;
+    use crate::sync::{Command, Event};
+    use crate::trash::Trash;
 
     const RULES: &str = "# keep me\n[[rules]]\nname = \"newsletters\"\nmatch.from = { contains = \"news@\" }\nactions = [\"archive\"]\n\n[[rules]]\nname = \"codes\"\nenabled = false\nproposed_by = \"agent\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
 
@@ -262,5 +402,115 @@ mod tests {
                 .query_by_label_contains("restart Postbode")
                 .is_none()
         );
+    }
+
+    fn logged(fx: &Fixture, account: &str, at: i64, subject: &str) {
+        let entry = LogEntry {
+            id: 0,
+            at,
+            rule_name: "newsletters".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            message_id: None,
+            subject: Some(subject.into()),
+            action: "archive".into(),
+            trash_file: None,
+        };
+        fx.store(account).log_action(&entry).unwrap();
+    }
+
+    fn backup(fx: &Fixture) -> std::path::PathBuf {
+        let dir = fx.paths.trash_dir("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = b"From: Shop <shop@example.com>\r\nSubject: your receipt\r\n\r\nthanks\r\n";
+        Trash::new(dir)
+            .save("INBOX", 7, raw, 1_790_000_000)
+            .unwrap()
+    }
+
+    #[test]
+    fn activity_merges_every_account_newest_first() {
+        let fx = Fixture::new(&["home", "work"]);
+        logged(&fx, "work", 100, "work old");
+        logged(&fx, "home", 200, "home new");
+        logged(&fx, "work", 300, "work newest");
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().select_view(View::Activity);
+        harness.run();
+        let order: Vec<(&str, Option<&str>)> = harness
+            .state()
+            .activity_log
+            .iter()
+            .map(|(account, e)| (account.as_str(), e.subject.as_deref()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("work", Some("work newest")),
+                ("home", Some("home new")),
+                ("work", Some("work old"))
+            ]
+        );
+        assert!(harness.query_by_label("work newest").is_some());
+    }
+
+    #[test]
+    fn trash_lists_backups_and_restore_sends_the_command() {
+        let fx = Fixture::new(&["work"]);
+        let file = backup(&fx);
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().select_view(View::Trash);
+        harness.run();
+        assert!(harness.query_by_label("your receipt").is_some());
+        assert!(harness.query_by_label("Shop <shop@example.com>").is_some());
+        harness.get_by_label("Restore").click();
+        harness.run();
+        assert_eq!(
+            wires.sent(),
+            [("work".to_string(), Command::Restore { file: file.clone() })]
+        );
+        std::fs::remove_file(&file).unwrap();
+        wires
+            .events
+            .send(Event::Restored {
+                account: "work".into(),
+                folder: "INBOX".into(),
+            })
+            .unwrap();
+        harness.run();
+        assert!(harness.query_by_label("your receipt").is_none());
+        assert!(
+            harness
+                .state()
+                .history
+                .iter()
+                .any(|line| line.text == "work: restored to INBOX")
+        );
+    }
+
+    #[test]
+    fn restore_on_a_locked_account_sends_nothing() {
+        let fx = Fixture::new(&["work"]);
+        backup(&fx);
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().accounts[0].state = StartState::Locked { pid: None };
+        harness.state_mut().select_view(View::Trash);
+        harness.run();
+        harness.get_by_label("Restore").click();
+        harness.run();
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn question_mark_shows_the_keys_and_escape_closes_them() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = fx.harness();
+        harness.event(egui::Event::Text("?".into()));
+        harness.run();
+        assert!(harness.state().help_open);
+        assert!(harness.query_by_label("search this account").is_some());
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(!harness.state().help_open);
     }
 }
