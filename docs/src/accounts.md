@@ -34,6 +34,15 @@ notify = true
 | `notify` | true | Desktop notification for new INBOX mail no rule handled. |
 | `ca_file` | none | Absolute path to a PEM file with an extra trusted root certificate, for a server with a private CA. |
 
+## Appearance
+
+```toml
+[ui]
+theme = "system"
+```
+
+`theme` is `"system"` (follow the OS, the default), `"light"` or `"dark"`. The mail window's theme switch writes it.
+
 ## Passwords
 
 `{ keyring = true }` keeps the password in the macOS Keychain or the Secret Service, under service `postbode` and the account name. `account add` stores it there.
