@@ -518,7 +518,7 @@ fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<Strin
     Ok(effect)
 }
 
-/// Fetches the bodies `search --bodies` needs; a folder that cannot be fetched is reported and skipped.
+/// Fetches the bodies `search --bodies` needs; without a connection the search uses the bodies already stored, and a folder that cannot be fetched is reported and skipped.
 fn fetch_missing_bodies(
     account: &AccountConfig,
     store: &Store,
@@ -528,8 +528,31 @@ fn fetch_missing_bodies(
         Some(folder) => vec![folder.to_string()],
         None => store.folders()?.into_iter().map(|f| f.name).collect(),
     };
-    let mut ops = sync::connect(account)?;
+    let mut missing = Vec::new();
     for folder in folders {
+        if store
+            .messages_in_folder(&folder)?
+            .iter()
+            .any(|m| m.body_text.is_none())
+        {
+            missing.push(folder);
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut ops = match sync::connect(account) {
+        Ok(ops) => ops,
+        Err(e) => {
+            eprintln!(
+                "{}: could not connect ({}); searching the bodies already stored",
+                account.name,
+                clean(&format!("{e:#}"), false)
+            );
+            return Ok(());
+        }
+    };
+    for folder in missing {
         let name = clean(&folder, false);
         let announce = |count| {
             eprintln!(

@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use zeroize::Zeroizing;
 
@@ -40,12 +41,40 @@ pub fn resolve(account: &AccountConfig) -> Result<Secret, CredentialError> {
         PasswordSource::Command { command } => run_command(&account.name, command),
         PasswordSource::Keyring { .. } => {
             let entry = keyring_entry(&account.name)?;
-            match entry.get_password() {
+            let name = account.name.clone();
+            // macOS asks again for Keychain access after each new unsigned binary, and the prompt may sit behind other windows.
+            let password = hint_if_slow(
+                Duration::from_secs(2),
+                move || {
+                    log::info!(
+                        "{name}: waiting for the OS keyring; answer its password prompt if one is showing"
+                    )
+                },
+                || entry.get_password(),
+            );
+            match password {
                 Ok(password) => Ok(Secret::new(password)),
                 Err(e) => Err(map_keyring_error(e, &account.name)),
             }
         }
     }
+}
+
+/// Runs `work`, calling `hint` once it has taken longer than `delay`.
+fn hint_if_slow<T>(
+    delay: Duration,
+    hint: impl FnOnce() + Send + 'static,
+    work: impl FnOnce() -> T,
+) -> T {
+    let (done, waiting) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if waiting.recv_timeout(delay) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            hint();
+        }
+    });
+    let result = work();
+    drop(done);
+    result
 }
 
 pub fn store(account_name: &str, secret: &Secret) -> Result<(), CredentialError> {
@@ -134,6 +163,35 @@ mod tests {
             notify: true,
             ca_file: None,
         }
+    }
+
+    #[test]
+    fn hint_if_slow_fires_only_for_slow_work() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (tx, rx) = mpsc::channel();
+        let slow = hint_if_slow(
+            Duration::from_millis(20),
+            move || tx.send("slow").unwrap(),
+            || {
+                std::thread::sleep(Duration::from_millis(200));
+                1
+            },
+        );
+        assert_eq!(slow, 1);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok("slow"));
+
+        let (tx, rx) = mpsc::channel();
+        assert_eq!(
+            hint_if_slow(
+                Duration::from_millis(500),
+                move || tx.send("fast").unwrap(),
+                || 2
+            ),
+            2
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(800)).is_err());
     }
 
     #[test]

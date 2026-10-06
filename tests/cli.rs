@@ -562,3 +562,24 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
     let out = postbode(home.path(), &["rules", "schema"]);
     serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap();
 }
+
+#[test]
+fn search_bodies_works_offline() {
+    let mut stored = message(42, "billing@example.com", "Your invoice");
+    stored.body_text = Some("the total is due".into());
+    let (home, _store) = seeded_home(&[stored]);
+    let out = postbode(home.path(), &["search", "--bodies", "invoice"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        !stderr.contains("could not connect"),
+        "connected with nothing to fetch: {stderr}"
+    );
+
+    let (home, _store) = seeded_home(&[message(43, "friend@example.com", "Lunch?")]);
+    let out = postbode(home.path(), &["search", "--bodies", "Lunch"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("could not connect"), "{stderr}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/43"));
+}
