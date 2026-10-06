@@ -77,12 +77,23 @@ pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    // A symlink (say into a dotfiles repo) is written through, not replaced; a dangling one fails in canonicalize.
+    if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return write_file_atomic(&fs::canonicalize(path)?, bytes);
+    }
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("path has no parent"))?;
+    create_private_dir(dir)?;
+    write_file_atomic(path, bytes)
+}
+
+fn write_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
 
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent"))?;
-    create_private_dir(dir)?;
     let tmp = dir.join(format!(
         ".{}.{}.tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
@@ -185,5 +196,40 @@ mod tests {
         p.ensure_account("personal").unwrap();
         assert!(p.trash_dir("work").is_dir());
         assert!(p.trash_dir("personal").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_writes_through_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("dotfiles/rules.toml");
+        fs::create_dir_all(real.parent().unwrap()).unwrap();
+        fs::write(&real, "old").unwrap();
+        let link = root.path().join("config/rules.toml");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write_atomic(&link, b"new").unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_refuses_a_dangling_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let link = root.path().join("rules.toml");
+        std::os::unix::fs::symlink(root.path().join("missing/rules.toml"), &link).unwrap();
+        assert!(write_atomic(&link, b"new").is_err());
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

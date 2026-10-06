@@ -54,9 +54,14 @@ impl Trash {
     pub fn purge(&self, retention_secs: i64, now: i64) -> io::Result<usize> {
         let mut removed = 0;
         for entry in self.list()? {
-            if now - entry.saved_at > retention_secs {
-                std::fs::remove_file(&entry.path)?;
-                removed += 1;
+            if now - entry.saved_at <= retention_secs {
+                continue;
+            }
+            match std::fs::remove_file(&entry.path) {
+                Ok(()) => removed += 1,
+                // A concurrent `trash restore` may have taken it already.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!("{}: could not purge: {e}", entry.path.display()),
             }
         }
         Ok(removed)
@@ -110,5 +115,16 @@ mod tests {
             Trash::parse_name("12-A%25B-4.eml"),
             Some((12, "A%B".into(), 4))
         );
+    }
+
+    #[test]
+    fn purge_skips_what_it_cannot_remove_and_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        // A directory with a backup's name cannot be removed with remove_file.
+        std::fs::create_dir(dir.path().join("1000-INBOX-9.eml")).unwrap();
+        trash.save("INBOX", 1, b"a", 1000).unwrap();
+        assert_eq!(trash.purge(3000, 6000).unwrap(), 1);
+        assert!(!dir.path().join("1000-INBOX-1.eml").exists());
     }
 }

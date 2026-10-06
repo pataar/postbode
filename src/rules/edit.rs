@@ -113,6 +113,11 @@ fn lock(path: &Path) -> Result<File, RulesError> {
         .truncate(false)
         .write(true)
         .open(dir.join(".rules.lock"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     file.lock()?;
     Ok(file)
 }
@@ -296,5 +301,18 @@ mod tests {
             text.contains("enabled = true # waiting for review\n"),
             "{text}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, path) = rules_file("");
+        let lock_path = path.parent().unwrap().join(".rules.lock");
+        std::fs::write(&lock_path, "").unwrap();
+        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(lock(&path).unwrap());
+        let mode = std::fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }
