@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/pataar/postbode/compare/v0.1.0...v0.2.0) - 2026-10-06
+
+### Added
+
+- *(rules)* add set_enabled for toggling a rule in place
+- *(engine)* run accounts behind a lock and route commands to them
+- *(sync)* drain commands between passes and wake IDLE for them
+- *(sync)* add commands, command results and activity events
+- *(sync)* fetch envelopes in resumable 500-message chunks with progress checkpoints
+- *(store)* add initial_uid_next and thread summaries
+
+### Fixed
+
+- *(sync)* only count synced mail as fresh so a moved-in row cannot hide mail below it
+- *(sync)* mark mail in folders without rules as seen so a later body rule skips it
+- *(sync)* end a full pass on a lost connection instead of skipping every folder
+- *(sync)* clear the wake flag with acquire ordering before draining commands
+- *(engine)* join sync threads on drop and report a failed spawn per account
+- *(sync)* log a UIDVALIDITY change found between chunks
+- *(sync)* persist which mail the rules have seen so aborted passes still notify
+- *(sync)* stop draining after a lost connection and drain before INBOX-only passes
+- *(sync)* return the real lost-connection error and test command failure paths
+
+### Other
+
+- publish the mdBook docs to GitHub Pages ([#5](https://github.com/pataar/postbode/pull/5))
+- add peach-and-mint terminal logo and app icon
+- *(engine)* make Engine::start infallible
+- *(engine)* retry taking an account lock that a concurrent spawn briefly inherited
+- *(sync)* a command sent while offline runs after reconnecting
+- *(mail_ops)* split fetch_new into search_uids and fetch_envelopes
+
 ## [0.1.0](https://github.com/pataar/postbode/releases/tag/v0.1.0) - 2026-10-06
 
 ### Added
