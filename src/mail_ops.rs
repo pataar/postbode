@@ -80,7 +80,7 @@ mod recording {
 
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     pub struct RecordingOps {
         pub folders: Vec<RemoteFolder>,
         pub uidvalidity: HashMap<String, u32>,
@@ -96,8 +96,15 @@ mod recording {
     impl RecordingOps {
         pub fn new() -> RecordingOps {
             RecordingOps {
+                folders: Vec::new(),
+                uidvalidity: HashMap::new(),
+                mail: HashMap::new(),
+                raw: HashMap::new(),
                 supports_move: true,
-                ..Default::default()
+                calls: Vec::new(),
+                idle_outcomes: VecDeque::new(),
+                selected: String::new(),
+                next_uid: HashMap::new(),
             }
         }
 
@@ -140,6 +147,12 @@ mod recording {
                 .get_mut(&folder)
                 .and_then(|list| list.iter_mut().find(|e| e.uid == uid))
                 .ok_or_else(|| MailError::Protocol(format!("no uid {uid} in {folder}")))
+        }
+    }
+
+    impl Default for RecordingOps {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
@@ -226,10 +239,16 @@ mod recording {
         fn expunge(&mut self, uid: u32) -> MailResult<()> {
             self.calls.push(format!("expunge {} {uid}", self.selected));
             let folder = self.selected.clone();
-            if let Some(list) = self.mail.get_mut(&folder) {
-                list.retain(|e| e.uid != uid);
+            let is_deleted = self.mail.get(&folder).is_some_and(|list| {
+                list.iter()
+                    .any(|e| e.uid == uid && e.flags.iter().any(|f| f == "\\Deleted"))
+            });
+            if is_deleted {
+                if let Some(list) = self.mail.get_mut(&folder) {
+                    list.retain(|e| e.uid != uid);
+                }
+                self.raw.remove(&(folder, uid));
             }
-            self.raw.remove(&(folder, uid));
             Ok(())
         }
 
@@ -272,19 +291,24 @@ mod recording {
         fn append(&mut self, folder: &str, raw: &[u8]) -> MailResult<()> {
             self.calls
                 .push(format!("append {folder} {} bytes", raw.len()));
+            let Some(list) = self.mail.get_mut(folder) else {
+                return Err(MailError::Protocol(format!("no folder {folder}")));
+            };
             let uid = *self.next_uid.get(folder).unwrap_or(&1);
             let end = raw
                 .windows(4)
                 .position(|w| w == b"\r\n\r\n")
                 .map(|i| i + 4)
                 .unwrap_or(raw.len());
-            self.add_mail(
-                folder,
+            list.push(Envelope {
                 uid,
-                0,
-                &String::from_utf8_lossy(&raw[..end]),
-                Some(&String::from_utf8_lossy(raw)),
-            );
+                flags: vec![],
+                internaldate: 0,
+                size: Some(raw.len() as u32),
+                headers: raw[..end].to_vec(),
+            });
+            self.raw.insert((folder.into(), uid), raw.to_vec());
+            self.next_uid.insert(folder.into(), uid + 1);
             Ok(())
         }
 
@@ -326,5 +350,46 @@ mod tests {
         assert!(ops.mail["INBOX"].is_empty());
         assert_eq!(ops.raw.get(&("Archive".into(), 1)).unwrap(), b"raw");
         assert_eq!(ops.calls.last().unwrap(), "move INBOX 1 -> Archive");
+    }
+
+    #[test]
+    fn fake_expunge_requires_deleted_flag() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", Some("raw"));
+        ops.select("INBOX").unwrap();
+        ops.expunge(1).unwrap();
+        assert_eq!(ops.mail["INBOX"].len(), 1);
+        assert!(ops.raw.contains_key(&("INBOX".into(), 1)));
+        ops.add_flags(1, &["\\Deleted"]).unwrap();
+        ops.expunge(1).unwrap();
+        assert!(ops.mail["INBOX"].is_empty());
+        assert!(ops.raw.is_empty());
+        assert_eq!(ops.calls.last().unwrap(), "expunge INBOX 1");
+    }
+
+    #[test]
+    fn fake_move_without_move_capability_returns_no_uid() {
+        let mut ops = RecordingOps::new()
+            .with_folder("INBOX", None)
+            .with_folder("Archive", None);
+        ops.supports_move = false;
+        ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", Some("raw"));
+        ops.select("INBOX").unwrap();
+        assert_eq!(ops.move_message(1, "Archive").unwrap(), None);
+        assert!(ops.mail["INBOX"].is_empty());
+        assert_eq!(ops.mail["Archive"].len(), 1);
+    }
+
+    #[test]
+    fn fake_append_keeps_bytes_and_rejects_unknown_folder() {
+        let mut ops = RecordingOps::new().with_folder("Backup", None);
+        let raw = b"Subject: a\r\n\r\n\xFFbody";
+        ops.append("Backup", raw).unwrap();
+        assert_eq!(ops.raw[&("Backup".into(), 1)], raw);
+        assert_eq!(ops.mail["Backup"][0].headers, b"Subject: a\r\n\r\n");
+        assert!(matches!(
+            ops.append("Nope", raw),
+            Err(MailError::Protocol(_))
+        ));
     }
 }
