@@ -3,6 +3,7 @@
 mod app;
 mod folders;
 mod list;
+mod status;
 #[cfg(test)]
 mod test_support;
 

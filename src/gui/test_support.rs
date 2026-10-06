@@ -86,7 +86,8 @@ impl Fixture {
         let names: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
         let (engine, commands) = Engine::detached(&names);
         let (events, received) = mpsc::channel();
-        let app = App::new(&config, self.paths.clone(), engine, received);
+        let mut app = App::new(&config, self.paths.clone(), engine, received);
+        app.notifier = |_, _| {};
         let harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))
             .with_step_dt(0.01)

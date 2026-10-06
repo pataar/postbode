@@ -1,22 +1,36 @@
 //! App state, the frame loop, and the only code that changes state: `handle` for events, `apply` for UI actions.
+use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use eframe::egui;
 
-use crate::config::{Config, Theme};
+use crate::config::{self, Config, Theme};
 use crate::engine::{Engine, StartState};
+use crate::message::clean;
 use crate::paths::Paths;
 use crate::store::{Store, StoreError};
-use crate::sync::{Activity, Event};
+use crate::sync::{self, Activity, Event};
 
 use super::folders;
 use super::list::{self, ListState, THREAD_LIMIT};
+use super::status;
+
+/// Lines kept for the history window.
+const HISTORY: usize = 50;
+
+pub(crate) struct HistoryLine {
+    pub at: i64,
+    pub text: String,
+}
 
 pub(crate) struct Account {
     pub activity: Option<Activity>,
+    pub error: Option<String>,
     pub folders: Vec<FolderRow>,
     pub name: String,
+    pub notify: bool,
+    pub queued: usize,
     pub state: StartState,
     pub store: Result<Store, String>,
 }
@@ -81,7 +95,9 @@ pub(crate) enum UiAction {
     NextFocus,
     SelectRow(usize),
     SelectView(View),
+    SetTheme(egui::ThemePreference),
     StepFolder(isize),
+    ToggleHistory,
     ToggleMark,
 }
 
@@ -95,12 +111,18 @@ pub(crate) enum Focus {
 pub struct App {
     pub(crate) accounts: Vec<Account>,
     pub(crate) engine: Option<Engine>,
+    pub(crate) error: Option<String>,
     pub(crate) events: Receiver<Event>,
     pub(crate) focus: Focus,
+    pub(crate) history: VecDeque<HistoryLine>,
+    pub(crate) history_open: bool,
     pub(crate) list: ListState,
+    pub(crate) notifier: fn(&str, &str),
+    pub(crate) paths: Paths,
     pub(crate) theme: egui::ThemePreference,
     pub(crate) theme_applied: bool,
     pub(crate) view: View,
+    pub(crate) view_dirty: bool,
 }
 
 impl App {
@@ -113,8 +135,11 @@ impl App {
                     .map_err(|e| format!("could not open the store: {e}"));
                 let mut account = Account {
                     activity: None,
+                    error: None,
                     folders: Vec::new(),
                     name: name.clone(),
+                    notify: config.account(name).is_none_or(|a| a.notify),
+                    queued: 0,
                     state: state.clone(),
                     store,
                 };
@@ -125,15 +150,21 @@ impl App {
         let mut app = App {
             accounts,
             engine: Some(engine),
+            error: None,
             events,
             focus: Focus::List,
+            history: VecDeque::new(),
+            history_open: false,
             list: ListState::default(),
+            notifier: crate::notify::new_mail,
+            paths,
             theme: preference(config.ui.theme),
             theme_applied: false,
             view: View::Folder {
                 account: 0,
                 folder: "INBOX".into(),
             },
+            view_dirty: false,
         };
         app.reload_view();
         app
@@ -149,8 +180,11 @@ impl App {
         while let Ok(event) = self.events.try_recv() {
             self.handle(event);
         }
+        if std::mem::take(&mut self.view_dirty) {
+            self.reload_view();
+        }
         for action in self.keys(&ctx) {
-            self.apply(action);
+            self.apply(&ctx, action);
         }
         // egui moves widget focus on Tab and arrows itself, and Space or Enter would then click the focused row.
         if !ctx.text_edit_focused() {
@@ -161,6 +195,7 @@ impl App {
             });
         }
         let mut actions = Vec::new();
+        egui::Panel::bottom("status").show(ui, |ui| actions.extend(status::show(self, ui)));
         egui::Panel::left("folders")
             .resizable(true)
             .default_size(220.0)
@@ -173,22 +208,90 @@ impl App {
         }
         egui::CentralPanel::default().show(ui, |_ui| {});
         for action in actions {
-            self.apply(action);
+            self.apply(&ctx, action);
         }
     }
 
     fn handle(&mut self, event: Event) {
-        if let Event::Activity { account, activity } = event
-            && let Some(account) = self.accounts.iter_mut().find(|a| a.name == account)
-        {
-            account.activity = Some(activity);
+        let name = match &event {
+            Event::Activity { account, .. }
+            | Event::ActionDone { account, .. }
+            | Event::BodyReady { account, .. }
+            | Event::Error { account, .. }
+            | Event::NewMail { account, .. }
+            | Event::Restored { account, .. }
+            | Event::Synced { account, .. } => account,
+        };
+        let Some(index) = self.accounts.iter().position(|a| &a.name == name) else {
+            return;
+        };
+        match event {
+            Event::Activity { activity, .. } => {
+                let line = format!(
+                    "{}: {}",
+                    self.accounts[index].name,
+                    status::activity_text(&activity)
+                );
+                self.push_history(line);
+                let account = &mut self.accounts[index];
+                account.activity = Some(activity);
+                account.error = None;
+            }
+            Event::Error { message, .. } => self.note_error(Some(index), message),
+            Event::NewMail { from, subject, .. } => {
+                if self.accounts[index].notify {
+                    (self.notifier)(&from, &subject);
+                }
+            }
+            Event::Synced { .. } => self.refresh(index),
+            Event::ActionDone { .. } | Event::BodyReady { .. } | Event::Restored { .. } => {}
         }
     }
 
-    fn apply(&mut self, action: UiAction) {
+    /// The account's mail changed: reload its unread counts, and the shown rows at the start of the next frame.
+    pub(crate) fn refresh(&mut self, index: usize) {
+        self.accounts[index].reload_folders();
+        if self.view_account() == Some(index) {
+            self.view_dirty = true;
+        }
+    }
+
+    /// Records an error in the history and on the account's status line, or on the app's own line.
+    pub(crate) fn note_error(&mut self, account: Option<usize>, message: String) {
+        let message = clean(&message, false);
+        let line = match account {
+            Some(index) => {
+                self.accounts[index].error = Some(message.clone());
+                format!("{}: {message}", self.accounts[index].name)
+            }
+            None => {
+                self.error = Some(message.clone());
+                message
+            }
+        };
+        self.push_history(line);
+    }
+
+    fn push_history(&mut self, text: String) {
+        self.history.push_back(HistoryLine {
+            at: sync::now(),
+            text,
+        });
+        while self.history.len() > HISTORY {
+            self.history.pop_front();
+        }
+    }
+
+    fn apply(&mut self, ctx: &egui::Context, action: UiAction) {
         match action {
             UiAction::Collapse => self.collapse(),
-            UiAction::Escape => self.list.marked.clear(),
+            UiAction::Escape => {
+                if self.history_open {
+                    self.history_open = false;
+                } else {
+                    self.list.marked.clear();
+                }
+            }
             UiAction::Expand => self.expand(),
             UiAction::ListViewport { offset, height } => {
                 self.list.viewport = (offset, height);
@@ -210,6 +313,14 @@ impl App {
                 self.focus = Focus::List;
             }
             UiAction::SelectView(view) => self.select_view(view),
+            UiAction::SetTheme(preference) => {
+                ctx.set_theme(preference);
+                self.theme = preference;
+                if let Err(e) = config::save_theme(&self.paths.config_file(), theme_of(preference))
+                {
+                    self.note_error(None, format!("could not save the theme: {e}"));
+                }
+            }
             UiAction::StepFolder(delta) => {
                 let entries = self.tree_entries();
                 let at = entries.iter().position(|v| *v == self.view).unwrap_or(0);
@@ -217,6 +328,10 @@ impl App {
                 if view != self.view {
                     self.select_view(view);
                 }
+            }
+            UiAction::ToggleHistory => {
+                self.history_open = !self.history_open;
+                self.error = None;
             }
             UiAction::ToggleMark => {
                 if let Some(key) = self.list.rows.get(self.list.cursor).map(list::Row::key)
@@ -444,6 +559,14 @@ pub(crate) fn preference(theme: Theme) -> egui::ThemePreference {
         Theme::Dark => egui::ThemePreference::Dark,
         Theme::Light => egui::ThemePreference::Light,
         Theme::System => egui::ThemePreference::System,
+    }
+}
+
+pub(crate) fn theme_of(preference: egui::ThemePreference) -> Theme {
+    match preference {
+        egui::ThemePreference::Dark => Theme::Dark,
+        egui::ThemePreference::Light => Theme::Light,
+        egui::ThemePreference::System => Theme::System,
     }
 }
 
