@@ -152,6 +152,14 @@ impl App {
         for action in self.keys(&ctx) {
             self.apply(action);
         }
+        // egui moves widget focus on Tab and arrows itself, and Space or Enter would then click the focused row.
+        if !ctx.text_edit_focused() {
+            ctx.memory_mut(|memory| {
+                if let Some(id) = memory.focused() {
+                    memory.surrender_focus(id);
+                }
+            });
+        }
         let mut actions = Vec::new();
         egui::Panel::left("folders")
             .resizable(true)

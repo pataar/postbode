@@ -443,5 +443,33 @@ mod tests {
         harness.key_press(egui::Key::ArrowLeft);
         harness.run();
         assert!(harness.state().list.rows.is_empty());
+        assert!(harness.state().list.marked.is_empty());
+        assert_eq!(harness.state().list.cursor, 0);
+    }
+
+    #[test]
+    fn tab_and_arrows_leave_no_egui_widget_focus_for_space_or_enter_to_click() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        for uid in 1..=3 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (mut harness, _wires) = fx.harness();
+        let view = harness.state().view.clone();
+        harness.key_press(egui::Key::Tab);
+        harness.run();
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(harness.state().view, view);
+        assert_eq!(harness.state().list.cursor, 0);
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
+        harness.key_press(egui::Key::ArrowDown);
+        harness.run();
+        harness.key_press(egui::Key::Space);
+        harness.run();
+        assert_eq!(harness.state().list.cursor, 1);
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
     }
 }
