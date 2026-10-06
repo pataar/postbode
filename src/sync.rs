@@ -58,13 +58,16 @@ pub enum Event {
 pub struct NewMessageRef {
     pub folder: String,
     pub uid: u32,
+    /// Found by the folder's first sync or a UIDVALIDITY resync; such messages never notify.
+    pub initial: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct RulesRun {
     pub evaluated: usize,
     pub actions: usize,
-    pub notifications: Vec<Event>,
+    /// NewMail notifications and per-folder or per-message errors that did not stop the run.
+    pub events: Vec<Event>,
 }
 
 pub fn now() -> i64 {
@@ -118,6 +121,7 @@ pub fn sync_folder(
         store.remove_missing(&folder.name, local.last_uid, &present)?;
     }
 
+    let initial = local.last_uid == 0;
     let mut new = Vec::new();
     let mut highest = local.last_uid;
     for env in ops.fetch_new(local.last_uid + 1)? {
@@ -153,6 +157,7 @@ pub fn sync_folder(
         new.push(NewMessageRef {
             folder: folder.name.clone(),
             uid: env.uid,
+            initial,
         });
     }
     if highest != local.last_uid {
@@ -233,13 +238,19 @@ pub fn run_rules(
         if store.folder(&folder)?.is_none() {
             continue;
         }
-        ops.select(&folder)?;
+        if let Err(e) = ops.select(&folder) {
+            run.events.push(rule_error(
+                account,
+                format!("{folder}: {e}; skipping its rules"),
+            ));
+            continue;
+        }
         let needs_body = folder_needs_body(rules, &account.name, &folder);
         for mut msg in store.messages_in_folder(&folder)? {
-            let is_new = new
+            let new_ref = new
                 .iter()
-                .any(|n| n.folder == msg.folder && n.uid == msg.uid);
-            if needs_body && msg.body_text.is_none() && is_new {
+                .find(|n| n.folder == msg.folder && n.uid == msg.uid);
+            if needs_body && msg.body_text.is_none() && new_ref.is_some() {
                 match ensure_raw(&msg, ops, store) {
                     Ok(raw) => msg.body_text = Some(body_text(&raw)),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
@@ -249,55 +260,39 @@ pub fn run_rules(
             run.evaluated += 1;
             if !plan.actions.is_empty() {
                 run.actions += plan.actions.len();
-                apply(&plan, &msg, ops, store, trash, now)?;
+                if let Err(e) = apply(&plan, &msg, ops, store, trash, now) {
+                    run.events.push(rule_error(
+                        account,
+                        format!("{}/{}: {e}", msg.folder, msg.uid),
+                    ));
+                    continue;
+                }
                 ops.select(&folder)?;
             }
-            if is_new
+            if new_ref.is_some_and(|n| !n.initial)
                 && plan.notify
                 && folder == "INBOX"
                 && mode == Mode::Normal
-                && !already_notified(store, &msg)?
             {
-                run.notifications.push(Event::NewMail {
+                run.events.push(Event::NewMail {
                     account: account.name.clone(),
                     folder: msg.folder.clone(),
                     uid: msg.uid,
                     from: msg.from_addr.clone().unwrap_or_default(),
                     subject: msg.subject.clone().unwrap_or_default(),
                 });
-                mark_notified(store, &msg)?;
             }
         }
     }
     Ok(run)
 }
 
-/// Notification bookkeeping lives in `rule_log` with rule_name "notify", keyed on message_id, so a
-/// resync after a UIDVALIDITY change never re-notifies.
-// ponytail: scans the last 10k log rows per new message; add an index on rule_log(message_id) and query it if a large inbox makes a pass slow.
-fn already_notified(store: &Store, msg: &Message) -> Result<bool, SyncError> {
-    let Some(id) = &msg.message_id else {
-        return Ok(false);
-    };
-    Ok(store
-        .log(10_000)?
-        .iter()
-        .any(|e| e.rule_name == "notify" && e.message_id.as_deref() == Some(id)))
-}
-
-fn mark_notified(store: &Store, msg: &Message) -> Result<(), SyncError> {
-    store.log_action(&crate::store::LogEntry {
-        id: 0,
-        at: now(),
-        rule_name: "notify".into(),
-        folder: msg.folder.clone(),
-        uid: msg.uid,
-        message_id: msg.message_id.clone(),
-        subject: msg.subject.clone(),
-        action: "notify".into(),
-        trash_file: None,
-    })?;
-    Ok(())
+fn rule_error(account: &AccountConfig, message: String) -> Event {
+    log::warn!("{}: {message}", account.name);
+    Event::Error {
+        account: account.name.clone(),
+        message,
+    }
 }
 
 pub fn run_once(
@@ -324,8 +319,8 @@ pub fn run_once(
         Mode::Normal,
         now(),
     )?;
-    for n in run.notifications {
-        let _ = events.send(n);
+    for event in run.events {
+        let _ = events.send(event);
     }
     let _ = events.send(Event::Synced {
         account: account.name.clone(),
@@ -372,7 +367,19 @@ pub fn run_loop_with(
 ) {
     let mut backoff = Duration::from_secs(5);
     while !shutdown.load(Ordering::Relaxed) {
-        match run_session(&account, &paths, &events, &shutdown, &mut connect) {
+        let mut completed_pass = false;
+        let result = run_session(
+            &account,
+            &paths,
+            &events,
+            &shutdown,
+            &mut connect,
+            &mut completed_pass,
+        );
+        if completed_pass {
+            backoff = Duration::from_secs(5);
+        }
+        match result {
             Ok(()) => return,
             Err(e) => {
                 let _ = events.send(Event::Error {
@@ -392,6 +399,7 @@ fn run_session(
     events: &Sender<Event>,
     shutdown: &AtomicBool,
     connect: &mut impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
+    completed_pass: &mut bool,
 ) -> Result<(), SyncError> {
     let mut ops = connect()?;
     paths.ensure_account(&account.name)?;
@@ -426,18 +434,20 @@ fn run_session(
             Mode::Normal,
             now(),
         )?;
-        for n in run.notifications {
-            let _ = events.send(n);
+        for event in run.events {
+            let _ = events.send(event);
         }
         let _ = events.send(Event::Synced {
             account: account.name.clone(),
             new_messages: new.len(),
             actions: run.actions,
         });
+        *completed_pass = true;
         if now() - last_purge > 3600 {
-            let removed = trash.purge(account.trash_retention_days as i64 * 86_400, now())?;
-            if removed > 0 {
-                log::info!("{}: purged {removed} trash files", account.name);
+            match trash.purge(account.trash_retention_days as i64 * 86_400, now()) {
+                Ok(0) => {}
+                Ok(removed) => log::info!("{}: purged {removed} trash files", account.name),
+                Err(e) => log::warn!("{}: trash purge failed: {e}", account.name),
             }
             last_purge = now();
         }
@@ -516,6 +526,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let new = sync_all(&mut ops, &store).unwrap();
         assert_eq!(new.len(), 2);
+        assert!(new.iter().all(|n| n.initial));
         let inbox = store.folder("INBOX").unwrap().unwrap();
         assert_eq!((inbox.uidvalidity, inbox.last_uid), (1, 2));
         assert_eq!(
@@ -534,6 +545,34 @@ mod tests {
     }
 
     #[test]
+    fn first_sync_does_not_notify() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let new = sync_all(&mut ops, &store).unwrap();
+        let run = run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &[],
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
+        assert_eq!(run.evaluated, 2);
+        assert!(
+            run.events.is_empty(),
+            "mail already in a folder on its first sync never notifies"
+        );
+    }
+
+    #[test]
     fn second_sync_only_fetches_new_and_updates_flags_and_removals() {
         let mut ops = ops_with_inbox();
         let store = Store::open_in_memory().unwrap();
@@ -549,7 +588,8 @@ mod tests {
             new,
             vec![NewMessageRef {
                 folder: "INBOX".into(),
-                uid: 3
+                uid: 3,
+                initial: false
             }]
         );
         assert!(store.message("INBOX", 1).unwrap().unwrap().is_seen());
@@ -608,7 +648,16 @@ mod tests {
 
     #[test]
     fn rules_run_deletes_old_seen_code_and_notifies_untouched_new_mail() {
-        let mut ops = ops_with_inbox();
+        let mut ops = RecordingOps::new()
+            .with_folder("INBOX", None)
+            .with_folder("Trash", Some("Trash"));
+        ops.add_mail(
+            "INBOX",
+            2,
+            11 * H,
+            &headers("noreply@login.x", "Your sign-in code", "m2@x"),
+            Some("From: noreply@login.x\r\n\r\ncode 1234"),
+        );
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_in_memory().unwrap();
         let trash = Trash::new(dir.path().to_path_buf());
@@ -616,10 +665,17 @@ mod tests {
         let identity = acc.identity().unwrap();
         let toml = "[[rules]]\nname = \"purge\"\nmatch.from = { contains = \"noreply@\" }\nmatch.older_than = \"1h\"\nmatch.seen = true\nactions = [\"delete\"]\n";
         let rules = rules_from(toml, &store, 0);
-        let new = sync_all(&mut ops, &store).unwrap();
+        sync_all(&mut ops, &store).unwrap();
         ops.select("INBOX").unwrap();
         ops.add_flags(2, &["\\Seen"]).unwrap();
-        sync_all(&mut ops, &store).unwrap();
+        ops.add_mail(
+            "INBOX",
+            3,
+            12 * H,
+            &headers("alice@x", "hello", "m1@x"),
+            None,
+        );
+        let new = sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -635,10 +691,8 @@ mod tests {
         assert_eq!(run.actions, 1);
         assert_eq!(store.message("INBOX", 2).unwrap(), None);
         assert_eq!(trash.list().unwrap().len(), 1);
-        assert_eq!(run.notifications.len(), 1);
-        assert!(
-            matches!(&run.notifications[0], Event::NewMail { uid: 1, from, .. } if from == "alice@x")
-        );
+        assert_eq!(run.events.len(), 1);
+        assert!(matches!(&run.events[0], Event::NewMail { uid: 3, from, .. } if from == "alice@x"));
     }
 
     #[test]
@@ -649,7 +703,9 @@ mod tests {
         let trash = Trash::new(dir.path().to_path_buf());
         let acc = account();
         let identity = acc.identity().unwrap();
-        let first = sync_all(&mut ops, &store).unwrap();
+        sync_all(&mut ops, &store).unwrap();
+        ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
+        let second = sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -657,12 +713,16 @@ mod tests {
             &[],
             &acc,
             &identity,
-            &first,
+            &second,
             Mode::Normal,
             12 * H,
         )
         .unwrap();
-        assert_eq!(run.notifications.len(), 2, "first sync notifies");
+        assert_eq!(
+            run.events.len(),
+            1,
+            "mail arriving after the first sync notifies"
+        );
         ops.uidvalidity.insert("INBOX".into(), 9);
         let resync = sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
@@ -677,10 +737,8 @@ mod tests {
             12 * H,
         )
         .unwrap();
-        assert!(
-            run.notifications.is_empty(),
-            "already-known message ids never notify again"
-        );
+        assert_eq!(resync.len(), 3);
+        assert!(run.events.is_empty(), "a UIDVALIDITY resync never notifies");
     }
 
     #[test]
@@ -757,6 +815,9 @@ mod tests {
         ops.idle_outcomes.push_back(IdleOutcome::NewMail);
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
+        paths.ensure_account("work").unwrap();
+        sync_all(&mut ops, &Store::open(&paths.mail_db("work")).unwrap()).unwrap();
+        ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
         let (tx, rx) = std::sync::mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
         let stop = shutdown.clone();
@@ -775,6 +836,147 @@ mod tests {
         assert_eq!(connects, 1);
         let events: Vec<Event> = rx.try_iter().collect();
         assert!(events.iter().any(|e| matches!(e, Event::Synced { .. })));
-        assert!(events.iter().any(|e| matches!(e, Event::NewMail { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::NewMail { uid: 3, .. }))
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, Event::Error { .. })),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn failed_apply_skips_message_and_continues() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        ops.add_mail(
+            "INBOX",
+            1,
+            10 * H,
+            &headers("noreply@a.x", "one", "n1@x"),
+            None,
+        );
+        ops.add_mail(
+            "INBOX",
+            2,
+            11 * H,
+            &headers("noreply@b.x", "two", "n2@x"),
+            Some("From: noreply@b.x\r\n\r\ntwo"),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let rules = rules_from(
+            "[[rules]]\nname = \"purge\"\nmatch.from = { contains = \"noreply@\" }\nactions = [\"delete\"]\n",
+            &store,
+            0,
+        );
+        let new = sync_all(&mut ops, &store).unwrap();
+        let run = run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
+        assert!(
+            store.message("INBOX", 1).unwrap().is_some(),
+            "message without raw is left alone"
+        );
+        assert_eq!(
+            store.message("INBOX", 2).unwrap(),
+            None,
+            "later message still deleted"
+        );
+        assert_eq!(run.events.len(), 1);
+        assert!(
+            matches!(&run.events[0], Event::Error { message, .. } if message.contains("INBOX/1")),
+            "{:?}",
+            run.events
+        );
+    }
+
+    #[test]
+    fn missing_rule_folder_is_skipped() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        store
+            .upsert_folder(&Folder {
+                name: "Gone".into(),
+                uidvalidity: 3,
+                last_uid: 0,
+                special_use: None,
+            })
+            .unwrap();
+        let rules = rules_from(
+            "[[rules]]\nname = \"old\"\nfolder = \"Gone\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+            &store,
+            0,
+        );
+        let new = sync_all(&mut ops, &store).unwrap();
+        let run = run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
+        assert_eq!(run.evaluated, 2, "INBOX still processed");
+        assert_eq!(run.events.len(), 1);
+        assert!(
+            matches!(&run.events[0], Event::Error { message, .. } if message.contains("Gone")),
+            "{:?}",
+            run.events
+        );
+    }
+
+    #[test]
+    fn backoff_grows_caps_and_resets() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        let mut connects = 0;
+        let mut sleeps = Vec::new();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            || {
+                connects += 1;
+                if connects <= 8 {
+                    return Err(SyncError::Mail(MailError::Connect("refused".into())));
+                }
+                // No folders: the pass completes, then selecting INBOX before IDLE fails.
+                Ok(Box::new(RecordingOps::new()) as Box<dyn MailOps>)
+            },
+            |delay| {
+                sleeps.push(delay.as_secs());
+                if sleeps.len() == 9 {
+                    stop.store(true, Ordering::Relaxed);
+                }
+            },
+        );
+        assert_eq!(connects, 9);
+        assert_eq!(sleeps, vec![5, 10, 20, 40, 80, 160, 300, 300, 5]);
     }
 }

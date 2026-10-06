@@ -222,7 +222,7 @@ Pure. For each rule in file order:
 3. Evaluate each match condition. `body` requires `msg.raw`; the caller fetches it beforehand when any enabled rule for that folder has a body condition. Body text is the `text/plain` part via `mail-parser`, else the HTML part converted to text by `mail-parser`.
 4. `older_than`: `now - internaldate >= duration`. `seen`: presence of `\Seen`.
 5. Collect actions. After a `delete`, stop evaluating further rules for this message.
-6. Decide notification: `notify` if any matched rule says `notify`; `silent` if any says `silent` or the message was moved or deleted; else the account default. `notify` beats `silent` only when both are explicit, in which case the later rule wins. Only messages new in this sync pass are considered.
+6. Decide notification: `notify` if any matched rule says `notify`; `silent` if any says `silent` or the message was moved or deleted; else the account default. `notify` beats `silent` only when both are explicit, in which case the later rule wins. Only messages new in this sync pass are considered. Messages found by a folder's first sync or a UIDVALIDITY resync never notify.
 
 ```
 apply(plan, msg, mail_ops, store, trash) -> Result<()>
