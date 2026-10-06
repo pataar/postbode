@@ -215,10 +215,13 @@ pub fn load_rules_for(
 ) -> Result<Vec<CompiledRule>, RulesError> {
     let file = crate::rules::load(path)?;
     let mut compiled = crate::rules::compile(&file)?;
+    let store_error = |e: StoreError| RulesError::Parse(e.to_string());
+    let names: Vec<&str> = compiled.iter().map(|r| r.rule.name.as_str()).collect();
+    store.forget_rules_except(&names).map_err(store_error)?;
     for rule in &mut compiled {
         rule.first_seen_at = store
             .rule_first_seen(&rule.rule.name, now)
-            .map_err(|e| RulesError::Parse(e.to_string()))?;
+            .map_err(store_error)?;
     }
     Ok(compiled)
 }
@@ -896,6 +899,27 @@ mod tests {
             "{:?}",
             ops.calls
         );
+    }
+
+    #[test]
+    fn removed_rule_forgets_its_first_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let path = dir.path().join("rules.toml");
+        let rule = |name: &str| {
+            format!("[[rules]]\nname = \"{name}\"\nmatch.seen = true\nactions = [\"flag\"]\n")
+        };
+        std::fs::write(&path, rule("a") + &rule("b")).unwrap();
+        load_rules_for(&store, &path, 100).unwrap();
+        std::fs::write(&path, rule("b")).unwrap();
+        load_rules_for(&store, &path, 200).unwrap();
+        std::fs::write(&path, rule("a") + &rule("b")).unwrap();
+        let rules = load_rules_for(&store, &path, 300).unwrap();
+        let first_seen: Vec<(&str, i64)> = rules
+            .iter()
+            .map(|r| (r.rule.name.as_str(), r.first_seen_at))
+            .collect();
+        assert_eq!(first_seen, [("a", 300), ("b", 100)]);
     }
 
     #[test]

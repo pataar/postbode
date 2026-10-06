@@ -316,6 +316,16 @@ impl Store {
         )?)
     }
 
+    /// Drops first-seen times of rules no longer in the file, so a re-added rule starts fresh instead of acting on history.
+    pub fn forget_rules_except(&self, names: &[&str]) -> Result<(), StoreError> {
+        let names = serde_json::to_string(names).expect("a list of strings serializes");
+        self.conn.execute(
+            "DELETE FROM rules_seen WHERE name NOT IN (SELECT value FROM json_each(?1))",
+            params![names],
+        )?;
+        Ok(())
+    }
+
     pub fn log_action(&self, entry: &LogEntry) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO rule_log (at, rule_name, folder, uid, message_id, subject, action, trash_file)
