@@ -9,7 +9,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `credentials` keyring or password command; `Secret` has no Debug
 - `message` header parsing, thread id, body text
 - `store` one SQLite file per account; migrations in `migrations/`
-- `rules` parse + validate (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`)
+- `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
 - `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
 - `trash` `.eml` backups before any rule delete
 - `sync` per-account loop: sync folders, run rules, IDLE

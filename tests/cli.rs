@@ -424,3 +424,92 @@ fn attachments_list_and_save_from_the_cached_message() {
         .success()
     );
 }
+
+fn postbode_stdin(home: &std::path::Path, args: &[&str], stdin: &str) -> std::process::Output {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .args(args)
+        .env("POSTBODE_HOME", home)
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn agent_proposes_and_a_human_approves_or_rejects() {
+    let (home, _store) = seeded_home(&[message(42, "noreply@example.com", "Your code is 123456")]);
+    let rule =
+        r#"{"name": "codes", "match": {"subject": {"contains": "code"}}, "actions": ["delete"]}"#;
+    let list = |home: &std::path::Path| {
+        String::from_utf8_lossy(&postbode(home, &["rules", "list"]).stdout).to_string()
+    };
+
+    let out = postbode_stdin(home.path(), &["rules", "test", "--stdin"], rule);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("codes\tINBOX/42\tdelete"), "{stdout}");
+    assert!(
+        !home.path().join("config/rules.toml").exists(),
+        "a preview writes nothing"
+    );
+
+    let out = postbode_stdin(home.path(), &["rules", "propose", "--by", "test"], rule);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(list(home.path()).contains("off\tcodes\tcli:test"));
+    let stdout =
+        String::from_utf8_lossy(&postbode(home.path(), &["rules", "test", "codes"]).stdout)
+            .to_string();
+    assert!(
+        stdout.contains("INBOX/42"),
+        "naming a proposal previews it: {stdout}"
+    );
+
+    assert!(
+        postbode(home.path(), &["rules", "approve", "codes"])
+            .status
+            .success()
+    );
+    assert!(list(home.path()).contains("on \tcodes"));
+    assert!(
+        !postbode(home.path(), &["rules", "reject", "codes"])
+            .status
+            .success()
+    );
+
+    postbode_stdin(
+        home.path(),
+        &["rules", "propose"],
+        &rule.replace("codes", "codes-2"),
+    );
+    assert!(
+        postbode(home.path(), &["rules", "reject", "codes-2"])
+            .status
+            .success()
+    );
+    assert!(!list(home.path()).contains("codes-2"));
+
+    let bad = rule
+        .replace("codes", "bad")
+        .replace(r#""contains": "code""#, r#""regex": "(""#);
+    let out = postbode_stdin(home.path(), &["rules", "propose"], &bad);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("rule 'bad'"));
+
+    let out = postbode(home.path(), &["rules", "schema"]);
+    serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap();
+}

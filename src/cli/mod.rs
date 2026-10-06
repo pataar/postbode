@@ -12,7 +12,7 @@ use postbode::credentials::{self, Secret};
 use postbode::mail_ops::MailOps;
 use postbode::paths::Paths;
 use postbode::rules::engine::{Context, Mode, evaluate};
-use postbode::rules::{Action, CompiledRule};
+use postbode::rules::{Action, CompiledRule, Rule, RuleFile};
 use postbode::store::{Message, Store};
 use postbode::sync::{self, Event};
 use postbode::trash::Trash;
@@ -192,12 +192,28 @@ enum AttachmentCommand {
 enum RulesCommand {
     /// Validate rules.toml
     Check,
-    /// Dry run: print what each rule would do to the cached messages
+    /// Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
     Test {
+        #[arg(conflicts_with = "stdin")]
         name: Option<String>,
         #[arg(long)]
         account: Option<String>,
+        /// Preview one rule read as JSON from stdin instead of rules.toml
+        #[arg(long)]
+        stdin: bool,
     },
+    /// JSON Schema for rules.toml; a proposal is one entry of `rules`
+    Schema,
+    /// Read one rule as JSON on stdin and add it disabled, for a human to approve
+    Propose {
+        /// Who proposes it, recorded as proposed_by = "cli:WHO"
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Enable a disabled rule, such as a proposal
+    Approve { name: String },
+    /// Remove a pending proposal
+    Reject { name: String },
     /// Names, enabled state and who proposed them
     List {
         #[arg(long)]
@@ -776,15 +792,61 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             }
             Ok(())
         }
-        RulesCommand::Test { name, account } => {
-            let rules = compiled_rules(paths, name.as_deref())?;
+        RulesCommand::Test {
+            name,
+            account,
+            stdin,
+        } => {
+            let rules = if stdin {
+                let mut rule = read_rule_json()?;
+                rule.enabled = true;
+                postbode::rules::compile(&RuleFile { rules: vec![rule] })?
+            } else {
+                let mut rules = compiled_rules(paths, name.as_deref())?;
+                if name.is_some() {
+                    rules.iter_mut().for_each(|r| r.rule.enabled = true);
+                }
+                rules
+            };
             for acc in select_accounts(config, account.as_deref())? {
                 let store = open_store(paths, &acc.name)?;
                 print_planned_actions(&rules, &store, acc, &acc.identity()?)?;
             }
             Ok(())
         }
+        RulesCommand::Schema => {
+            print!("{}", postbode::rules::schema());
+            Ok(())
+        }
+        RulesCommand::Propose { by } => {
+            let rule = read_rule_json()?;
+            let name = rule.name.clone();
+            let by = by.map_or_else(|| "cli".to_string(), |who| format!("cli:{who}"));
+            postbode::rules::edit::propose(&paths.rules_file(), rule, &by)?;
+            println!(
+                "proposed '{}'; it stays disabled until a human runs `postbode rules approve`",
+                clean(&name, false)
+            );
+            Ok(())
+        }
+        RulesCommand::Approve { name } => {
+            postbode::rules::edit::approve(&paths.rules_file(), &name)?;
+            println!(
+                "enabled '{}'; it acts on mail that arrives from now on",
+                clean(&name, false)
+            );
+            Ok(())
+        }
+        RulesCommand::Reject { name } => {
+            postbode::rules::edit::reject(&paths.rules_file(), &name)?;
+            println!("removed proposal '{}'", clean(&name, false));
+            Ok(())
+        }
     }
+}
+
+fn read_rule_json() -> Result<Rule> {
+    serde_json::from_reader(io::stdin().lock()).context("reading one rule as JSON from stdin")
 }
 
 /// Compiles rules with `first_seen_at` left at 0 and without touching any store, so previews are

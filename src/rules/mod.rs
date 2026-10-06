@@ -1,10 +1,12 @@
 pub mod apply;
+pub mod edit;
 pub mod engine;
 
 use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -19,86 +21,117 @@ pub enum RulesError {
     Store(#[from] crate::store::StoreError),
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuleFile {
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
+    /// Unique name; renaming a rule restarts its clock
     pub name: String,
+    /// Only for this account; default all accounts
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// The folder the rule watches; default INBOX
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    /// Disabled rules are skipped; proposals start disabled
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Who proposed the rule; set by `rules propose`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_by: Option<String>,
+    /// Conditions that must all hold; at least one
     #[serde(rename = "match")]
     pub matches: Match,
+    /// What to do; at least one
     pub actions: Vec<Action>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Match {
+    /// The From header
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<TextMatch>,
+    /// The To header
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<TextMatch>,
+    /// The Cc header
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cc: Option<TextMatch>,
+    /// The subject
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<TextMatch>,
+    /// The plain-text body; HTML mail is converted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<TextMatch>,
+    /// Any header, by name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<HeaderMatch>,
+    /// Arrived at least this long ago, e.g. 30m, 1h, 2days
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub older_than: Option<String>,
+    /// Read (true) or unread (false)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen: Option<bool>,
+    /// To, Cc or Delivered-To holds your address or an alias
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_me: Option<bool>,
+    /// Sent to this alias; * is a wildcard
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+/// Exactly one of contains, equals, regex
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TextMatch {
+    /// Case-insensitive substring
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contains: Option<String>,
+    /// The whole value, case-insensitive; on from, to and cc also any single address
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<String>,
+    /// Rust regex syntax; (?i) makes it case-insensitive
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regex: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HeaderMatch {
+    /// Header name, e.g. List-Id
     pub name: String,
+    /// Case-insensitive substring
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contains: Option<String>,
+    /// The whole value, case-insensitive; on from, to and cc also any single address
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<String>,
+    /// Rust regex syntax; (?i) makes it case-insensitive
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regex: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
+    /// Back up as .eml locally, then remove from the server; stops later rules
     Delete,
+    /// Set \Seen
     MarkRead,
+    /// Set \Flagged
     Flag,
+    /// Move to the server's Archive folder
     Archive,
+    /// Notify even when the message was moved
     Notify,
+    /// Never notify
     Silent,
     #[serde(skip)]
     MarkUnread,
@@ -107,6 +140,7 @@ pub enum Action {
     /// A user delete: to the Trash folder, or deleted with a backup when there is none or the message is already in it.
     #[serde(skip)]
     Trash,
+    /// Move to this folder, creating it if needed
     #[serde(rename = "move")]
     Move(String),
 }
@@ -130,6 +164,12 @@ impl Action {
 
 fn default_true() -> bool {
     true
+}
+
+/// JSON Schema of rules.toml; a proposal for `rules propose` is one entry of `rules`.
+pub fn schema() -> String {
+    let schema = schemars::schema_for!(RuleFile);
+    serde_json::to_string_pretty(&schema).expect("a schema serializes") + "\n"
 }
 
 pub fn parse(text: &str) -> Result<RuleFile, RulesError> {
@@ -336,6 +376,19 @@ fn compile_rule(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_describes_rules_and_rejects_unknown_keys() {
+        let text = schema();
+        let schema: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let rule = &schema["$defs"]["Rule"];
+        assert_eq!(rule["additionalProperties"], false);
+        assert!(rule["properties"]["match"].is_object());
+        assert!(
+            !text.contains("mark_unread"),
+            "CLI-only actions stay out of the schema"
+        );
+    }
 
     pub(crate) const SAMPLE: &str = r#"
 [[rules]]
