@@ -216,9 +216,14 @@ pub fn load_rules_for(
 ) -> Result<Vec<CompiledRule>, RulesError> {
     let file = crate::rules::load(path)?;
     let mut compiled = crate::rules::compile(&file)?;
-    let names: Vec<&str> = compiled.iter().map(|r| r.rule.name.as_str()).collect();
-    store.forget_rules_except(&names)?;
-    for rule in &mut compiled {
+    // A disabled rule, such as a pending proposal, starts its clock when it is enabled, not when it was written.
+    let enabled: Vec<&str> = compiled
+        .iter()
+        .filter(|r| r.rule.enabled)
+        .map(|r| r.rule.name.as_str())
+        .collect();
+    store.forget_rules_except(&enabled)?;
+    for rule in compiled.iter_mut().filter(|r| r.rule.enabled) {
         rule.first_seen_at = store.rule_first_seen(&rule.rule.name, now)?;
     }
     Ok(compiled)
@@ -904,6 +909,33 @@ mod tests {
             !ops.calls.iter().any(|c| c.starts_with("fetch_raw")),
             "{:?}",
             ops.calls
+        );
+    }
+
+    #[test]
+    fn disabled_rule_starts_its_clock_when_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.toml");
+        let store = Store::open_in_memory().unwrap();
+        let rule = |enabled: bool| {
+            format!(
+                "[[rules]]\nname = \"codes\"\nenabled = {enabled}\nmatch.seen = true\nactions = [\"delete\"]\n"
+            )
+        };
+        std::fs::write(&path, rule(false)).unwrap();
+        load_rules_for(&store, &path, 100).unwrap();
+        std::fs::write(&path, rule(true)).unwrap();
+        assert_eq!(
+            load_rules_for(&store, &path, 500).unwrap()[0].first_seen_at,
+            500
+        );
+        std::fs::write(&path, rule(false)).unwrap();
+        load_rules_for(&store, &path, 600).unwrap();
+        std::fs::write(&path, rule(true)).unwrap();
+        assert_eq!(
+            load_rules_for(&store, &path, 900).unwrap()[0].first_seen_at,
+            900,
+            "re-enabling restarts the clock"
         );
     }
 
