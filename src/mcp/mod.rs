@@ -1,5 +1,6 @@
 //! `postbode mcp`: the agent surface over MCP on stdio, limited by scopes set in the host's config.
 mod backend;
+pub mod install;
 #[cfg(test)]
 mod tests;
 mod tools;

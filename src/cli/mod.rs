@@ -174,7 +174,37 @@ enum Command {
         /// Only this account; repeatable; default every account
         #[arg(long)]
         account: Vec<String>,
+        #[command(subcommand)]
+        command: Option<McpCommand>,
     },
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    /// Register `postbode mcp` with an agent host; re-run it to change the scopes
+    Install {
+        #[arg(value_enum)]
+        target: InstallTarget,
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+        #[arg(long, default_value = postbode::help::MCP_DEFAULT_SCOPES)]
+        scopes: String,
+        /// Only this account; repeatable; default every account
+        #[arg(long)]
+        account: Vec<String>,
+        /// Take the entry out again
+        #[arg(long)]
+        remove: bool,
+        /// Print the change and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum InstallTarget {
+    ClaudeCode,
+    ClaudeDesktop,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -452,7 +482,11 @@ pub fn run() -> Result<()> {
             print!("{}", include_str!("../../docs/src/agent-guide.md"));
             Ok(())
         }
-        Command::Mcp { scopes, account } => cmd_mcp(&config, &paths, &scopes, &account),
+        Command::Mcp {
+            scopes,
+            account,
+            command,
+        } => cmd_mcp(&config, &paths, &scopes, &account, command),
     }
 }
 
@@ -704,12 +738,45 @@ fn cmd_gui(_config: &Config, _paths: &Paths) -> Result<()> {
 }
 
 #[cfg(feature = "mcp")]
-fn cmd_mcp(config: &Config, paths: &Paths, scopes: &str, accounts: &[String]) -> Result<()> {
-    postbode::mcp::run(config, paths, scopes, accounts)
+fn cmd_mcp(
+    config: &Config,
+    paths: &Paths,
+    scopes: &str,
+    accounts: &[String],
+    command: Option<McpCommand>,
+) -> Result<()> {
+    match command {
+        None => postbode::mcp::run(config, paths, scopes, accounts),
+        Some(McpCommand::Install {
+            target,
+            scopes,
+            account,
+            remove,
+            dry_run,
+        }) => {
+            use postbode::mcp::install::{Target, install};
+            if let Some(name) = account.iter().find(|name| config.account(name).is_none()) {
+                bail!("no account named '{name}'");
+            }
+            let target = match target {
+                InstallTarget::ClaudeCode => Target::ClaudeCode,
+                InstallTarget::ClaudeDesktop => Target::ClaudeDesktop,
+                InstallTarget::Json => Target::Json,
+            };
+            print!("{}", install(target, &scopes, &account, remove, dry_run)?);
+            Ok(())
+        }
+    }
 }
 
 #[cfg(not(feature = "mcp"))]
-fn cmd_mcp(_config: &Config, _paths: &Paths, _scopes: &str, _accounts: &[String]) -> Result<()> {
+fn cmd_mcp(
+    _config: &Config,
+    _paths: &Paths,
+    _scopes: &str,
+    _accounts: &[String],
+    _command: Option<McpCommand>,
+) -> Result<()> {
     bail!("this postbode was built without the MCP server; install it with the default features")
 }
 

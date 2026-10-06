@@ -665,3 +665,18 @@ fn mcp_speaks_only_json_rpc_on_stdout() {
         json_rpc(&line);
     }
 }
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_install_rejects_an_unknown_account_and_accepts_none() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postbode(
+        home.path(),
+        &["mcp", "install", "json", "--account", "nope"],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no account named 'nope'"));
+    let out = postbode(home.path(), &["mcp", "install", "json"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("mcpServers"));
+}
