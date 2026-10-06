@@ -37,7 +37,7 @@ Later, undated: daemon split (always-on sync, GUI and CLI as clients), provider 
 | SQLite tooling | `rusqlite` + `rusqlite_migration` + `serde_rusqlite` | diesel; sqlx (async) |
 | MVP engine scope | Direct actions, special-use folders, FTS5 search, threading, attachments, aliases, Dovecot CI | SMTP send, offline action queue, contacts |
 | Releases | release-plz for versions and crates.io, cargo-dist for binaries and the Homebrew tap | Hand-rolled scripts |
-| Dependency updates | Renovate with a local config | Dependabot |
+| Dependency updates | Dependabot with `.github/dependabot.yml` | Renovate |
 | Notifications | Engine decides via rules and emits an event; the running front end delivers | GUI-only feature |
 | Agent control | Self-describing CLI (`guide`, `rules schema`, `rules propose/approve`), shipped `SKILL.md`; MCP reuses the same text | Separate MCP-only docs |
 | Documentation | `docs/` is the single source: embedded in the binary, tested in CI, mdBook-ready | Docs in README and doc comments only |
@@ -348,7 +348,7 @@ Human steps, one time: add the `HOMEBREW_TAP_TOKEN` and `RELEASE_PLZ_TOKEN` secr
 
 Release binaries are not code-signed yet. On macOS every new binary asks again for Keychain access. Developer ID signing is a later decision.
 
-**Renovate** via the Mend Renovate GitHub App, installed on the repo by the owner. Local `renovate.json`: `config:recommended`, `:semanticCommits` with type `chore`, lockfile maintenance monthly, `minimumReleaseAge` 3 days, majors as draft PRs, OSV vulnerability alerts, GitHub Actions digests pinned (except in `.github/workflows/release.yml`, which `cargo-dist` owns; that `ignorePaths` replaces Renovate's default ignores, so `tests/` is scanned and the Dovecot test image gets update PRs, which is wanted), `rust-toolchain.toml` and `.mise.toml` managed so Rust bumps arrive as PRs too. Dependabot is not enabled; two bots on one repo fight.
+**Dependabot**, configured in `.github/dependabot.yml`: weekly updates for `cargo` (minor and patch grouped), GitHub Actions (grouped) and `rust-toolchain.toml`, monthly for the Dovecot image in `tests/dovecot/compose.yml`; a 3-day cooldown on crates and actions; commit messages `chore(deps): …`. `.github/workflows/release.yml` is excluded because `dist generate` owns it and dist's plan check fails on any edit. Dependabot does not read `.mise.toml`, so a Rust bump PR needs the `rust` line there (and `rust-version` in `Cargo.toml`) raised by hand in the same PR. Dependabot alerts and security updates are switched on in the repo settings.
 
 ## 16. Documentation
 
