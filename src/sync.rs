@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -266,6 +267,12 @@ pub fn run_rules(
     folders.sort();
     folders.dedup();
 
+    // Only mail new since the folder was first tracked can notify or earn a body fetch.
+    let fresh: HashSet<(&str, u32)> = new
+        .iter()
+        .filter(|n| !n.initial)
+        .map(|n| (n.folder.as_str(), n.uid))
+        .collect();
     let mut run = RulesRun::default();
     for folder in folders {
         let Some(stored) = store.folder(&folder)? else {
@@ -296,11 +303,9 @@ pub fn run_rules(
         }
         let needs_body = folder_needs_body(rules, &account.name, &folder);
         for mut msg in store.messages_in_folder(&folder)? {
-            let new_ref = new
-                .iter()
-                .find(|n| n.folder == msg.folder && n.uid == msg.uid);
+            let is_fresh = fresh.contains(&(msg.folder.as_str(), msg.uid));
             // Mail found by a first sync or resync already sat on the server; fetching it would download the whole folder.
-            if needs_body && msg.body_text.is_none() && new_ref.is_some_and(|n| !n.initial) {
+            if needs_body && msg.body_text.is_none() && is_fresh {
                 match ensure_raw(&msg, ops, store) {
                     Ok(raw) => msg.body_text = Some(body_text(&raw)),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
@@ -320,11 +325,7 @@ pub fn run_rules(
                     }
                 }
             }
-            if new_ref.is_some_and(|n| !n.initial)
-                && plan.notify
-                && folder == "INBOX"
-                && mode == Mode::Normal
-            {
+            if is_fresh && plan.notify && folder == "INBOX" && mode == Mode::Normal {
                 run.events.push(Event::NewMail {
                     account: account.name.clone(),
                     folder: msg.folder.clone(),
