@@ -2,7 +2,7 @@
 use std::io;
 use std::path::Path;
 
-use toml_edit::{ArrayOfTables, DocumentMut, value};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Value};
 
 use crate::paths::write_atomic;
 use crate::rules::{Rule, RuleFile, RulesError, compile, parse};
@@ -30,8 +30,12 @@ pub fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
         if !is_disabled(table) {
             return Err(invalid(name, "is already enabled"));
         }
-        table["enabled"] = value(true);
-        Ok(())
+        let mut enabled = Value::from(true);
+        if let Some(old) = table["enabled"].as_value() {
+            *enabled.decor_mut() = old.decor().clone();
+        }
+        table["enabled"] = Item::Value(enabled);
+        Ok(None)
     })
 }
 
@@ -44,8 +48,27 @@ pub fn reject(path: &Path, name: &str) -> Result<(), RulesError> {
                 "is not a pending proposal; edit rules.toml to remove it",
             ));
         }
+        // Comments above a table belong to its decor; keep the human's, minus the blank line `propose` added.
+        let prefix = table
+            .decor()
+            .prefix()
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        let mut orphaned = prefix
+            .strip_suffix('\n')
+            .filter(|p| p.ends_with('\n'))
+            .unwrap_or(prefix)
+            .to_string();
         rules.remove(index);
-        Ok(())
+        match rules.get_mut(index) {
+            Some(next) => {
+                let next_prefix = next.decor().prefix().and_then(|p| p.as_str()).unwrap_or("");
+                orphaned.push_str(next_prefix);
+                next.decor_mut().set_prefix(orphaned);
+                Ok(None)
+            }
+            None => Ok(Some(orphaned)),
+        }
     })
 }
 
@@ -56,7 +79,7 @@ fn is_disabled(table: &toml_edit::Table) -> bool {
 fn edit(
     path: &Path,
     name: &str,
-    change: impl FnOnce(&mut ArrayOfTables, usize) -> Result<(), RulesError>,
+    change: impl FnOnce(&mut ArrayOfTables, usize) -> Result<Option<String>, RulesError>,
 ) -> Result<(), RulesError> {
     let mut doc: DocumentMut = read(path)?
         .parse()
@@ -69,7 +92,10 @@ fn edit(
         .iter()
         .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name))
         .ok_or_else(|| invalid(name, "no such rule"))?;
-    change(rules, index)?;
+    if let Some(orphaned) = change(rules, index)? {
+        let trailing = format!("{}{orphaned}", doc.trailing().as_str().unwrap_or(""));
+        doc.set_trailing(trailing);
+    }
     save(path, &doc.to_string())
 }
 
@@ -183,5 +209,37 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(parse(&text).unwrap().rules.len(), 1);
         assert!(text.contains("# do not touch"), "{text}");
+    }
+
+    #[test]
+    fn reject_keeps_comments_above_the_proposal() {
+        let human = format!("{HUMAN}\n# TODO newsletters rule\n# [[rules]]\n# name = \"draft\"\n");
+        let (_dir, path) = rules_file(&human);
+        propose(&path, proposal("codes"), "cli").unwrap();
+        reject(&path, "codes").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), human);
+
+        propose(&path, proposal("codes"), "cli").unwrap();
+        propose(&path, proposal("other"), "cli").unwrap();
+        reject(&path, "codes").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("# TODO newsletters rule\n# [[rules]]\n# name = \"draft\""),
+            "{text}"
+        );
+        assert_eq!(parse(&text).unwrap().rules.len(), 2);
+    }
+
+    #[test]
+    fn approve_keeps_a_comment_on_the_enabled_line() {
+        let (_dir, path) = rules_file(
+            "[[rules]]\nname = \"x\"\nenabled = false # waiting for review\nproposed_by = \"cli\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        );
+        approve(&path, "x").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("enabled = true # waiting for review\n"),
+            "{text}"
+        );
     }
 }

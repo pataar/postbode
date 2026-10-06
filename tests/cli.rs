@@ -491,10 +491,15 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
             .success()
     );
 
-    postbode_stdin(
+    let out = postbode_stdin(
         home.path(),
         &["rules", "propose"],
         &rule.replace("codes", "codes-2"),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
     assert!(
         postbode(home.path(), &["rules", "reject", "codes-2"])
