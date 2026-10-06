@@ -803,3 +803,35 @@ async fn move_needs_a_folder_name() {
     );
 }
 
+#[tokio::test]
+async fn rules_test_on_the_body_needs_read_bodies() {
+    let fx = fixture(&["work"]);
+    fx.add(
+        "work",
+        fixture_message("INBOX", 1, "Hello", "the secret word"),
+    );
+    let rule =
+        json!({ "name": "probe", "match": { "body": { "regex": "secret" } }, "actions": ["flag"] });
+    let read = connect(&fx, "read", &[]).await;
+    let text = error_text(&call(&read, "rules_test", json!({ "rule": rule })).await);
+    assert!(
+        text.contains("matching on the body needs the read:bodies scope"),
+        "{text}"
+    );
+    let bodies = connect(&fx, "read,read:bodies", &[]).await;
+    let preview = rows(&call(&bodies, "rules_test", json!({ "rule": rule })).await);
+    assert_eq!(preview.len(), 1);
+    assert_eq!(preview[0]["uid"], 1);
+}
+
+#[tokio::test]
+async fn rules_test_leaves_out_mail_of_hidden_accounts() {
+    let fx = fixture(&["home", "work"]);
+    fx.add("home", fixture_message("INBOX", 1, "Your code", "x"));
+    fx.add("work", fixture_message("INBOX", 2, "Your code", "x"));
+    let client = connect(&fx, "read", &["work"]).await;
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let preview = rows(&call(&client, "rules_test", json!({ "rule": rule })).await);
+    assert_eq!(preview.len(), 1);
+    assert_eq!(preview[0]["account"], "work");
+}

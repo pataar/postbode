@@ -340,9 +340,18 @@ impl Backend {
     }
 
     /// Previews one rule as if enabled, on the cached mail of the visible accounts; rows never carry mail text.
-    pub fn rules_test(&self, mut rule: Rule, account: Option<&str>) -> Result<Vec<Value>> {
+    /// Without `bodies` a body condition is refused, since its matches would reveal body text.
+    pub fn rules_test(
+        &self,
+        mut rule: Rule,
+        account: Option<&str>,
+        bodies: bool,
+    ) -> Result<Vec<Value>> {
         rule.enabled = true;
         let compiled = rules::compile(&RuleFile { rules: vec![rule] })?;
+        if !bodies && compiled.iter().any(|r| r.needs_body()) {
+            bail!("matching on the body needs the read:bodies scope");
+        }
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(acc)?;

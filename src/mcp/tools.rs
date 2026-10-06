@@ -442,7 +442,7 @@ fn dispatch(
         }
         "rules_test" => {
             let a: RulesTestArgs = args(arguments)?;
-            rows(backend.rules_test(a.rule, a.account.as_deref())?)
+            rows(backend.rules_test(a.rule, a.account.as_deref(), bodies)?)
         }
         "search" => {
             let a: SearchArgs = args(arguments)?;
