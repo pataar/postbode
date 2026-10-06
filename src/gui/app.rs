@@ -325,15 +325,7 @@ impl App {
                 }
                 self.refresh(index);
             }
-            Event::BodyReady { folder, uid, .. } => {
-                if self
-                    .body
-                    .as_ref()
-                    .is_some_and(|b| b.account == index && b.key == (folder.clone(), uid))
-                {
-                    self.body = None;
-                }
-            }
+            Event::BodyReady { folder, uid, .. } => self.reload_body(index, (folder, uid)),
             Event::Restored { .. } => {}
         }
     }
@@ -609,9 +601,9 @@ impl App {
         self.body = current.map(|(account, key)| self.load_body(account, key, now));
     }
 
-    /// The stored message and its attachments; asks the sync thread for a missing body once per message.
-    fn load_body(&mut self, account: usize, key: RowKey, now: f64) -> BodyState {
-        let (stored, attachments) = match &self.accounts[account].store {
+    /// The message and attachments as stored now.
+    fn read_stored(&self, account: usize, key: &RowKey) -> (Option<Message>, Vec<Attachment>) {
+        match &self.accounts[account].store {
             Ok(store) => (
                 store.message(&key.0, key.1).ok().flatten(),
                 store
@@ -622,7 +614,28 @@ impl App {
                     .unwrap_or_default(),
             ),
             Err(_) => (None, Vec::new()),
-        };
+        }
+    }
+
+    /// Refreshes the shown message after its body arrived, keeping the read timer and the saved line.
+    fn reload_body(&mut self, account: usize, key: RowKey) {
+        if self
+            .body
+            .as_ref()
+            .is_none_or(|b| b.account != account || b.key != key)
+        {
+            return;
+        }
+        let (message, attachments) = self.read_stored(account, &key);
+        if let Some(body) = &mut self.body {
+            body.message = message;
+            body.attachments = attachments;
+        }
+    }
+
+    /// The stored message and its attachments; asks the sync thread for a missing body once per message.
+    fn load_body(&mut self, account: usize, key: RowKey, now: f64) -> BodyState {
+        let (stored, attachments) = self.read_stored(account, &key);
         let missing = stored.as_ref().is_some_and(|m| m.body_text.is_none());
         if missing
             && self.accounts[account].state == StartState::Running
@@ -721,6 +734,10 @@ impl App {
         }
         if matches!(action, Action::MarkRead | Action::MarkUnread)
             && let Some(body) = &mut self.body
+            && body.account == account
+            && targets
+                .iter()
+                .any(|(folder, uids)| *folder == body.key.0 && uids.contains(&body.key.1))
         {
             body.read_sent = true;
         }

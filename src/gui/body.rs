@@ -21,23 +21,35 @@ const SCHEMES: [&str; 3] = ["http://", "https://", "mailto:"];
 /// bracket, minus trailing punctuation.
 pub(crate) fn segments(text: &str) -> Vec<Segment<'_>> {
     let mut parts = Vec::new();
-    let mut rest = text;
-    while let Some(start) = next_link(rest) {
-        let tail = &rest[start..];
+    let (mut text_start, mut scan) = (0, 0);
+    while let Some(offset) = next_link(&text[scan..]) {
+        let start = scan + offset;
+        let tail = &text[start..];
         let end = tail
             .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''))
             .unwrap_or(tail.len());
         let link = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']']);
-        if start > 0 {
-            parts.push(Segment::Text(&rest[..start]));
+        scan = start + link.len();
+        // Trimming can leave a bare scheme, which is not a link.
+        if has_target(link) {
+            if start > text_start {
+                parts.push(Segment::Text(&text[text_start..start]));
+            }
+            parts.push(Segment::Link(link));
+            text_start = scan;
         }
-        parts.push(Segment::Link(link));
-        rest = &rest[start + link.len()..];
     }
-    if !rest.is_empty() {
-        parts.push(Segment::Text(rest));
+    if text_start < text.len() {
+        parts.push(Segment::Text(&text[text_start..]));
     }
     parts
+}
+
+fn has_target(link: &str) -> bool {
+    SCHEMES.iter().any(|scheme| {
+        link.strip_prefix(scheme)
+            .is_some_and(|target| !target.is_empty())
+    })
 }
 
 fn next_link(text: &str) -> Option<usize> {
@@ -200,9 +212,21 @@ mod tests {
             "xhttps://evil.test",
             "https:// spaced",
             "ftp://x.test",
+            "http://!",
+            "mailto:)",
+            "mailto:.",
         ] {
             assert_eq!(segments(plain), [Segment::Text(plain)], "{plain}");
         }
+    }
+
+    #[test]
+    fn a_bare_scheme_after_trimming_is_not_a_link() {
+        assert!(
+            segments("see https://)")
+                .iter()
+                .all(|segment| matches!(segment, Segment::Text(_)))
+        );
     }
 
     #[test]
@@ -321,6 +345,90 @@ mod tests {
                     uid: 2
                 }
             )]
+        );
+    }
+
+    #[test]
+    fn a_fetched_body_keeps_the_read_timer_and_the_hand_marks() {
+        let fx = Fixture::new(&["work"]);
+        let mut m = message("INBOX", 1, "later");
+        m.body_text = None;
+        m.flags = String::new();
+        fx.add("work", m);
+        let (mut harness, wires) = fx.harness();
+        harness.event(egui::Event::Text("u".into()));
+        harness.run();
+        harness.event(egui::Event::Text("u".into()));
+        harness.run();
+        fx.store("work")
+            .set_raw("INBOX", 1, b"Subject: later\r\n\r\nFetched\r\n", "Fetched")
+            .unwrap();
+        wires
+            .events
+            .send(Event::BodyReady {
+                account: "work".into(),
+                folder: "INBOX".into(),
+                uid: 1,
+            })
+            .unwrap();
+        harness.run();
+        assert!(harness.query_by_label("Fetched").is_some());
+        harness.input_mut().time = Some(100.0);
+        harness.step();
+        let apply = |action| {
+            (
+                "work".to_string(),
+                Command::Apply {
+                    folder: "INBOX".into(),
+                    uids: vec![1],
+                    action,
+                },
+            )
+        };
+        assert_eq!(
+            wires.sent(),
+            [
+                (
+                    "work".to_string(),
+                    Command::FetchBody {
+                        folder: "INBOX".into(),
+                        uid: 1
+                    }
+                ),
+                apply(Action::MarkRead),
+                apply(Action::MarkUnread),
+            ]
+        );
+    }
+
+    #[test]
+    fn marking_another_row_does_not_stop_the_shown_message_being_read() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "old"));
+        let mut unread = message("INBOX", 2, "new");
+        unread.flags = String::new();
+        fx.add("work", unread);
+        let (mut harness, wires) = fx.harness();
+        harness.input_mut().time = Some(10.0);
+        for key in ["j", "x", "k", "u"] {
+            harness.event(egui::Event::Text(key.into()));
+            harness.step();
+        }
+        harness.input_mut().time = Some(12.0);
+        harness.step();
+        let apply = |uid, action| {
+            (
+                "work".to_string(),
+                Command::Apply {
+                    folder: "INBOX".into(),
+                    uids: vec![uid],
+                    action,
+                },
+            )
+        };
+        assert_eq!(
+            wires.sent(),
+            [apply(1, Action::MarkUnread), apply(2, Action::MarkRead)]
         );
     }
 
