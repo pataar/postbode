@@ -324,3 +324,41 @@ fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
         "{stderr}"
     );
 }
+
+#[test]
+fn account_add_accepts_a_private_ca_file() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let Some(host) = host() else { return };
+    let template = account(&host, PORT, "account-add");
+    let ca_file = template.ca_file.as_ref().unwrap().display().to_string();
+    let home = tempfile::tempdir().unwrap();
+    let answers = format!(
+        "live\n{host}\n{PORT}\n{ca_file}\n{}\n\nc\nprintf {PASSWORD}\n",
+        template.username
+    );
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .args(["account", "add"])
+        .env("POSTBODE_HOME", home.path())
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(answers.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let saved = Config::load(&Paths::under(home.path()).config_file()).unwrap();
+    assert_eq!(saved.accounts[0].ca_file, template.ca_file);
+}

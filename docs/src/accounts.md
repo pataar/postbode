@@ -1,6 +1,6 @@
 # Accounts
 
-`postbode account add` asks for the details, tests the login and writes `config.toml`. You can also edit the file by hand:
+`postbode account add` asks for the details (including an extra CA file, if your server needs one), tests the login and writes `config.toml`. You can also edit the file by hand:
 
 | | Linux | macOS |
 |---|---|---|

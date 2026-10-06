@@ -1001,6 +1001,14 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     let name = prompt("Account name (letters, digits, - _)")?;
     let host = prompt("IMAP host")?;
     let port: u16 = prompt("Port [993]")?.parse().unwrap_or(993);
+    let ca_file = {
+        let answer = prompt("Extra trusted CA file (PEM, absolute path) [none]")?;
+        if answer.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(answer))
+        }
+    };
     let username = prompt("Username")?;
     let address = {
         let a = prompt(&format!("Email address [{username}]"))?;
@@ -1025,7 +1033,7 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         sync_interval_secs: 120,
         trash_retention_days: 30,
         notify: true,
-        ca_file: None,
+        ca_file,
     };
     config.accounts.retain(|a| a.name != account.name);
     config.accounts.push(account);
