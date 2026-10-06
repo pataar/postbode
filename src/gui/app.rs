@@ -227,15 +227,24 @@ impl App {
         };
         match event {
             Event::Activity { activity, .. } => {
-                let line = format!(
-                    "{}: {}",
-                    self.accounts[index].name,
-                    status::activity_text(&activity)
-                );
-                self.push_history(line);
+                // Progress lives on the status line; ticks would evict errors from the history.
+                if !matches!(
+                    activity,
+                    Activity::FetchingBodies { .. } | Activity::FetchingHeaders { .. }
+                ) {
+                    let line = format!(
+                        "{}: {}",
+                        self.accounts[index].name,
+                        status::activity_text(&activity)
+                    );
+                    self.push_history(line);
+                }
                 let account = &mut self.accounts[index];
+                // Offline follows the Error that caused it and must not wipe it.
+                if !matches!(activity, Activity::Offline { .. }) {
+                    account.error = None;
+                }
                 account.activity = Some(activity);
-                account.error = None;
             }
             Event::Error { message, .. } => self.note_error(Some(index), message),
             Event::NewMail { from, subject, .. } => {
@@ -273,6 +282,9 @@ impl App {
     }
 
     fn push_history(&mut self, text: String) {
+        if self.history.back().is_some_and(|last| last.text == text) {
+            return;
+        }
         self.history.push_back(HistoryLine {
             at: sync::now(),
             text,

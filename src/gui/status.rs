@@ -385,4 +385,87 @@ mod tests {
             "{config}"
         );
     }
+
+    #[test]
+    fn progress_ticks_stay_out_of_the_history() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, wires) = fx.harness();
+        let send = |activity| {
+            wires
+                .events
+                .send(Event::Activity {
+                    account: "work".into(),
+                    activity,
+                })
+                .unwrap()
+        };
+        for done in [500, 1_000, 1_500] {
+            send(Activity::FetchingHeaders {
+                folder: "INBOX".into(),
+                done,
+                total: 2_000,
+            });
+        }
+        send(Activity::Idle {
+            since: 1_790_000_000,
+        });
+        send(Activity::Idle {
+            since: 1_790_000_000,
+        });
+        wires
+            .events
+            .send(Event::Error {
+                account: "work".into(),
+                message: "boom".into(),
+            })
+            .unwrap();
+        harness.run();
+        let texts: Vec<&str> = harness
+            .state()
+            .history
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                format!("work: up to date · {}", clock(1_790_000_000)),
+                "work: boom".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn offline_keeps_the_error_on_the_line() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, wires) = fx.harness();
+        wires
+            .events
+            .send(Event::Error {
+                account: "work".into(),
+                message: "login failed".into(),
+            })
+            .unwrap();
+        let activity = Activity::Offline {
+            reason: "login failed".into(),
+            retry_at: 1_790_000_300,
+        };
+        wires
+            .events
+            .send(Event::Activity {
+                account: "work".into(),
+                activity,
+            })
+            .unwrap();
+        harness.run();
+        assert!(harness.query_by_label("work: login failed").is_some());
+    }
+
+    #[test]
+    fn theme_buttons_read_system_light_dark_from_left_to_right() {
+        let fx = Fixture::new(&["work"]);
+        let (harness, _wires) = fx.harness();
+        let left = |label| harness.get_by_label(label).rect().left();
+        assert!(left("System") < left("Light") && left("Light") < left("Dark"));
+    }
 }
