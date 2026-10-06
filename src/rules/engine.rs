@@ -92,17 +92,17 @@ fn field(value: &Option<String>) -> &str {
 
 fn matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
     if let Some(m) = &rule.from
-        && !m.is_match(field(&msg.from_addr))
+        && !m.is_address_match(field(&msg.from_addr))
     {
         return false;
     }
     if let Some(m) = &rule.to
-        && !m.is_match(field(&msg.to_addr))
+        && !m.is_address_match(field(&msg.to_addr))
     {
         return false;
     }
     if let Some(m) = &rule.cc
-        && !m.is_match(field(&msg.cc_addr))
+        && !m.is_address_match(field(&msg.cc_addr))
     {
         return false;
     }
@@ -290,6 +290,54 @@ actions = ["delete"]
         let mut c = ctx(&id, now);
         c.mode = Mode::ApplyExisting;
         assert_eq!(evaluate(&rules, &before_rule, &c).actions.len(), 1);
+    }
+
+    #[test]
+    fn equals_on_address_fields_compares_bare_addresses() {
+        let id = identity();
+        let from_rule = rules(
+            "[[rules]]\nname = \"gh\"\nmatch.from = { equals = \" NoReply@GitHub.com \" }\nactions = [\"flag\"]\n",
+            0,
+        );
+        let github = msg(
+            "GitHub <noreply@github.com>",
+            "pieter@example.com",
+            "PR",
+            100,
+            false,
+        );
+        assert_eq!(
+            evaluate(&from_rule, &github, &ctx(&id, 200)).actions.len(),
+            1
+        );
+        let to_rule = rules(
+            "[[rules]]\nname = \"second\"\nmatch.to = { equals = \"b@x\" }\nactions = [\"flag\"]\n",
+            0,
+        );
+        let two = msg("a@y", "A <a@x>, B <b@x>", "hi", 100, false);
+        assert_eq!(evaluate(&to_rule, &two, &ctx(&id, 200)).actions.len(), 1);
+        let subject_rule = rules(
+            "[[rules]]\nname = \"s\"\nmatch.subject = { equals = \"pr\" }\nactions = [\"flag\"]\n",
+            0,
+        );
+        assert_eq!(
+            evaluate(&subject_rule, &github, &ctx(&id, 200))
+                .actions
+                .len(),
+            1
+        );
+        let other = msg(
+            "noreply@github.com.evil",
+            "pieter@example.com",
+            "PR",
+            100,
+            false,
+        );
+        assert!(
+            evaluate(&from_rule, &other, &ctx(&id, 200))
+                .actions
+                .is_empty()
+        );
     }
 
     #[test]

@@ -148,6 +148,20 @@ impl Matcher {
         }
     }
 
+    /// For from, to and cc: `equals` also accepts any single bare address, so a display name or a second recipient
+    /// does not stop the match.
+    pub(crate) fn is_address_match(&self, field: &str) -> bool {
+        match self {
+            Matcher::Equals(wanted) => {
+                self.is_match(field)
+                    || crate::message::bare_addresses(field)
+                        .iter()
+                        .any(|address| address.eq_ignore_ascii_case(wanted))
+            }
+            _ => self.is_match(field),
+        }
+    }
+
     fn build(
         rule: &str,
         field: &str,
@@ -168,7 +182,7 @@ impl Matcher {
         }
         match (contains, equals, regex) {
             (Some(c), None, None) => Ok(Matcher::Contains(c.to_lowercase())),
-            (None, Some(e), None) => Ok(Matcher::Equals(e.clone())),
+            (None, Some(e), None) => Ok(Matcher::Equals(e.trim().to_string())),
             (None, None, Some(r)) => regex::Regex::new(r)
                 .map(Matcher::Regex)
                 .map_err(|e| invalid(format!("match.{field}: invalid regex: {e}"))),
