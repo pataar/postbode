@@ -1,5 +1,5 @@
 //! App state, the frame loop, and the only code that changes state: `handle` for events, `apply` for UI actions.
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
@@ -9,11 +9,12 @@ use crate::config::{self, Config, Theme};
 use crate::engine::{Engine, StartState};
 use crate::message::clean;
 use crate::paths::Paths;
+use crate::rules::Action;
 use crate::store::{Store, StoreError};
-use crate::sync::{self, Activity, Event};
+use crate::sync::{self, Activity, Command, Event};
 
 use super::folders;
-use super::list::{self, ListState, THREAD_LIMIT};
+use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
 use super::status;
 
 /// Lines kept for the history window.
@@ -30,6 +31,7 @@ pub(crate) struct Account {
     pub folders: Vec<FolderRow>,
     pub name: String,
     pub notify: bool,
+    pub pending: HashMap<RowKey, Optimistic>,
     pub queued: usize,
     pub state: StartState,
     pub store: Result<Store, String>,
@@ -87,18 +89,25 @@ pub(crate) enum View {
 /// What a view asks for; `App::apply` carries it out after the frame.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UiAction {
+    Act(Action),
     Collapse,
     Escape,
     Expand,
     ListViewport { offset: f32, height: f32 },
     MoveCursor(isize),
+    MoveFilter(String),
+    MoveTo(String),
     NextFocus,
+    OpenMovePicker,
     SelectRow(usize),
     SelectView(View),
     SetTheme(egui::ThemePreference),
     StepFolder(isize),
+    SyncNow,
+    ToggleFlag,
     ToggleHistory,
     ToggleMark,
+    ToggleRead,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,6 +126,7 @@ pub struct App {
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
     pub(crate) list: ListState,
+    pub(crate) move_picker: Option<String>,
     pub(crate) notifier: fn(&str, &str),
     pub(crate) paths: Paths,
     pub(crate) theme: egui::ThemePreference,
@@ -139,6 +149,7 @@ impl App {
                     folders: Vec::new(),
                     name: name.clone(),
                     notify: config.account(name).is_none_or(|a| a.notify),
+                    pending: HashMap::new(),
                     queued: 0,
                     state: state.clone(),
                     store,
@@ -156,6 +167,7 @@ impl App {
             history: VecDeque::new(),
             history_open: false,
             list: ListState::default(),
+            move_picker: None,
             notifier: crate::notify::new_mail,
             paths,
             theme: preference(config.ui.theme),
@@ -207,6 +219,7 @@ impl App {
                 .show(ui, |ui| actions.extend(list::show(self, ui)));
         }
         egui::CentralPanel::default().show(ui, |_ui| {});
+        actions.extend(list::show_move_picker(self, &ctx));
         for action in actions {
             self.apply(&ctx, action);
         }
@@ -253,7 +266,29 @@ impl App {
                 }
             }
             Event::Synced { .. } => self.refresh(index),
-            Event::ActionDone { .. } | Event::BodyReady { .. } | Event::Restored { .. } => {}
+            Event::ActionDone {
+                folder, results, ..
+            } => {
+                let account = &mut self.accounts[index];
+                account.queued = account.queued.saturating_sub(1);
+                for (uid, _) in &results {
+                    account.pending.remove(&(folder.clone(), *uid));
+                }
+                let failed: Vec<&String> = results
+                    .iter()
+                    .filter_map(|(_, result)| result.as_ref().err())
+                    .collect();
+                if let Some(first) = failed.first() {
+                    let line = format!(
+                        "{} of {} messages failed: {first}",
+                        failed.len(),
+                        results.len()
+                    );
+                    self.note_error(Some(index), line);
+                }
+                self.refresh(index);
+            }
+            Event::BodyReady { .. } | Event::Restored { .. } => {}
         }
     }
 
@@ -296,9 +331,12 @@ impl App {
 
     fn apply(&mut self, ctx: &egui::Context, action: UiAction) {
         match action {
+            UiAction::Act(action) => self.act(action),
             UiAction::Collapse => self.collapse(),
             UiAction::Escape => {
-                if self.history_open {
+                if self.move_picker.is_some() {
+                    self.move_picker = None;
+                } else if self.history_open {
                     self.history_open = false;
                 } else {
                     self.list.marked.clear();
@@ -313,11 +351,24 @@ impl App {
                 self.list.cursor = step(self.list.cursor, delta, self.list.rows.len());
                 self.list.follow_cursor = true;
             }
+            UiAction::MoveFilter(filter) => self.move_picker = Some(filter),
+            UiAction::MoveTo(folder) => {
+                self.move_picker = None;
+                self.act(Action::Move(folder));
+            }
             UiAction::NextFocus => {
                 self.focus = match self.focus {
                     Focus::Body => Focus::Folders,
                     Focus::Folders => Focus::List,
                     Focus::List => Focus::Body,
+                }
+            }
+            UiAction::OpenMovePicker => {
+                if let Some(account) = self.view_account()
+                    && !self.list.rows.is_empty()
+                    && self.ensure_can_act(account)
+                {
+                    self.move_picker = Some(String::new());
                 }
             }
             UiAction::SelectRow(index) => {
@@ -341,6 +392,16 @@ impl App {
                     self.select_view(view);
                 }
             }
+            UiAction::SyncNow => self.sync_all(),
+            UiAction::ToggleFlag => {
+                if let Some(flagged) = self.first_target().map(|row| row.flagged) {
+                    self.act(if flagged {
+                        Action::Unflag
+                    } else {
+                        Action::Flag
+                    });
+                }
+            }
             UiAction::ToggleHistory => {
                 self.history_open = !self.history_open;
                 self.error = None;
@@ -350,6 +411,15 @@ impl App {
                     && !self.list.marked.remove(&key)
                 {
                     self.list.marked.insert(key);
+                }
+            }
+            UiAction::ToggleRead => {
+                if let Some(unread) = self.first_target().map(|row| row.unread) {
+                    self.act(if unread {
+                        Action::MarkRead
+                    } else {
+                        Action::MarkUnread
+                    });
                 }
             }
         }
@@ -363,6 +433,9 @@ impl App {
             let none = egui::Modifiers::NONE;
             if input.consume_key(none, egui::Key::Escape) {
                 actions.push(UiAction::Escape);
+            }
+            if input.consume_key(egui::Modifiers::COMMAND, egui::Key::R) {
+                actions.push(UiAction::SyncNow);
             }
             if typing {
                 return;
@@ -396,6 +469,21 @@ impl App {
                     }
                     if typed(input, "x") {
                         actions.push(UiAction::ToggleMark);
+                    }
+                    if typed(input, "e") {
+                        actions.push(UiAction::Act(Action::Archive));
+                    }
+                    if typed(input, "#") || input.consume_key(none, egui::Key::Delete) {
+                        actions.push(UiAction::Act(Action::Trash));
+                    }
+                    if typed(input, "m") {
+                        actions.push(UiAction::OpenMovePicker);
+                    }
+                    if typed(input, "s") {
+                        actions.push(UiAction::ToggleFlag);
+                    }
+                    if typed(input, "u") {
+                        actions.push(UiAction::ToggleRead);
                     }
                 }
             }
@@ -462,11 +550,134 @@ impl App {
 
     /// Rows from the cached threads, without a store query; keeps the cursor in range.
     pub(crate) fn rebuild_rows(&mut self) {
-        let View::Folder { folder, .. } = &self.view else {
+        let View::Folder { account, folder } = &self.view else {
             return;
         };
-        self.list.rows = list::build_rows(folder, &self.list.threads, &self.list.expanded);
+        let mut rows = list::build_rows(folder, &self.list.threads, &self.list.expanded);
+        list::apply_pending(&mut rows, &self.accounts[*account].pending);
+        self.list.rows = rows;
         self.list.cursor = self.list.cursor.min(self.list.rows.len().saturating_sub(1));
+    }
+
+    /// Sends `action` for the marked rows, or the cursor row, and shows its effect before the server confirms it.
+    fn act(&mut self, action: Action) {
+        let Some(account) = self.view_account() else {
+            return;
+        };
+        let Some(optimistic) = Optimistic::of(&action) else {
+            return;
+        };
+        let targets = self.targets(account);
+        if targets.is_empty() || !self.ensure_can_act(account) {
+            return;
+        }
+        for (folder, uids) in targets {
+            self.send_apply(account, folder, uids, action.clone(), optimistic);
+        }
+        self.list.marked.clear();
+        self.rebuild_rows();
+    }
+
+    /// Sends one `Apply` and records its optimistic edit, which the matching `ActionDone` clears.
+    pub(crate) fn send_apply(
+        &mut self,
+        account: usize,
+        folder: String,
+        uids: Vec<u32>,
+        action: Action,
+        optimistic: Optimistic,
+    ) {
+        let keys: Vec<RowKey> = uids.iter().map(|&uid| (folder.clone(), uid)).collect();
+        if self.send(
+            account,
+            Command::Apply {
+                folder,
+                uids,
+                action,
+            },
+        ) {
+            let state = &mut self.accounts[account];
+            state.queued += 1;
+            state
+                .pending
+                .extend(keys.into_iter().map(|key| (key, optimistic)));
+        } else {
+            self.note_error(
+                Some(account),
+                "the sync thread has stopped; restart Postbode".into(),
+            );
+        }
+    }
+
+    pub(crate) fn send(&self, account: usize, command: Command) -> bool {
+        self.engine
+            .as_ref()
+            .is_some_and(|engine| engine.send(&self.accounts[account].name, command))
+    }
+
+    /// False, with the reason on the status line, when another process owns the account's connection.
+    pub(crate) fn ensure_can_act(&mut self, account: usize) -> bool {
+        if self.accounts[account].state == StartState::Running {
+            return true;
+        }
+        self.note_error(
+            Some(account),
+            "another Postbode process syncs this account; actions are off here".into(),
+        );
+        false
+    }
+
+    pub(crate) fn sync_all(&mut self) {
+        for index in 0..self.accounts.len() {
+            if self.accounts[index].state == StartState::Running {
+                self.send(index, Command::SyncNow);
+            }
+        }
+    }
+
+    fn first_target(&self) -> Option<&Row> {
+        if self.list.marked.is_empty() {
+            self.list.rows.get(self.list.cursor)
+        } else {
+            self.list
+                .rows
+                .iter()
+                .find(|row| self.list.marked.contains(&row.key()))
+        }
+    }
+
+    /// The uids each action covers, per folder: the marked rows or the cursor row, a thread row standing for every
+    /// message of its thread in that folder.
+    fn targets(&self, account: usize) -> Vec<(String, Vec<u32>)> {
+        let rows: Vec<&Row> = if self.list.marked.is_empty() {
+            self.list.rows.get(self.list.cursor).into_iter().collect()
+        } else {
+            self.list
+                .rows
+                .iter()
+                .filter(|row| self.list.marked.contains(&row.key()))
+                .collect()
+        };
+        let mut by_folder: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+        for row in rows {
+            let uids = by_folder.entry(row.folder.clone()).or_default();
+            let members = match (&row.thread_id, &self.accounts[account].store) {
+                (Some(thread), Ok(store)) if row.count > 1 => {
+                    store.thread_members(&row.folder, thread).ok()
+                }
+                _ => None,
+            };
+            match members {
+                Some(members) => uids.extend(members.iter().map(|member| member.uid)),
+                None => {
+                    uids.insert(row.uid);
+                }
+            }
+        }
+        by_folder
+            .into_iter()
+            .map(|(folder, uids)| (folder, uids.into_iter().collect()))
+            .collect()
     }
 
     fn expand(&mut self) {
@@ -586,8 +797,13 @@ pub(crate) fn theme_of(preference: egui::ThemePreference) -> Theme {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
-    use crate::gui::test_support::Fixture;
+    use crate::engine::StartState;
+    use crate::gui::test_support::{Fixture, message};
+    use crate::rules::Action;
+    use crate::sync::{Command, Event};
 
     #[test]
     fn theme_starts_from_config() {
@@ -614,5 +830,200 @@ mod tests {
             Duration::from_millis(100),
         );
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    fn inbox(fx: &Fixture, uids: &[u32]) {
+        for &uid in uids {
+            fx.add("work", message("INBOX", uid, &format!("subject {uid}")));
+        }
+    }
+
+    fn press(harness: &mut egui_kittest::Harness<'_, App>, text: &str) {
+        harness.event(egui::Event::Text(text.into()));
+        harness.run();
+    }
+
+    fn apply(uids: &[u32], action: Action) -> (String, Command) {
+        let command = Command::Apply {
+            folder: "INBOX".into(),
+            uids: uids.to_vec(),
+            action,
+        };
+        ("work".into(), command)
+    }
+
+    fn uids(harness: &egui_kittest::Harness<'_, App>) -> Vec<u32> {
+        harness.state().list.rows.iter().map(|r| r.uid).collect()
+    }
+
+    #[test]
+    fn archive_sends_the_cursor_row_hides_it_and_selects_the_next() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "e");
+        assert_eq!(wires.sent(), [apply(&[3], Action::Archive)]);
+        assert_eq!(uids(&harness), [2, 1]);
+        assert_eq!(
+            harness.state().list.rows[harness.state().list.cursor].uid,
+            2
+        );
+        assert!(harness.query_by_label_contains("· 1 queued").is_some());
+    }
+
+    #[test]
+    fn archive_on_a_thread_row_sends_every_member() {
+        let fx = Fixture::new(&["work"]);
+        for uid in [4, 5] {
+            let mut m = message("INBOX", uid, "thread");
+            m.thread_id = "<t@example.com>".into();
+            fx.add("work", m);
+        }
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "e");
+        assert_eq!(wires.sent(), [apply(&[4, 5], Action::Archive)]);
+    }
+
+    #[test]
+    fn marked_rows_are_deleted_together() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut harness, wires) = fx.harness();
+        for key in ["x", "j", "x", "#"] {
+            press(&mut harness, key);
+        }
+        assert_eq!(wires.sent(), [apply(&[2, 3], Action::Trash)]);
+        assert_eq!(uids(&harness), [1]);
+        assert!(harness.state().list.marked.is_empty());
+    }
+
+    #[test]
+    fn a_failed_action_puts_the_row_back_and_says_why() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "e");
+        let results = vec![(3, Err("NO [SERVERBUG] try later".to_string()))];
+        wires
+            .events
+            .send(Event::ActionDone {
+                account: "work".into(),
+                folder: "INBOX".into(),
+                results,
+            })
+            .unwrap();
+        harness.run();
+        assert_eq!(uids(&harness), [3, 2, 1]);
+        assert!(
+            harness
+                .query_by_label("work: 1 of 1 messages failed: NO [SERVERBUG] try later")
+                .is_some()
+        );
+        assert_eq!(harness.state().accounts[0].queued, 0);
+    }
+
+    #[test]
+    fn a_sync_before_the_action_finishes_keeps_the_row_hidden() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "e");
+        wires
+            .events
+            .send(Event::Synced {
+                account: "work".into(),
+                new_messages: 0,
+                actions: 0,
+            })
+            .unwrap();
+        harness.run();
+        assert_eq!(uids(&harness), [2, 1]);
+        fx.store("work").remove_message("INBOX", 3).unwrap();
+        let results = vec![(3, Ok(1))];
+        wires
+            .events
+            .send(Event::ActionDone {
+                account: "work".into(),
+                folder: "INBOX".into(),
+                results,
+            })
+            .unwrap();
+        harness.run();
+        assert_eq!(uids(&harness), [2, 1]);
+    }
+
+    #[test]
+    fn acting_on_an_empty_folder_sends_nothing() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "e");
+        assert_eq!(wires.sent().len(), 1);
+        for key in ["e", "#", "u", "s", "x", "j"] {
+            press(&mut harness, key);
+        }
+        assert!(wires.sent().is_empty());
+        assert_eq!(harness.state().list.cursor, 0);
+    }
+
+    #[test]
+    fn a_locked_account_ignores_action_keys_and_says_why() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().accounts[0].state = StartState::Locked { pid: Some(42) };
+        press(&mut harness, "e");
+        assert!(wires.sent().is_empty());
+        assert_eq!(uids(&harness), [1]);
+        assert!(harness.query_by_label_contains("actions are off").is_some());
+    }
+
+    #[test]
+    fn u_marks_read_and_s_flags() {
+        let fx = Fixture::new(&["work"]);
+        let mut unread = message("INBOX", 1, "hello");
+        unread.flags = String::new();
+        fx.add("work", unread);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "u");
+        assert!(!harness.state().list.rows[0].unread);
+        press(&mut harness, "s");
+        assert_eq!(
+            wires.sent(),
+            [apply(&[1], Action::MarkRead), apply(&[1], Action::Flag)]
+        );
+        assert!(harness.state().list.rows[0].flagged);
+    }
+
+    #[test]
+    fn m_filters_the_folders_and_enter_moves() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.folder("work", "Receipts", None);
+        inbox(&fx, &[1]);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "m");
+        assert!(harness.state().move_picker.is_some());
+        press(&mut harness, "rec");
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        assert_eq!(wires.sent(), [apply(&[1], Action::Move("Receipts".into()))]);
+        assert!(harness.state().move_picker.is_none());
+    }
+
+    #[test]
+    fn command_r_syncs_every_running_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        let (mut harness, wires) = fx.harness();
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::R);
+        harness.run();
+        let sent = wires.sent();
+        assert_eq!(
+            sent,
+            [
+                ("home".to_string(), Command::SyncNow),
+                ("work".to_string(), Command::SyncNow)
+            ]
+        );
     }
 }

@@ -5,9 +5,10 @@ use chrono::{DateTime, Local, TimeZone};
 use eframe::egui;
 
 use crate::message::clean;
+use crate::rules::Action;
 use crate::store::{MessageSummary, ThreadSummary};
 
-use super::app::{App, UiAction};
+use super::app::{App, UiAction, View};
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
 pub(crate) const THREAD_LIMIT: u32 = 10_000;
@@ -85,6 +86,41 @@ pub(crate) fn build_rows(
         }
     }
     rows
+}
+
+/// What a sent action will do to a row, shown until its `ActionDone` arrives.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Optimistic {
+    Flagged(bool),
+    Hidden,
+    Seen(bool),
+}
+
+impl Optimistic {
+    pub fn of(action: &Action) -> Option<Optimistic> {
+        match action {
+            Action::Archive | Action::Delete | Action::Move(_) | Action::Trash => {
+                Some(Optimistic::Hidden)
+            }
+            Action::Flag => Some(Optimistic::Flagged(true)),
+            Action::MarkRead => Some(Optimistic::Seen(true)),
+            Action::MarkUnread => Some(Optimistic::Seen(false)),
+            Action::Unflag => Some(Optimistic::Flagged(false)),
+            Action::Notify | Action::Silent => None,
+        }
+    }
+}
+
+/// Rows of sent actions as they will be: moved rows hidden, read and flag changes shown.
+pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &HashMap<RowKey, Optimistic>) {
+    rows.retain(|row| pending.get(&row.key()) != Some(&Optimistic::Hidden));
+    for row in rows {
+        match pending.get(&row.key()) {
+            Some(Optimistic::Flagged(flagged)) => row.flagged = *flagged,
+            Some(Optimistic::Seen(seen)) => row.unread = !seen,
+            Some(Optimistic::Hidden) | None => {}
+        }
+    }
 }
 
 /// "Alice <alice@x>, bob@y" is "Alice"; without a name, the first address.
@@ -194,6 +230,43 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         offset: output.state.offset.y,
         height: output.inner_rect.height(),
     });
+    actions
+}
+
+/// The `m` popup: type to filter the account's folders, Enter or a click moves.
+pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
+    let mut actions = Vec::new();
+    let (Some(filter), View::Folder { account, folder }) = (&app.move_picker, &app.view) else {
+        return actions;
+    };
+    let needle = filter.to_lowercase();
+    let names: Vec<&str> = app.accounts[*account]
+        .folders
+        .iter()
+        .map(|f| f.name.as_str())
+        .filter(|name| name != folder && name.to_lowercase().contains(&needle))
+        .collect();
+    egui::Window::new("Move to")
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            let mut text = filter.clone();
+            let response = ui.add(egui::TextEdit::singleline(&mut text).hint_text("Folder"));
+            response.request_focus();
+            if response.changed() {
+                actions.push(UiAction::MoveFilter(text));
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                && let Some(first) = names.first()
+            {
+                actions.push(UiAction::MoveTo(first.to_string()));
+            }
+            for name in &names {
+                if ui.selectable_label(false, clean(name, false)).clicked() {
+                    actions.push(UiAction::MoveTo(name.to_string()));
+                }
+            }
+        });
     actions
 }
 
@@ -471,5 +544,27 @@ mod tests {
         harness.run();
         assert_eq!(harness.state().list.cursor, 1);
         assert_eq!(harness.ctx.memory(|m| m.focused()), None);
+    }
+
+    #[test]
+    fn apply_pending_hides_and_overrides_rows() {
+        let thread = |id: &str, uid| ThreadSummary {
+            thread_id: id.into(),
+            latest: summary(uid, ""),
+            count: 1,
+            unread: true,
+            flagged: false,
+        };
+        let threads = vec![thread("a", 1), thread("b", 2), thread("c", 3)];
+        let mut rows = build_rows("INBOX", &threads, &HashMap::new());
+        let pending = HashMap::from([
+            (("INBOX".to_string(), 1), Optimistic::Hidden),
+            (("INBOX".to_string(), 2), Optimistic::Seen(true)),
+            (("INBOX".to_string(), 3), Optimistic::Flagged(true)),
+        ]);
+        apply_pending(&mut rows, &pending);
+        let shape: Vec<(u32, bool, bool)> =
+            rows.iter().map(|r| (r.uid, r.unread, r.flagged)).collect();
+        assert_eq!(shape, [(2, false, false), (3, true, true)]);
     }
 }

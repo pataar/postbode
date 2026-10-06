@@ -1,5 +1,4 @@
 //! A temp Postbode home with stores and a detached engine, for the GUI tests.
-#![allow(dead_code)] // shared fixture: each GUI test module uses only part of it
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use eframe::egui;
