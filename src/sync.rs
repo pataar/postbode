@@ -2146,6 +2146,44 @@ mod tests {
     }
 
     #[test]
+    fn a_command_sent_while_offline_runs_after_reconnecting() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        paths.ensure_account("work").unwrap();
+        sync_all(&mut ops, &Store::open(&paths.mail_db("work")).unwrap()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_when_idle_empty = Some(shutdown.clone());
+        let mut connects = 0;
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || {
+                connects += 1;
+                if connects == 1 {
+                    return Err(SyncError::Mail(MailError::Connect("refused".into())));
+                }
+                Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>)
+            },
+            |_| commands_tx.send(mark_read(1)).unwrap(),
+        );
+        assert_eq!(connects, 2);
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(
+                |e| matches!(e, Event::ActionDone { results, .. } if results == &[(1, Ok(1))])
+            ),
+            "{events:?}"
+        );
+    }
+
+    #[test]
     fn sync_now_during_a_pass_runs_another_full_pass() {
         let mut ops = ops_with_inbox();
         let dir = tempfile::tempdir().unwrap();
