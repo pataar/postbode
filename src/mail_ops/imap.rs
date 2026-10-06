@@ -49,7 +49,7 @@ impl ImapOps {
             .enable_all()
             .build()
             .map_err(|e| MailError::Io(e.to_string()))?;
-        let (session, has_idle, has_move, has_uidplus) = rt.block_on(async {
+        let opened = rt.block_on(async {
             tokio::time::timeout(limit, open_session(account, secret))
                 .await
                 .map_err(|_| {
@@ -58,7 +58,15 @@ impl ImapOps {
                         account.host, account.port
                     ))
                 })?
-        })?;
+        });
+        let (session, has_idle, has_move, has_uidplus) = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                // Dropping the runtime would wait for a blocking DNS lookup past the limit.
+                rt.shutdown_background();
+                return Err(error);
+            }
+        };
         Ok(ImapOps {
             rt,
             session: Some(session),
