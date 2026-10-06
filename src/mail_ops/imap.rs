@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_imap::Session;
 use async_imap::extensions::idle::IdleResponse;
@@ -21,6 +21,7 @@ type ImapSession = Session<TlsStream<TcpStream>>;
 pub struct ImapOps {
     rt: Runtime,
     session: Option<ImapSession>,
+    has_idle: bool,
     has_move: bool,
     has_uidplus: bool,
 }
@@ -31,7 +32,7 @@ impl ImapOps {
             .enable_all()
             .build()
             .map_err(|e| MailError::Io(e.to_string()))?;
-        let (session, has_move, has_uidplus) = rt.block_on(async {
+        let (session, has_idle, has_move, has_uidplus) = rt.block_on(async {
             let tcp = TcpStream::connect((account.host.as_str(), account.port))
                 .await
                 .map_err(|e| MailError::Connect(e.to_string()))?;
@@ -53,13 +54,15 @@ impl ImapOps {
                 .await
                 .map_err(|(e, _)| MailError::Auth(e.to_string()))?;
             let caps = session.capabilities().await.map_err(proto)?;
+            let has_idle = caps.has_str("IDLE");
             let has_move = caps.has_str("MOVE");
             let has_uidplus = caps.has_str("UIDPLUS");
-            Ok::<_, MailError>((session, has_move, has_uidplus))
+            Ok::<_, MailError>((session, has_idle, has_move, has_uidplus))
         })?;
         Ok(ImapOps {
             rt,
             session: Some(session),
+            has_idle,
             has_move,
             has_uidplus,
         })
@@ -279,6 +282,9 @@ impl MailOps for ImapOps {
         if interrupt.load(Ordering::Relaxed) {
             return Ok(IdleOutcome::Interrupted);
         }
+        if !self.has_idle {
+            return Ok(sleep_until(timeout, interrupt));
+        }
         let timeout = timeout.min(Duration::from_secs(29 * 60));
         let session = self
             .session
@@ -322,6 +328,21 @@ impl MailOps for ImapOps {
     }
 }
 
+/// The timer loop for servers without IDLE: sleeps in short ticks so shutdown stays responsive.
+fn sleep_until(timeout: Duration, interrupt: &AtomicBool) -> IdleOutcome {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if interrupt.load(Ordering::Relaxed) {
+            return IdleOutcome::Interrupted;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return IdleOutcome::Timeout;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(500)));
+    }
+}
+
 fn store_flags(ops: &mut ImapOps, uid: u32, sign: char, flags: &[&str]) -> MailResult<()> {
     let (rt, session) = ops.parts()?;
     rt.block_on(async {
@@ -341,6 +362,20 @@ fn store_flags(ops: &mut ImapOps, uid: u32, sign: char, flags: &[&str]) -> MailR
 mod tests {
     use super::*;
     use crate::config::PasswordSource;
+
+    #[test]
+    fn sleep_until_times_out_or_stops_on_interrupt() {
+        let stop = AtomicBool::new(false);
+        assert_eq!(
+            sleep_until(Duration::from_millis(10), &stop),
+            IdleOutcome::Timeout
+        );
+        stop.store(true, Ordering::Relaxed);
+        assert_eq!(
+            sleep_until(Duration::from_secs(60), &stop),
+            IdleOutcome::Interrupted
+        );
+    }
 
     /// POSTBODE_TEST_IMAP_HOST, _USER, _PASS must be set. Lists folders and selects INBOX.
     #[test]

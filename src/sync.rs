@@ -399,16 +399,16 @@ pub fn run_loop_with(
 ) {
     let mut backoff = Duration::from_secs(5);
     while !shutdown.load(Ordering::Relaxed) {
-        let mut completed_pass = false;
+        let mut completed_cycle = false;
         let result = run_session(
             &account,
             &paths,
             &events,
             &shutdown,
             &mut connect,
-            &mut completed_pass,
+            &mut completed_cycle,
         );
-        if completed_pass {
+        if completed_cycle {
             backoff = Duration::from_secs(5);
         }
         match result {
@@ -431,7 +431,7 @@ fn run_session(
     events: &Sender<Event>,
     shutdown: &AtomicBool,
     connect: &mut impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
-    completed_pass: &mut bool,
+    completed_cycle: &mut bool,
 ) -> Result<(), SyncError> {
     let mut ops = connect()?;
     paths.ensure_account(&account.name)?;
@@ -478,7 +478,6 @@ fn run_session(
             new_messages: new.len(),
             actions: run.actions,
         });
-        *completed_pass = true;
         if now() - last_purge > 3600 {
             match trash.purge(account.trash_retention_days as i64 * 86_400, now()) {
                 Ok(0) => {}
@@ -488,7 +487,10 @@ fn run_session(
             last_purge = now();
         }
         ops.select("INBOX")?;
-        full = match ops.idle(interval, shutdown)? {
+        let outcome = ops.idle(interval, shutdown)?;
+        // A pass plus a wait means the connection is healthy; a pass alone does not, e.g. when IDLE always fails.
+        *completed_cycle = true;
+        full = match outcome {
             IdleOutcome::NewMail => false,
             IdleOutcome::Timeout => true,
             IdleOutcome::Interrupted => return Ok(()),
@@ -1150,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn backoff_grows_caps_and_resets() {
+    fn backoff_grows_caps_and_resets_after_a_full_cycle() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let (tx, _rx) = std::sync::mpsc::channel();
@@ -1165,20 +1167,27 @@ mod tests {
             shutdown,
             || {
                 connects += 1;
-                if connects <= 8 {
-                    return Err(SyncError::Mail(MailError::Connect("refused".into())));
+                match connects {
+                    1..=8 => Err(SyncError::Mail(MailError::Connect("refused".into()))),
+                    // No folders: the pass completes, then selecting INBOX before IDLE fails.
+                    9 => Ok(Box::new(RecordingOps::new()) as Box<dyn MailOps>),
+                    // Survives a pass and an IDLE wake, then the INBOX fetch fails.
+                    _ => {
+                        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+                        ops.fail_fetch_new = true;
+                        ops.idle_outcomes.push_back(IdleOutcome::NewMail);
+                        Ok(Box::new(ops) as Box<dyn MailOps>)
+                    }
                 }
-                // No folders: the pass completes, then selecting INBOX before IDLE fails.
-                Ok(Box::new(RecordingOps::new()) as Box<dyn MailOps>)
             },
             |delay| {
                 sleeps.push(delay.as_secs());
-                if sleeps.len() == 9 {
+                if sleeps.len() == 10 {
                     stop.store(true, Ordering::Relaxed);
                 }
             },
         );
-        assert_eq!(connects, 9);
-        assert_eq!(sleeps, vec![5, 10, 20, 40, 80, 160, 300, 300, 5]);
+        assert_eq!(connects, 10);
+        assert_eq!(sleeps, vec![5, 10, 20, 40, 80, 160, 300, 300, 300, 5]);
     }
 }
