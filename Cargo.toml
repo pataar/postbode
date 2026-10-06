@@ -5,9 +5,9 @@ edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 description = "A fast, simple mail client with automatic mailbox rules"
-documentation = "https://pataar.github.io/postbode/"
+documentation = "https://postbode.pataar.nl/"
 repository = "https://github.com/pataar/postbode"
-homepage = "https://pataar.github.io/postbode/"
+homepage = "https://postbode.pataar.nl/"
 keywords = ["cli", "email", "imap", "mail", "rules"]
 categories = ["command-line-utilities", "email"]
 # Only what the build needs; keeps the test CA key, design docs and CI config out of the published crate.
