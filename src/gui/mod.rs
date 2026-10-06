@@ -2,6 +2,7 @@
 //! this process.
 mod app;
 mod folders;
+mod list;
 #[cfg(test)]
 mod test_support;
 
