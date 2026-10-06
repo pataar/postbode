@@ -60,7 +60,7 @@ impl Paths {
     }
 }
 
-fn create_private_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::fs::DirBuilder;
@@ -84,8 +84,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("path has no parent"))?;
     create_private_dir(dir)?;
     let tmp = dir.join(format!(
-        ".{}.tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
+        ".{}.{}.tmp",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
+        std::process::id()
     ));
     let mut file = fs::File::create(&tmp)?;
     #[cfg(unix)]

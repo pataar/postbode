@@ -1,10 +1,11 @@
 //! The only code that writes rules.toml. Each edit is validated as a whole file before it replaces the old one.
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Value};
 
-use crate::paths::write_atomic;
+use crate::paths::{create_private_dir, write_atomic};
 use crate::rules::{Rule, RuleFile, RulesError, compile, parse};
 
 /// Appends `rule` disabled and attributed to `by`, so it only acts once a human approves it.
@@ -13,6 +14,7 @@ pub fn propose(path: &Path, mut rule: Rule, by: &str) -> Result<(), RulesError> 
     rule.proposed_by = Some(by.to_string());
     let snippet = toml::to_string(&RuleFile { rules: vec![rule] })
         .map_err(|e| RulesError::Parse(e.to_string()))?;
+    let _lock = lock(path)?;
     let mut text = read(path)?;
     if !text.is_empty() {
         if !text.ends_with('\n') {
@@ -81,6 +83,7 @@ fn edit(
     name: &str,
     change: impl FnOnce(&mut ArrayOfTables, usize) -> Result<Option<String>, RulesError>,
 ) -> Result<(), RulesError> {
+    let _lock = lock(path)?;
     let mut doc: DocumentMut = read(path)?
         .parse()
         .map_err(|e: toml_edit::TomlError| RulesError::Parse(e.to_string()))?;
@@ -97,6 +100,21 @@ fn edit(
         doc.set_trailing(trailing);
     }
     save(path, &doc.to_string())
+}
+
+/// An exclusive lock on `.rules.lock` beside rules.toml, held until dropped, so concurrent edits cannot lose each other's.
+fn lock(path: &Path) -> Result<File, RulesError> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::other("path has no parent"))?;
+    create_private_dir(dir)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(".rules.lock"))?;
+    file.lock()?;
+    Ok(file)
 }
 
 fn save(path: &Path, text: &str) -> Result<(), RulesError> {
@@ -228,6 +246,24 @@ mod tests {
             "{text}"
         );
         assert_eq!(parse(&text).unwrap().rules.len(), 2);
+    }
+
+    #[test]
+    fn concurrent_proposals_are_all_kept() {
+        let (_dir, path) = rules_file(HUMAN);
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let path = &path;
+                scope.spawn(move || propose(path, proposal(&format!("p{i}")), "cli").unwrap());
+            }
+        });
+        let names: std::collections::HashSet<String> = load(&path)
+            .unwrap()
+            .rules
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        assert_eq!(names.len(), 9, "{names:?}");
     }
 
     #[test]
