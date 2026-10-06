@@ -19,6 +19,10 @@ const ROW_HEIGHT: f32 = 22.0;
 
 pub(crate) type RowKey = (String, u32);
 
+pub(crate) fn search_id() -> egui::Id {
+    egui::Id::new("search")
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Row {
     pub count: u32,
@@ -289,6 +293,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         let response = theme::text_field(ui, |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut text)
+                    .id(search_id())
                     .hint_text("Search this account")
                     .desired_width(f32::INFINITY),
             )

@@ -20,7 +20,7 @@
 | Ctrl+R (Cmd+R on macOS) | sync every account now |
 | `?` | show these keys |
 
-Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message is marked read after it has been on screen for a second.
+Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message you open, with the keys or a click, is marked read after its text has been on screen for a second; the one a folder opens on stays unread.
 
 ## Status bar
 

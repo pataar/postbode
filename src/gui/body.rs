@@ -180,6 +180,7 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     use super::*;
+    use crate::gui::app::View;
     use crate::gui::test_support::{Fixture, message};
     use crate::rules::Action;
     use crate::sync::{Command, Event};
@@ -532,6 +533,23 @@ mod tests {
         harness.step();
     }
 
+    fn read(uid: u32) -> (String, Command) {
+        let command = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![uid],
+            action: Action::MarkRead,
+        };
+        ("work".to_string(), command)
+    }
+
+    fn fetch(uid: u32) -> (String, Command) {
+        let command = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid,
+        };
+        ("work".to_string(), command)
+    }
+
     #[test]
     fn a_sync_that_adds_newer_mail_keeps_the_cursor_on_its_message() {
         let fx = Fixture::new(&["work"]);
@@ -552,5 +570,99 @@ mod tests {
         let list = &harness.state().list;
         assert_eq!(list.rows.len(), 2);
         assert_eq!(list.rows[list.cursor].uid, 1);
+    }
+
+    #[test]
+    fn the_message_shown_at_startup_is_not_marked_read() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread(1, "new"));
+        let (mut harness, wires) = fx.harness();
+        at(&mut harness, 10.0);
+        at(&mut harness, 12.0);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn the_message_shown_after_switching_folders_is_not_marked_read() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        let mut archived = message("Archive", 7, "archived");
+        archived.flags = String::new();
+        fx.add("work", archived);
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().select_view(View::Folder {
+            account: 0,
+            folder: "Archive".into(),
+        });
+        at(&mut harness, 10.0);
+        at(&mut harness, 12.0);
+        assert!(wires.sent().is_empty());
+    }
+
+    #[test]
+    fn an_opened_message_is_marked_read_a_second_after_its_body_arrives() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 2, "old"));
+        let mut later = unread(1, "later");
+        later.body_text = None;
+        fx.add("work", later);
+        let (mut harness, wires) = fx.harness();
+        harness.input_mut().time = Some(10.0);
+        harness.event(egui::Event::Text("j".into()));
+        harness.step();
+        at(&mut harness, 12.0);
+        assert_eq!(wires.sent(), [fetch(1)]);
+        fx.store("work")
+            .set_raw("INBOX", 1, b"Subject: later\r\n\r\nFetched\r\n", "Fetched")
+            .unwrap();
+        wires
+            .events
+            .send(Event::BodyReady {
+                account: "work".into(),
+                folder: "INBOX".into(),
+                uid: 1,
+            })
+            .unwrap();
+        at(&mut harness, 12.5);
+        assert!(wires.sent().is_empty());
+        at(&mut harness, 13.6);
+        assert_eq!(wires.sent(), [read(1)]);
+    }
+
+    #[test]
+    fn the_row_after_an_archive_is_marked_read_after_a_second() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread(1, "next"));
+        fx.add("work", message("INBOX", 2, "done"));
+        let (mut harness, wires) = fx.harness();
+        harness.input_mut().time = Some(10.0);
+        harness.event(egui::Event::Text("e".into()));
+        harness.step();
+        at(&mut harness, 12.0);
+        let archive = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![2],
+            action: Action::Archive,
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), archive), read(1)]);
+    }
+
+    #[test]
+    fn a_search_hit_is_not_opened_while_the_query_is_typed() {
+        let fx = Fixture::new(&["work"]);
+        let mut hit = unread(1, "invoice");
+        hit.body_text = None;
+        fx.add("work", hit);
+        fx.add("work", message("INBOX", 2, "lunch"));
+        let (mut harness, wires) = fx.harness();
+        harness.input_mut().time = Some(10.0);
+        harness.event(egui::Event::Text("/".into()));
+        harness.step();
+        harness.event(egui::Event::Text("invoice".into()));
+        harness.step();
+        at(&mut harness, 12.0);
+        assert_eq!(harness.state().list.rows.len(), 1);
+        assert!(wires.sent().is_empty());
+        assert!(harness.state().body.is_none());
     }
 }

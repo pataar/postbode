@@ -32,6 +32,9 @@ const READ_DELAY: f64 = 1.0;
 
 pub(crate) struct BodyState {
     pub account: usize,
+    /// Set when the user chose this message, not when a view change or reload put it on screen; only then does it
+    /// become read.
+    pub armed: bool,
     pub attachments: Vec<Attachment>,
     pub key: RowKey,
     pub message: Option<Message>,
@@ -169,6 +172,8 @@ pub struct App {
     pub(crate) move_picker: Option<String>,
     pub(crate) notifier: fn(&str, &str),
     pub(crate) paths: Paths,
+    /// Set by the user's own navigation; the next body `sync_body` loads is armed.
+    pub(crate) pending_arm: bool,
     pub(crate) requested: HashSet<(usize, RowKey)>,
     pub(crate) rules: RulesState,
     pub(crate) rules_mtime: Option<SystemTime>,
@@ -226,6 +231,7 @@ impl App {
             move_picker: None,
             notifier: crate::notify::new_mail,
             paths,
+            pending_arm: false,
             requested: HashSet::new(),
             rules,
             rules_mtime,
@@ -270,7 +276,9 @@ impl App {
                 }
             });
         }
-        self.sync_body(now);
+        let typing_search =
+            self.focus_search || ctx.memory(|memory| memory.has_focus(list::search_id()));
+        self.sync_body(now, typing_search);
         self.mark_read_after_delay(now, &ctx);
         let mut actions = Vec::new();
         if self.config_changed {
@@ -463,6 +471,7 @@ impl App {
             UiAction::MoveCursor(delta) => {
                 self.list.cursor = step(self.list.cursor, delta, self.list.rows.len());
                 self.list.follow_cursor = true;
+                self.pending_arm = true;
             }
             UiAction::MoveFilter(filter) => self.move_picker = Some(filter),
             UiAction::MoveTo(folder) => {
@@ -507,6 +516,7 @@ impl App {
             UiAction::SelectRow(index) => {
                 self.list.cursor = index;
                 self.focus = Focus::List;
+                self.pending_arm = true;
             }
             UiAction::SelectView(view) => self.select_view(view),
             UiAction::SetRuleEnabled(name, enabled) => {
@@ -726,15 +736,20 @@ impl App {
         self.rebuild_rows();
     }
 
-    /// Loads the cursor's message when the cursor moved to another one.
-    fn sync_body(&mut self, now: f64) {
+    /// Loads the cursor's message when the cursor moved to another one; nothing while a search query is typed.
+    fn sync_body(&mut self, now: f64, typing_search: bool) {
+        if typing_search {
+            self.body = None;
+            return;
+        }
+        let armed = std::mem::take(&mut self.pending_arm);
         let current = self
             .view_account()
             .zip(self.list.rows.get(self.list.cursor).map(Row::key));
         if current == self.body.as_ref().map(|b| (b.account, b.key.clone())) {
             return;
         }
-        self.body = current.map(|(account, key)| self.load_body(account, key, now));
+        self.body = current.map(|(account, key)| self.load_body(account, key, now, armed));
     }
 
     /// The message and attachments as stored now.
@@ -770,7 +785,7 @@ impl App {
     }
 
     /// The stored message and its attachments; asks the sync thread for a missing body once per message.
-    fn load_body(&mut self, account: usize, key: RowKey, now: f64) -> BodyState {
+    fn load_body(&mut self, account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
         let (stored, attachments) = self.read_stored(account, &key);
         let missing = stored.as_ref().is_some_and(|m| m.body_text.is_none());
         if missing
@@ -787,6 +802,7 @@ impl App {
         }
         BodyState {
             account,
+            armed,
             attachments,
             key,
             message: stored,
@@ -796,9 +812,17 @@ impl App {
         }
     }
 
-    /// Marks the shown message read once it has been on screen for `READ_DELAY`.
+    /// Marks the shown message read once the user opened it and its text has been on screen for `READ_DELAY`.
     fn mark_read_after_delay(&mut self, now: f64, ctx: &egui::Context) {
-        let Some(body) = &self.body else { return };
+        let Some(body) = &mut self.body else { return };
+        if !body.armed {
+            return;
+        }
+        // The delay counts from the first frame that shows the text, not from "Loading…".
+        if body.message.as_ref().is_some_and(|m| m.body_text.is_none()) {
+            body.shown_at = now;
+            return;
+        }
         let account = &self.accounts[body.account];
         let last_edit = account.pending.get(&body.key).and_then(|edits| {
             edits.iter().rev().find_map(|edit| match edit {
@@ -893,6 +917,7 @@ impl App {
         {
             body.read_sent = true;
         }
+        self.pending_arm |= optimistic == Optimistic::Hidden;
         for (folder, uids) in targets {
             self.send_apply(account, folder, uids, action.clone(), optimistic);
         }
