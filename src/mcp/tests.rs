@@ -399,23 +399,56 @@ async fn rules_write_approves_rejects_and_toggles() {
     );
 }
 
+fn scoped_rule(name: &str, account: &str) -> String {
+    format!(
+        "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n"
+    )
+}
+
 #[tokio::test]
 async fn rules_list_hides_rules_of_hidden_accounts_and_approve_restarts_every_clock() {
     let fx = fixture(&["home", "work"]);
-    let scoped = |name: &str, account: &str| {
-        format!(
-            "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n"
-        )
-    };
     std::fs::write(
         fx.paths.rules_file(),
-        scoped("for-home", "home") + &scoped("for-work", "work"),
+        scoped_rule("for-home", "home") + &scoped_rule("for-work", "work"),
     )
     .unwrap();
     let client = connect(&fx, "read,rules:write", &["work"]).await;
     let listed = rows(&call(&client, "rules_list", json!({})).await);
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0]["name"], "for-work");
-    let approved = call(&client, "rules_approve", json!({ "name": "for-work" })).await;
+    let rule = json!({ "name": "for-work" });
+    for account in ["home", "work"] {
+        fx.store(account).rule_first_seen("for-work", 1).unwrap();
+    }
+    let approved = call(&client, "rules_approve", rule).await;
     assert_ne!(approved.is_error, Some(true), "{approved:?}");
+    for account in ["home", "work"] {
+        let restarted = fx.store(account).rule_first_seen("for-work", 1).unwrap();
+        assert!(restarted > 1, "{account} clock was not restarted");
+    }
+}
+
+#[tokio::test]
+async fn rule_writes_refuse_rules_of_hidden_accounts_and_leave_the_file_alone() {
+    let fx = fixture(&["home", "work"]);
+    std::fs::write(fx.paths.rules_file(), scoped_rule("for-home", "home")).unwrap();
+    let before = rule_file(&fx);
+    let client = connect(&fx, "rules:propose,rules:write", &["work"]).await;
+    let name = json!({ "name": "for-home" });
+    for (tool, arguments) in [
+        ("rules_approve", name.clone()),
+        ("rules_reject", name.clone()),
+        (
+            "rules_set_enabled",
+            json!({ "name": "for-home", "enabled": true }),
+        ),
+    ] {
+        let text = error_text(&call(&client, tool, arguments).await);
+        assert!(text.contains("no rule named 'for-home'"), "{tool}: {text}");
+    }
+    let rule = json!({ "name": "p", "account": "home", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let text = error_text(&call(&client, "rules_propose", rule).await);
+    assert!(text.contains("no account named 'home'"), "{text}");
+    assert_eq!(rule_file(&fx), before);
 }

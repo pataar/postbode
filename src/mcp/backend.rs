@@ -164,18 +164,28 @@ impl Backend {
         Ok(rows)
     }
 
+    fn is_visible(&self, account: Option<&str>) -> bool {
+        account.is_none_or(|a| self.accounts.iter().any(|acc| acc.name == a))
+    }
+
+    /// A rule scoped to a hidden account is as good as absent; an unknown name is left to the edit's own error.
+    fn ensure_rule_visible(&self, name: &str) -> Result<()> {
+        let file = rules::load(&self.paths.rules_file())?;
+        match file.rules.iter().find(|r| r.name == name) {
+            Some(rule) if !self.is_visible(rule.account.as_deref()) => {
+                bail!("no rule named '{name}'")
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Rules scoped to a hidden account are left out; rules for every account stay.
     pub fn rules_list(&self) -> Result<Vec<Value>> {
         let file = rules::load(&self.paths.rules_file())?;
-        let visible = |rule: &Rule| {
-            rule.account
-                .as_deref()
-                .is_none_or(|a| self.accounts.iter().any(|acc| acc.name == a))
-        };
         Ok(file
             .rules
             .iter()
-            .filter(|r| visible(r))
+            .filter(|r| self.is_visible(r.account.as_deref()))
             .map(output::rule)
             .collect())
     }
@@ -207,6 +217,13 @@ impl Backend {
     }
 
     pub fn propose(&self, rule: Rule, by: &str) -> Result<Value> {
+        if let Some(account) = rule
+            .account
+            .as_deref()
+            .filter(|a| !self.is_visible(Some(a)))
+        {
+            bail!("no account named '{account}'");
+        }
         let name = rule.name.clone();
         rules::edit::propose(&self.paths.rules_file(), rule, by)?;
         Ok(json!({ "proposed": name, "enabled": false, "proposed_by": by }))
@@ -214,6 +231,7 @@ impl Backend {
 
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.
     pub fn approve(&self, name: &str) -> Result<Value> {
+        self.ensure_rule_visible(name)?;
         rules::edit::approve(&self.paths.rules_file(), name)?;
         for account in &self.all_accounts {
             self.paths.ensure_account(account)?;
@@ -223,11 +241,13 @@ impl Backend {
     }
 
     pub fn reject(&self, name: &str) -> Result<Value> {
+        self.ensure_rule_visible(name)?;
         rules::edit::reject(&self.paths.rules_file(), name)?;
         Ok(json!({ "rejected": name }))
     }
 
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<Value> {
+        self.ensure_rule_visible(name)?;
         rules::edit::set_enabled(&self.paths.rules_file(), name, enabled)?;
         Ok(json!({ "rule": name, "enabled": enabled }))
     }
