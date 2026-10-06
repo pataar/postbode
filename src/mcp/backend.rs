@@ -308,12 +308,25 @@ impl Backend {
         account.is_none_or(|a| self.accounts.iter().any(|acc| acc.name == a))
     }
 
-    /// A rule scoped to a hidden account is as good as absent; an unknown name is left to the edit's own error.
-    fn ensure_rule_visible(&self, name: &str) -> Result<()> {
+    /// Whether `--account` hides some configured account; a rule without `account` then reaches beyond this server.
+    fn narrowed(&self) -> bool {
+        self.accounts.len() < self.all_accounts.len()
+    }
+
+    /// A rule scoped to a hidden account is as good as absent, and while accounts are hidden a rule for every account
+    /// cannot be turned on. An unknown name is left to the edit's own error.
+    fn ensure_rule_visible(&self, name: &str, enabling: bool) -> Result<()> {
         let file = rules::load(&self.paths.rules_file())?;
         match file.rules.iter().find(|r| r.name == name) {
             Some(rule) if !self.is_visible(rule.account.as_deref()) => {
                 bail!("no rule named '{name}'")
+            }
+            Some(rule) if enabling && rule.account.is_none() && self.narrowed() => {
+                let visible: Vec<&str> = self.accounts.iter().map(|a| a.name.as_str()).collect();
+                bail!(
+                    "rule '{name}' applies to every account; this server only sees {}",
+                    visible.join(", ")
+                )
             }
             _ => Ok(()),
         }
@@ -365,22 +378,23 @@ impl Backend {
         Ok(rows)
     }
 
-    pub fn propose(&self, rule: Rule, by: &str) -> Result<Value> {
-        if let Some(account) = rule
-            .account
-            .as_deref()
-            .filter(|a| !self.is_visible(Some(a)))
-        {
-            bail!("no account named '{account}'");
+    /// While accounts are hidden, a rule without `account` gets the only visible one, or is refused.
+    pub fn propose(&self, mut rule: Rule, by: &str) -> Result<Value> {
+        match rule.account.as_deref() {
+            Some(account) if !self.is_visible(Some(account)) => {
+                bail!("no account named '{account}'")
+            }
+            None if self.narrowed() => rule.account = Some(self.single(None)?.name.clone()),
+            _ => {}
         }
-        let name = rule.name.clone();
+        let (name, account) = (rule.name.clone(), rule.account.clone());
         rules::edit::propose(&self.paths.rules_file(), rule, by)?;
-        Ok(json!({ "proposed": name, "enabled": false, "proposed_by": by }))
+        Ok(json!({ "proposed": name, "account": account, "enabled": false, "proposed_by": by }))
     }
 
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.
     pub fn approve(&self, name: &str) -> Result<Value> {
-        self.ensure_rule_visible(name)?;
+        self.ensure_rule_visible(name, true)?;
         rules::edit::approve(&self.paths.rules_file(), name)?;
         for account in &self.all_accounts {
             self.paths.ensure_account(account)?;
@@ -390,13 +404,13 @@ impl Backend {
     }
 
     pub fn reject(&self, name: &str) -> Result<Value> {
-        self.ensure_rule_visible(name)?;
+        self.ensure_rule_visible(name, false)?;
         rules::edit::reject(&self.paths.rules_file(), name)?;
         Ok(json!({ "rejected": name }))
     }
 
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<Value> {
-        self.ensure_rule_visible(name)?;
+        self.ensure_rule_visible(name, enabled)?;
         rules::edit::set_enabled(&self.paths.rules_file(), name, enabled)?;
         Ok(json!({ "rule": name, "enabled": enabled }))
     }

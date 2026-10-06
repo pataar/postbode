@@ -835,3 +835,84 @@ async fn rules_test_leaves_out_mail_of_hidden_accounts() {
     assert_eq!(preview.len(), 1);
     assert_eq!(preview[0]["account"], "work");
 }
+
+fn unscoped_rule(name: &str) -> String {
+    format!(
+        "[[rules]]\nname = \"{name}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n"
+    )
+}
+
+#[tokio::test]
+async fn enabling_a_rule_for_every_account_is_refused_while_some_are_hidden() {
+    let fx = fixture(&["home", "work"]);
+    std::fs::write(fx.paths.rules_file(), unscoped_rule("everywhere")).unwrap();
+    let before = rule_file(&fx);
+    let narrow = connect(&fx, "rules:write", &["work"]).await;
+    for (tool, arguments) in [
+        ("rules_approve", json!({ "name": "everywhere" })),
+        (
+            "rules_set_enabled",
+            json!({ "name": "everywhere", "enabled": true }),
+        ),
+    ] {
+        let text = error_text(&call(&narrow, tool, arguments).await);
+        assert!(
+            text.contains("rule 'everywhere' applies to every account; this server only sees work"),
+            "{tool}: {text}"
+        );
+    }
+    assert_eq!(rule_file(&fx), before);
+    let disable = json!({ "name": "everywhere", "enabled": false });
+    let disabled = call(&narrow, "rules_set_enabled", disable).await;
+    assert_ne!(disabled.is_error, Some(true), "{disabled:?}");
+
+    let wide = connect(&fx, "rules:write", &[]).await;
+    let approved = call(&wide, "rules_approve", json!({ "name": "everywhere" })).await;
+    assert_ne!(approved.is_error, Some(true), "{approved:?}");
+}
+
+#[tokio::test]
+async fn rejecting_a_rule_for_every_account_works_while_some_are_hidden() {
+    let fx = fixture(&["home", "work"]);
+    std::fs::write(fx.paths.rules_file(), unscoped_rule("everywhere")).unwrap();
+    let client = connect(&fx, "rules:write", &["work"]).await;
+    let rejected = call(&client, "rules_reject", json!({ "name": "everywhere" })).await;
+    assert_ne!(rejected.is_error, Some(true), "{rejected:?}");
+    assert!(
+        crate::rules::load(&fx.paths.rules_file())
+            .unwrap()
+            .rules
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn rules_propose_without_account_fills_in_the_only_visible_one() {
+    let fx = fixture(&["home", "work"]);
+    let client = connect(&fx, "rules:propose", &["work"]).await;
+    let rule =
+        json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let result = call(&client, "rules_propose", rule).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let file = crate::rules::load(&fx.paths.rules_file()).unwrap();
+    assert_eq!(file.rules[0].account.as_deref(), Some("work"));
+}
+
+#[tokio::test]
+async fn rules_propose_without_account_is_refused_when_several_of_some_are_visible() {
+    let fx = fixture(&["home", "play", "work"]);
+    std::fs::write(fx.paths.rules_file(), unscoped_rule("kept")).unwrap();
+    let before = rule_file(&fx);
+    let rule =
+        json!({ "name": "p", "match": { "subject": { "contains": "x" } }, "actions": ["flag"] });
+    let narrow = connect(&fx, "rules:propose", &["home", "work"]).await;
+    let text = error_text(&call(&narrow, "rules_propose", rule.clone()).await);
+    assert!(text.contains("pass account"), "{text}");
+    assert_eq!(rule_file(&fx), before);
+
+    let wide = connect(&fx, "rules:propose", &[]).await;
+    let result = call(&wide, "rules_propose", rule).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let file = crate::rules::load(&fx.paths.rules_file()).unwrap();
+    assert_eq!(file.rules[1].account, None);
+}
