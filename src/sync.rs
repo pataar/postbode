@@ -108,11 +108,15 @@ pub fn sync_folder(
     } else {
         Vec::new()
     };
-    let envelopes: Vec<Envelope> = ops
-        .fetch_new(last_uid + 1)?
+    let uids: Vec<u32> = ops
+        .search_uids(last_uid + 1)?
         .into_iter()
-        .filter(|env| env.uid > last_uid)
+        .filter(|&uid| uid > last_uid)
         .collect();
+    let envelopes: Vec<Envelope> = match (uids.first(), uids.last()) {
+        (Some(&first), Some(&last)) => ops.fetch_envelopes(first, last)?,
+        _ => Vec::new(),
+    };
     let highest = envelopes.iter().map(|env| env.uid).fold(last_uid, u32::max);
 
     store.transaction(|| {
@@ -697,11 +701,11 @@ mod tests {
         );
         assert!(store.message("INBOX", 1).unwrap().unwrap().is_seen());
         assert_eq!(store.message("INBOX", 2).unwrap(), None);
-        assert!(ops.calls.iter().any(|c| c == "fetch_new INBOX 3"));
+        assert!(ops.calls.iter().any(|c| c == "search_uids INBOX 3"));
     }
 
     #[test]
-    fn fetch_new_ignores_uids_below_last_uid() {
+    fn sync_ignores_uids_below_last_uid() {
         let mut ops = ops_with_inbox();
         let store = Store::open_in_memory().unwrap();
         sync_all(&mut ops, &store).unwrap();
@@ -1292,14 +1296,14 @@ mod tests {
         let trash = Trash::new(dir.path().to_path_buf());
         let acc = account();
         let identity = acc.identity().unwrap();
-        ops.fail_fetch_new = true;
+        ops.fail_fetch_after = Some(0);
         let inbox = RemoteFolder {
             name: "INBOX".into(),
             special_use: None,
         };
         assert!(sync_folder(&mut ops, &store, &inbox).is_err());
         assert_eq!(store.folder("INBOX").unwrap(), None, "nothing written");
-        ops.fail_fetch_new = false;
+        ops.fail_fetch_after = None;
         let new = sync_folder(&mut ops, &store, &inbox).unwrap();
         assert!(new.iter().all(|n| n.initial), "{new:?}");
         let run = run_rules(
@@ -1401,10 +1405,11 @@ mod tests {
                     1..=8 => Err(SyncError::Mail(MailError::Connect("refused".into()))),
                     // No folders: the pass completes, then selecting INBOX before IDLE fails.
                     9 => Ok(Box::new(RecordingOps::new()) as Box<dyn MailOps>),
-                    // Survives a pass and an IDLE wake, then the INBOX fetch fails.
+                    // The full pass skips the failing INBOX; after an IDLE wake the INBOX-only pass fails.
                     _ => {
                         let mut ops = RecordingOps::new().with_folder("INBOX", None);
-                        ops.fail_fetch_new = true;
+                        ops.add_mail("INBOX", 1, 0, "Subject: a\r\n\r\n", None);
+                        ops.fail_fetch_after = Some(0);
                         ops.idle_outcomes.push_back(IdleOutcome::NewMail);
                         Ok(Box::new(ops) as Box<dyn MailOps>)
                     }

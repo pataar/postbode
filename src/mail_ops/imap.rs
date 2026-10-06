@@ -235,12 +235,25 @@ impl MailOps for ImapOps {
         })
     }
 
-    fn fetch_new(&mut self, from_uid: u32) -> MailResult<Vec<Envelope>> {
+    fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
+        let (rt, session) = self.parts()?;
+        rt.block_on(async {
+            let found = session
+                .uid_search(format!("UID {from_uid}:*"))
+                .await
+                .map_err(proto)?;
+            let mut uids: Vec<u32> = found.into_iter().collect();
+            uids.sort_unstable();
+            Ok(uids)
+        })
+    }
+
+    fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {
         let (rt, session) = self.parts()?;
         rt.block_on(async {
             let fetches: Vec<Fetch> = session
                 .uid_fetch(
-                    format!("{from_uid}:*"),
+                    format!("{first}:{last}"),
                     "(UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])",
                 )
                 .await
@@ -251,7 +264,7 @@ impl MailOps for ImapOps {
             Ok(fetches
                 .iter()
                 .filter_map(envelope_from)
-                .filter(|e| e.uid >= from_uid)
+                .filter(|e| (first..=last).contains(&e.uid))
                 .collect())
         })
     }

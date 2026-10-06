@@ -53,8 +53,10 @@ pub type MailResult<T> = Result<T, MailError>;
 pub trait MailOps {
     fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>>;
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo>;
-    /// Envelopes with uid >= `from_uid` in the selected folder.
-    fn fetch_new(&mut self, from_uid: u32) -> MailResult<Vec<Envelope>>;
+    /// Uids >= `from_uid` in the selected folder, ascending.
+    fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>>;
+    /// Envelopes with `first <= uid <= last` in the selected folder.
+    fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>>;
     /// Current flags for every uid <= `upto_uid` in the selected folder.
     fn fetch_flags(&mut self, upto_uid: u32) -> MailResult<Vec<FlagUpdate>>;
     fn fetch_raw(&mut self, uid: u32) -> MailResult<Option<Vec<u8>>>;
@@ -89,8 +91,9 @@ mod recording {
         pub raw: HashMap<(String, u32), Vec<u8>>,
         pub calls: Vec<String>,
         pub idle_outcomes: VecDeque<IdleOutcome>,
-        /// Makes every `fetch_new` fail, like a connection dropping mid-sync.
-        pub fail_fetch_new: bool,
+        /// Makes `fetch_envelopes` fail once this many calls succeeded, like a connection dropping mid-sync.
+        pub fail_fetch_after: Option<usize>,
+        envelope_fetches: usize,
         selected: String,
         next_uid: HashMap<String, u32>,
     }
@@ -104,7 +107,8 @@ mod recording {
                 raw: HashMap::new(),
                 calls: Vec::new(),
                 idle_outcomes: VecDeque::new(),
-                fail_fetch_new: false,
+                fail_fetch_after: None,
+                envelope_fetches: 0,
                 selected: String::new(),
                 next_uid: HashMap::new(),
             }
@@ -174,20 +178,44 @@ mod recording {
             Ok(SelectInfo { uidvalidity })
         }
 
-        fn fetch_new(&mut self, from_uid: u32) -> MailResult<Vec<Envelope>> {
+        fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
             self.calls
-                .push(format!("fetch_new {} {from_uid}", self.selected));
-            if self.fail_fetch_new {
-                return Err(MailError::Io("fetch_new failed".into()));
-            }
-            let list = self.mail.get(&self.selected).cloned().unwrap_or_default();
-            let max = list.iter().map(|e| e.uid).max().unwrap_or(0);
+                .push(format!("search_uids {} {from_uid}", self.selected));
+            let mut uids: Vec<u32> = self
+                .mail
+                .get(&self.selected)
+                .map(|list| list.iter().map(|e| e.uid).collect())
+                .unwrap_or_default();
+            uids.sort_unstable();
+            let max = uids.last().copied().unwrap_or(0);
             // Real servers answer `N:*` with the highest message when N exceeds it.
-            let out: Vec<Envelope> = if from_uid > max {
-                list.into_iter().filter(|e| e.uid == max).collect()
-            } else {
-                list.into_iter().filter(|e| e.uid >= from_uid).collect()
-            };
+            if from_uid > max {
+                return Ok(uids.into_iter().filter(|&uid| uid == max).collect());
+            }
+            Ok(uids.into_iter().filter(|&uid| uid >= from_uid).collect())
+        }
+
+        fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>> {
+            self.calls
+                .push(format!("fetch_envelopes {} {first} {last}", self.selected));
+            if self
+                .fail_fetch_after
+                .is_some_and(|n| self.envelope_fetches >= n)
+            {
+                return Err(MailError::Io("fetch_envelopes failed".into()));
+            }
+            self.envelope_fetches += 1;
+            let mut out: Vec<Envelope> = self
+                .mail
+                .get(&self.selected)
+                .map(|list| {
+                    list.iter()
+                        .filter(|e| (first..=last).contains(&e.uid))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.sort_by_key(|e| e.uid);
             Ok(out)
         }
 
@@ -334,13 +362,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fake_fetch_new_mimics_star_semantics() {
+    fn fake_search_uids_mimics_star_semantics() {
         let mut ops = RecordingOps::new().with_folder("INBOX", None);
-        ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", None);
-        ops.add_mail("INBOX", 2, 20, "Subject: b\r\n\r\n", None);
+        ops.add_mail("INBOX", 3, 10, "Subject: a\r\n\r\n", None);
+        ops.add_mail("INBOX", 9, 20, "Subject: b\r\n\r\n", None);
         ops.select("INBOX").unwrap();
-        assert_eq!(ops.fetch_new(2).unwrap().len(), 1);
-        assert_eq!(ops.fetch_new(5).unwrap()[0].uid, 2);
+        assert_eq!(ops.search_uids(1).unwrap(), [3, 9]);
+        assert_eq!(ops.search_uids(4).unwrap(), [9]);
+        // Real servers answer `N:*` with the highest message when N exceeds it.
+        assert_eq!(ops.search_uids(50).unwrap(), [9]);
+        assert_eq!(ops.calls.last().unwrap(), "search_uids INBOX 50");
+    }
+
+    #[test]
+    fn fake_fetch_envelopes_returns_the_range_and_can_fail_later() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        for uid in [1, 5, 9] {
+            ops.add_mail("INBOX", uid, 10, "Subject: a\r\n\r\n", None);
+        }
+        ops.select("INBOX").unwrap();
+        ops.fail_fetch_after = Some(1);
+        let uids: Vec<u32> = ops
+            .fetch_envelopes(2, 9)
+            .unwrap()
+            .iter()
+            .map(|e| e.uid)
+            .collect();
+        assert_eq!(uids, [5, 9]);
+        assert_eq!(ops.calls.last().unwrap(), "fetch_envelopes INBOX 2 9");
+        assert!(matches!(ops.fetch_envelopes(1, 1), Err(MailError::Io(_))));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use postbode::config::{AccountConfig, Config, PasswordSource};
 use postbode::credentials::Secret;
 use postbode::mail_ops::imap::ImapOps;
-use postbode::mail_ops::{IdleOutcome, MailOps};
+use postbode::mail_ops::{Envelope, IdleOutcome, MailOps};
 use postbode::paths::Paths;
 use postbode::store::Store;
 use postbode::sync::{self, Event};
@@ -25,6 +25,14 @@ fn host() -> Option<String> {
         eprintln!("POSTBODE_TEST_IMAP_HOST unset; live IMAP test skipped");
     }
     host
+}
+
+fn all_envelopes(ops: &mut ImapOps) -> Vec<Envelope> {
+    let uids = ops.search_uids(1).unwrap();
+    match (uids.first(), uids.last()) {
+        (Some(&first), Some(&last)) => ops.fetch_envelopes(first, last).unwrap(),
+        _ => Vec::new(),
+    }
 }
 
 /// A fresh user per call, so no two tests (or reruns) share a mailbox; Dovecot accepts any name.
@@ -89,7 +97,7 @@ fn append_fetch_and_flags_round_trip() {
     ops.append("INBOX", &mail("hello"), &["$PostbodeRestored"])
         .unwrap();
     ops.select("INBOX").unwrap();
-    let new = ops.fetch_new(1).unwrap();
+    let new = all_envelopes(&mut ops);
     assert_eq!(new.len(), 1);
     assert!(
         new[0].flags.iter().any(|f| f == "$PostbodeRestored"),
@@ -115,14 +123,14 @@ fn move_round_trip(port: u16, test: &str, expect_move: bool) {
     );
     ops.append("INBOX", &mail("move me"), &[]).unwrap();
     ops.select("INBOX").unwrap();
-    let uid = ops.fetch_new(1).unwrap()[0].uid;
+    let uid = all_envelopes(&mut ops)[0].uid;
     ops.move_message(uid, "Archive").unwrap();
     assert!(
-        ops.fetch_new(1).unwrap().is_empty(),
+        all_envelopes(&mut ops).is_empty(),
         "message is still in INBOX"
     );
     ops.select("Archive").unwrap();
-    assert_eq!(ops.fetch_new(1).unwrap().len(), 1);
+    assert_eq!(all_envelopes(&mut ops).len(), 1);
 }
 
 #[test]
@@ -146,10 +154,10 @@ fn expunge_removes_only_the_deleted_message() {
         ops.append("INBOX", &mail("first"), &[]).unwrap();
         ops.append("INBOX", &mail("second"), &[]).unwrap();
         ops.select("INBOX").unwrap();
-        let uids: Vec<u32> = ops.fetch_new(1).unwrap().iter().map(|e| e.uid).collect();
+        let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
         ops.add_flags(uids[0], &["\\Deleted"]).unwrap();
         ops.expunge(uids[0]).unwrap();
-        let left: Vec<u32> = ops.fetch_new(1).unwrap().iter().map(|e| e.uid).collect();
+        let left: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
         assert_eq!(left, vec![uids[1]], "{test}");
     }
 }
@@ -264,10 +272,7 @@ fn rule_delete_keeps_a_backup_then_expunges() {
     let mut ops = connect(&account);
     for folder in ["INBOX", "Trash"] {
         ops.select(folder).unwrap();
-        assert!(
-            ops.fetch_new(1).unwrap().is_empty(),
-            "{folder} is not empty"
-        );
+        assert!(all_envelopes(&mut ops).is_empty(), "{folder} is not empty");
     }
 }
 
@@ -289,9 +294,9 @@ fn cli_delete_moves_to_the_trash_folder() {
     }
     let mut ops = connect(&account);
     ops.select("INBOX").unwrap();
-    assert!(ops.fetch_new(1).unwrap().is_empty(), "still in INBOX");
+    assert!(all_envelopes(&mut ops).is_empty(), "still in INBOX");
     ops.select("Trash").unwrap();
-    assert_eq!(ops.fetch_new(1).unwrap().len(), 1);
+    assert_eq!(all_envelopes(&mut ops).len(), 1);
 }
 
 #[test]
