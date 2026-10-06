@@ -454,7 +454,7 @@ pub fn run_rules_with(
     folders.dedup();
 
     let mut run = RulesRun::default();
-    for folder in folders {
+    for folder in folders.iter().cloned() {
         let Some(stored) = store.folder(&folder)? else {
             continue;
         };
@@ -545,7 +545,22 @@ pub fn run_rules_with(
             store.set_rules_uid(&folder, highest_uid)?;
         }
     }
+    if mode == Mode::Normal {
+        mark_seen_without_rules(store, &folders)?;
+    }
     Ok(run)
+}
+
+/// Folders no rule looks at count as seen up to their last uid, so a rule added for one later finds no old mail fresh.
+fn mark_seen_without_rules(store: &Store, rule_folders: &[String]) -> Result<(), StoreError> {
+    for folder in store.folders()? {
+        if !rule_folders.contains(&folder.name)
+            && folder.last_uid > store.rules_uid(&folder.name)?
+        {
+            store.set_rules_uid(&folder.name, folder.last_uid)?;
+        }
+    }
+    Ok(())
 }
 
 fn account_error(account: &AccountConfig, message: String) -> Event {
@@ -1330,6 +1345,70 @@ mod tests {
         let m = store.message("INBOX", 2).unwrap().unwrap();
         assert!(m.body_text.is_some());
         assert!(m.flags.contains("\\Flagged"));
+    }
+
+    #[test]
+    fn a_body_rule_added_later_skips_mail_its_folder_already_had() {
+        let mut ops = RecordingOps::new()
+            .with_folder("INBOX", None)
+            .with_folder("Lists", None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let pass = |ops: &mut RecordingOps, rules: &[CompiledRule]| {
+            sync_all(ops, &store).unwrap();
+            let run = run_rules(
+                ops,
+                &store,
+                &trash,
+                rules,
+                &acc,
+                &identity,
+                Mode::Normal,
+                12 * H,
+            );
+            run.unwrap();
+        };
+        pass(&mut ops, &[]);
+        let raw = "From: a@x\r\n\r\nyour code 1";
+        ops.add_mail(
+            "Lists",
+            1,
+            10 * H,
+            &headers("a@x", "code", "l1@x"),
+            Some(raw),
+        );
+        pass(&mut ops, &[]);
+        let rules = rules_from(
+            "[[rules]]\nname = \"codes\"\nfolder = \"Lists\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
+            &store,
+            0,
+        );
+        ops.add_mail(
+            "Lists",
+            2,
+            11 * H,
+            &headers("a@x", "code", "l2@x"),
+            Some(raw),
+        );
+        ops.calls.clear();
+        pass(&mut ops, &rules);
+        let fetched: Vec<&String> = ops
+            .calls
+            .iter()
+            .filter(|c| c.starts_with("fetch_raw"))
+            .collect();
+        assert_eq!(fetched, ["fetch_raw Lists 2"]);
+        assert!(
+            store
+                .message("Lists", 2)
+                .unwrap()
+                .unwrap()
+                .flags
+                .contains("\\Flagged")
+        );
     }
 
     #[test]
