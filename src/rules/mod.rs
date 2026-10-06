@@ -15,6 +15,8 @@ pub enum RulesError {
     Invalid { rule: String, reason: String },
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error(transparent)]
+    Store(#[from] crate::store::StoreError),
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

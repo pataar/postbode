@@ -216,13 +216,10 @@ pub fn load_rules_for(
 ) -> Result<Vec<CompiledRule>, RulesError> {
     let file = crate::rules::load(path)?;
     let mut compiled = crate::rules::compile(&file)?;
-    let store_error = |e: StoreError| RulesError::Parse(e.to_string());
     let names: Vec<&str> = compiled.iter().map(|r| r.rule.name.as_str()).collect();
-    store.forget_rules_except(&names).map_err(store_error)?;
+    store.forget_rules_except(&names)?;
     for rule in &mut compiled {
-        rule.first_seen_at = store
-            .rule_first_seen(&rule.rule.name, now)
-            .map_err(store_error)?;
+        rule.first_seen_at = store.rule_first_seen(&rule.rule.name, now)?;
     }
     Ok(compiled)
 }
