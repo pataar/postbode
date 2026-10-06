@@ -1,0 +1,21 @@
+# Live IMAP test servers; see AGENTS.md. Any username logs in with USER_PASSWORD; mail lives only in the container.
+services:
+  dovecot:
+    image: dovecot/dovecot:2.4.5
+    environment:
+      USER_PASSWORD: postbode-test
+    ports:
+      - "127.0.0.1:10993:31993"
+    volumes:
+      - ./certs:/etc/postbode-test:ro
+      - ./postbode.conf:/etc/dovecot/conf.d/zz-postbode.conf:ro
+  dovecot-without-move:
+    image: dovecot/dovecot:2.4.5
+    environment:
+      USER_PASSWORD: postbode-test
+    ports:
+      - "127.0.0.1:11993:31993"
+    volumes:
+      - ./certs:/etc/postbode-test:ro
+      - ./postbode.conf:/etc/dovecot/conf.d/zz-postbode.conf:ro
+      - ./without-move.conf:/etc/dovecot/conf.d/zz-without-move.conf:ro

@@ -27,3 +27,13 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 ## Privacy
 - Never read message bodies from a user's store, and never log bodies or secrets
 - Schema, counts and your own test fixtures are fine
+
+## Live IMAP tests
+`tests/imap_live.rs` runs against two local Dovecot servers and is skipped unless `POSTBODE_TEST_IMAP_HOST` is set:
+
+```sh
+docker compose -f tests/dovecot/compose.yml up -d
+POSTBODE_TEST_IMAP_HOST=localhost cargo test --test imap_live
+```
+
+Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
