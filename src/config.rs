@@ -86,7 +86,7 @@ impl Config {
         self.accounts.iter().find(|a| a.name == name)
     }
 
-    fn validate(&self) -> Result<(), ConfigError> {
+    pub fn validate(&self) -> Result<(), ConfigError> {
         let mut seen = std::collections::HashSet::new();
         for account in &self.accounts {
             let name = &account.name;

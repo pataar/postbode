@@ -7,10 +7,11 @@ use std::sync::mpsc;
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
-use postbode::config::{AccountConfig, Config, PasswordSource};
+use postbode::config::{AccountConfig, Config, Identity, PasswordSource};
 use postbode::credentials::{self, Secret};
 use postbode::mail_ops::MailOps;
 use postbode::paths::Paths;
+use postbode::rules::CompiledRule;
 use postbode::rules::engine::{Context, Mode, evaluate};
 use postbode::store::Store;
 use postbode::sync::{self, Event};
@@ -154,12 +155,19 @@ pub fn run() -> Result<()> {
         Command::Run => cmd_run(&config, &paths),
         Command::Sync { account } => {
             let (tx, rx) = mpsc::channel();
+            let mut failed = false;
             for acc in select_accounts(&config, account.as_deref())? {
-                sync::run_once(acc, &paths, &tx)?;
+                if let Err(e) = sync::run_once(acc, &paths, &tx) {
+                    eprintln!("[{}] error: {e:#}", acc.name);
+                    failed = true;
+                }
             }
             drop(tx);
             for event in rx {
                 print_event(&event);
+            }
+            if failed {
+                bail!("sync failed for at least one account");
             }
             Ok(())
         }
@@ -400,36 +408,19 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             account,
             dry_run,
         } => {
+            let rules = compiled_rules(paths, Some(&name))?;
+            if rules.is_empty() {
+                bail!("no rule named '{name}'");
+            }
+            let mut failed = false;
             for acc in select_accounts(config, account.as_deref())? {
-                let store = open_store(paths, &acc.name)?;
-                let rules: Vec<_> = sync::load_rules_for(&store, &paths.rules_file(), sync::now())?
-                    .into_iter()
-                    .filter(|r| r.rule.name == name)
-                    .collect();
-                if rules.is_empty() {
-                    bail!("no rule named '{name}'");
+                if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {
+                    continue;
                 }
+                let store = open_store(paths, &acc.name)?;
                 let identity = acc.identity()?;
                 if dry_run {
-                    let ctx = Context {
-                        account: &acc.name,
-                        identity: &identity,
-                        now: sync::now(),
-                        mode: Mode::ApplyExisting,
-                        notify_default: false,
-                    };
-                    for msg in store.messages_in_folder(rules[0].folder())? {
-                        for a in evaluate(&rules, &msg, &ctx).actions {
-                            println!(
-                                "{}\t{}/{}\t{}\t{}",
-                                a.rule,
-                                msg.folder,
-                                msg.uid,
-                                a.action.label(),
-                                msg.subject.as_deref().unwrap_or("")
-                            );
-                        }
-                    }
+                    print_planned_actions(&rules, &store, acc, &identity)?;
                     continue;
                 }
                 let secret = credentials::resolve(acc)?;
@@ -446,48 +437,70 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                     Mode::ApplyExisting,
                     sync::now(),
                 )?;
+                for event in &run.events {
+                    failed |= matches!(event, Event::Error { .. });
+                    print_event(event);
+                }
                 println!(
                     "{}: {} actions on {} messages",
                     acc.name, run.actions, run.evaluated
                 );
             }
+            if failed {
+                bail!("some actions failed; see the errors above");
+            }
             Ok(())
         }
         RulesCommand::Test { name, account } => {
+            let rules = compiled_rules(paths, name.as_deref())?;
             for acc in select_accounts(config, account.as_deref())? {
                 let store = open_store(paths, &acc.name)?;
-                let rules = sync::load_rules_for(&store, &paths.rules_file(), sync::now())?;
-                let rules: Vec<_> = rules
-                    .into_iter()
-                    .filter(|r| name.as_deref().is_none_or(|n| n == r.rule.name))
-                    .collect();
-                let identity = acc.identity()?;
-                let ctx = Context {
-                    account: &acc.name,
-                    identity: &identity,
-                    now: sync::now(),
-                    mode: Mode::Normal,
-                    notify_default: acc.notify,
-                };
-                for folder in store.folders()? {
-                    for msg in store.messages_in_folder(&folder.name)? {
-                        let plan = evaluate(&rules, &msg, &ctx);
-                        for a in plan.actions {
-                            println!(
-                                "{}\t{}/{}\t{}\t{}",
-                                a.rule,
-                                msg.folder,
-                                msg.uid,
-                                a.action.label(),
-                                msg.subject.as_deref().unwrap_or("")
-                            );
-                        }
-                    }
-                }
+                print_planned_actions(&rules, &store, acc, &acc.identity()?)?;
             }
             Ok(())
         }
     }
+}
+
+/// Compiles rules with `first_seen_at` left at 0 and without touching any store, so previews are
+/// side-effect free and cover mail that predates the rule.
+fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {
+    let file = postbode::rules::load(&paths.rules_file())?;
+    let compiled = postbode::rules::compile(&file)?;
+    Ok(compiled
+        .into_iter()
+        .filter(|r| name.is_none_or(|n| n == r.rule.name))
+        .collect())
+}
+
+fn print_planned_actions(
+    rules: &[CompiledRule],
+    store: &Store,
+    account: &AccountConfig,
+    identity: &Identity,
+) -> Result<()> {
+    let ctx = Context {
+        account: &account.name,
+        identity,
+        now: sync::now(),
+        mode: Mode::ApplyExisting,
+        notify_default: false,
+    };
+    for folder in store.folders()? {
+        for msg in store.messages_in_folder(&folder.name)? {
+            for a in evaluate(rules, &msg, &ctx).actions {
+                println!(
+                    "{}\t{}/{}\t{}\t{}",
+                    a.rule,
+                    msg.folder,
+                    msg.uid,
+                    a.action.label(),
+                    msg.subject.as_deref().unwrap_or("")
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()> {
@@ -517,6 +530,9 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
             ops.append(&folder, &raw)?;
             std::fs::remove_file(path)?;
             println!("restored to {folder}; run `postbode sync` to see it");
+            eprintln!(
+                "note: if a rule still matches this message it will be deleted again on the next sync; disable or fix that rule first"
+            );
             Ok(())
         }
         TrashCommand::Purge { account } => {
@@ -540,26 +556,12 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         if a.is_empty() { None } else { Some(a) }
     };
     let storage = prompt("Password storage: (k)eyring or (c)ommand [k]")?;
-    let (password, secret) = if storage.starts_with('c') {
-        let command = prompt("Password command")?;
-        let src = PasswordSource::Command { command };
-        let tmp = AccountConfig {
-            name: name.clone(),
-            host: host.clone(),
-            port,
-            username: username.clone(),
-            password: src.clone(),
-            address: address.clone(),
-            aliases: vec![],
-            sync_interval_secs: 120,
-            trash_retention_days: 30,
-            notify: true,
-        };
-        let secret = credentials::resolve(&tmp)?;
-        (src, secret)
+    let password = if storage.starts_with('c') {
+        PasswordSource::Command {
+            command: prompt("Password command")?,
+        }
     } else {
-        let pw = rpassword::prompt_password("Password: ")?;
-        (PasswordSource::Keyring { keyring: true }, Secret::new(pw))
+        PasswordSource::Keyring { keyring: true }
     };
     let account = AccountConfig {
         name,
@@ -573,16 +575,22 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         trash_retention_days: 30,
         notify: true,
     };
+    config.accounts.retain(|a| a.name != account.name);
+    config.accounts.push(account);
+    config.validate()?;
+    let account = config.accounts.last().expect("account was just pushed");
+    let secret = match &account.password {
+        PasswordSource::Command { .. } => credentials::resolve(account)?,
+        PasswordSource::Keyring { .. } => Secret::new(rpassword::prompt_password("Password: ")?),
+    };
     print!("Testing login... ");
     io::stdout().flush()?;
-    let mut ops = postbode::mail_ops::imap::ImapOps::connect(&account, &secret)?;
+    let mut ops = postbode::mail_ops::imap::ImapOps::connect(account, &secret)?;
     let folders = ops.list_folders()?;
     println!("ok, {} folders", folders.len());
     if matches!(account.password, PasswordSource::Keyring { .. }) {
         credentials::store(&account.name, &secret)?;
     }
-    config.accounts.retain(|a| a.name != account.name);
-    config.accounts.push(account);
     config.save(&paths.config_file())?;
     println!("saved to {}", paths.config_file().display());
     Ok(())

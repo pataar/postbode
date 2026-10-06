@@ -47,3 +47,92 @@ fn list_on_unknown_account_fails_and_empty_config_lists_nothing() {
     assert!(out.status.success());
     assert!(out.stdout.is_empty());
 }
+
+#[test]
+fn account_add_rejects_invalid_name() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let home = tempfile::tempdir().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .args(["account", "add"])
+        .env("POSTBODE_HOME", home.path())
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"my work\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("may only contain letters, digits"),
+        "{stderr}"
+    );
+    assert!(!home.path().join("config/config.toml").exists());
+}
+
+#[test]
+fn rules_test_previews_fresh_rule() {
+    use postbode::paths::Paths;
+    use postbode::store::{Folder, Message, Store};
+
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    paths.ensure_account("work").unwrap();
+    std::fs::write(
+        paths.config_file(),
+        "[[accounts]]\nname = \"work\"\nhost = \"imap.example.com\"\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        paths.rules_file(),
+        "[[rules]]\nname = \"flag-invoices\"\nmatch.subject = { contains = \"invoice\" }\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let store = Store::open(&paths.mail_db("work")).unwrap();
+    store
+        .upsert_folder(&Folder {
+            name: "INBOX".into(),
+            uidvalidity: 1,
+            last_uid: 42,
+            special_use: None,
+        })
+        .unwrap();
+    store
+        .insert_message(&Message {
+            folder: "INBOX".into(),
+            uid: 42,
+            message_id: None,
+            from_addr: Some("billing@example.com".into()),
+            to_addr: Some("me@example.com".into()),
+            cc_addr: None,
+            delivered_to: None,
+            in_reply_to: None,
+            refs: None,
+            thread_id: "t42".into(),
+            subject: Some("Your invoice".into()),
+            date: Some(1_000),
+            internaldate: 1_000,
+            flags: String::new(),
+            size: None,
+            headers: Vec::new(),
+            body_text: None,
+        })
+        .unwrap();
+
+    let out = postbode(home.path(), &["rules", "test"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("flag-invoices") && stdout.contains("INBOX/42"),
+        "{stdout}"
+    );
+    assert_eq!(store.rule_first_seen("flag-invoices", 999).unwrap(), 999);
+}

@@ -263,7 +263,6 @@ pub fn run_rules(
             let plan = evaluate(rules, &msg, &ctx);
             run.evaluated += 1;
             if !plan.actions.is_empty() {
-                run.actions += plan.actions.len();
                 if let Err(e) = apply(&plan, &msg, ops, store, trash, now) {
                     run.events.push(rule_error(
                         account,
@@ -271,6 +270,7 @@ pub fn run_rules(
                     ));
                     continue;
                 }
+                run.actions += plan.actions.len();
                 ops.select(&folder)?;
             }
             if new_ref.is_some_and(|n| !n.initial)
