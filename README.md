@@ -8,7 +8,7 @@
 
 A fast, simple IMAP mail client for powerusers and developers, with rules that keep your mailbox clean. Postbode syncs your mail into a local store, moves it into folders and deletes transient mail such as sign-in codes and magic links once you no longer need it. Agents can propose rules; you approve them.
 
-`postbode gui` opens a keyboard-driven mail window; everything also works from the command line. An MCP server follows.
+`postbode gui` opens a keyboard-driven mail window; everything also works from the command line. Agents can use it over MCP: see [Agents over MCP](https://postbode.pataar.nl/mcp.html).
 
 ## Quickstart
 
@@ -18,6 +18,7 @@ postbode account add      # asks for host, user and password, then tests the log
 postbode sync             # first sync of every folder
 postbode list             # newest mail in INBOX
 postbode gui              # the mail window
+postbode mcp install claude-desktop   # let Claude read and triage your mail
 ```
 
 Add rules to `rules.toml` next to `config.toml`, in `~/.config/postbode/` on Linux or `~/Library/Application Support/postbode/` on macOS:
