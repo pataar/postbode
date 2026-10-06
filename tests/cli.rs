@@ -136,3 +136,55 @@ fn rules_test_previews_fresh_rule() {
     );
     assert_eq!(store.rule_first_seen("flag-invoices", 999).unwrap(), 999);
 }
+
+const ONE_ACCOUNT: &str = "[[accounts]]\nname = \"work\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n";
+
+#[test]
+fn rules_test_with_unknown_name_fails() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("config")).unwrap();
+    std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
+    std::fs::write(
+        home.path().join("config/rules.toml"),
+        "[[rules]]\nname = \"ok\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    let out = postbode(home.path(), &["rules", "test", "nope"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no rule named 'nope'"), "{stderr}");
+}
+
+#[test]
+fn run_refuses_to_start_with_invalid_rules() {
+    use std::time::{Duration, Instant};
+
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("config")).unwrap();
+    std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
+    std::fs::write(
+        home.path().join("config/rules.toml"),
+        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .arg("run")
+        .env("POSTBODE_HOME", home.path())
+        .env("RUST_LOG", "error")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > Duration::from_secs(10) {
+            child.kill().unwrap();
+            panic!("`postbode run` kept running with an invalid rules.toml");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("rule 'x'"), "{stderr}");
+}

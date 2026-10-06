@@ -383,6 +383,7 @@ fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
     if config.accounts.is_empty() {
         bail!("no accounts configured; run `postbode account add`");
     }
+    compiled_rules(paths, None)?;
     // Ctrl-C ends the process through the default SIGINT handler; WAL and trash-before-delete leave nothing half done.
     let shutdown = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel();
@@ -415,9 +416,7 @@ fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
 fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()> {
     match command {
         RulesCommand::Check => {
-            let file = postbode::rules::load(&paths.rules_file())?;
-            let compiled = postbode::rules::compile(&file)?;
-            println!("{} rules ok", compiled.len());
+            println!("{} rules ok", compiled_rules(paths, None)?.len());
             Ok(())
         }
         RulesCommand::List { json } => {
@@ -445,9 +444,6 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             dry_run,
         } => {
             let rules = compiled_rules(paths, Some(&name))?;
-            if rules.is_empty() {
-                bail!("no rule named '{name}'");
-            }
             let mut failed = false;
             for acc in select_accounts(config, account.as_deref())? {
                 if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {
@@ -499,14 +495,19 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
 }
 
 /// Compiles rules with `first_seen_at` left at 0 and without touching any store, so previews are
-/// side-effect free and cover mail that predates the rule.
+/// side-effect free and cover mail that predates the rule. A `name` that matches no rule is an error.
 fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {
     let file = postbode::rules::load(&paths.rules_file())?;
-    let compiled = postbode::rules::compile(&file)?;
-    Ok(compiled
+    let compiled: Vec<CompiledRule> = postbode::rules::compile(&file)?
         .into_iter()
         .filter(|r| name.is_none_or(|n| n == r.rule.name))
-        .collect())
+        .collect();
+    if let Some(name) = name
+        && compiled.is_empty()
+    {
+        bail!("no rule named '{name}'");
+    }
+    Ok(compiled)
 }
 
 fn print_planned_actions(
