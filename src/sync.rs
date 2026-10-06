@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
+use crate::mail_ops::imap::ImapOps;
 use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder};
 use crate::message::{body_text, parse_headers, thread_id};
 use crate::paths::Paths;
@@ -350,42 +351,90 @@ fn account_error(account: &AccountConfig, message: String) -> Event {
     }
 }
 
+/// Resolves the account's password and logs in.
+pub fn connect(account: &AccountConfig) -> Result<ImapOps, SyncError> {
+    let secret = credentials::resolve(account)?;
+    Ok(ImapOps::connect(account, &secret)?)
+}
+
+/// What one account's passes share: its store, trash, identity and the last good rules.
+struct AccountSync<'a> {
+    account: &'a AccountConfig,
+    store: Store,
+    trash: Trash,
+    identity: Identity,
+    rules_path: PathBuf,
+    rules: Vec<CompiledRule>,
+}
+
+impl<'a> AccountSync<'a> {
+    fn open(account: &'a AccountConfig, paths: &Paths) -> Result<AccountSync<'a>, SyncError> {
+        paths.ensure_account(&account.name)?;
+        let store = Store::open(&paths.mail_db(&account.name))?;
+        let rules_path = paths.rules_file();
+        let rules = load_rules_for(&store, &rules_path, now())?;
+        Ok(AccountSync {
+            account,
+            trash: Trash::new(paths.trash_dir(&account.name)),
+            identity: account.identity()?,
+            store,
+            rules_path,
+            rules,
+        })
+    }
+
+    /// Syncs every folder (`full`) or only INBOX, reloads the rules, runs them and sends the events.
+    fn pass(
+        &mut self,
+        ops: &mut dyn MailOps,
+        full: bool,
+        events: &Sender<Event>,
+    ) -> Result<(), SyncError> {
+        let new = if full {
+            let (new, sync_errors) = sync_all(ops, &self.store)?;
+            for message in sync_errors {
+                let _ = events.send(account_error(self.account, message));
+            }
+            new
+        } else {
+            let inbox = RemoteFolder {
+                name: "INBOX".into(),
+                special_use: None,
+            };
+            sync_folder(ops, &self.store, &inbox)?
+        };
+        let previous = std::mem::take(&mut self.rules);
+        self.rules = reload_rules(&self.store, &self.rules_path, now(), previous);
+        let run = run_rules(
+            ops,
+            &self.store,
+            &self.trash,
+            &self.rules,
+            self.account,
+            &self.identity,
+            &new,
+            Mode::Normal,
+            now(),
+        )?;
+        for event in run.events {
+            let _ = events.send(event);
+        }
+        let _ = events.send(Event::Synced {
+            account: self.account.name.clone(),
+            new_messages: new.len(),
+            actions: run.actions,
+        });
+        Ok(())
+    }
+}
+
 pub fn run_once(
     account: &AccountConfig,
     paths: &Paths,
     events: &Sender<Event>,
 ) -> Result<(), SyncError> {
-    let secret = credentials::resolve(account)?;
-    let mut ops = crate::mail_ops::imap::ImapOps::connect(account, &secret)?;
-    paths.ensure_account(&account.name)?;
-    let store = Store::open(&paths.mail_db(&account.name))?;
-    let trash = Trash::new(paths.trash_dir(&account.name));
-    let identity = account.identity()?;
-    let rules = load_rules_for(&store, &paths.rules_file(), now())?;
-    let (new, sync_errors) = sync_all(&mut ops, &store)?;
-    for message in sync_errors {
-        let _ = events.send(account_error(account, message));
-    }
-    let run = run_rules(
-        &mut ops,
-        &store,
-        &trash,
-        &rules,
-        account,
-        &identity,
-        &new,
-        Mode::Normal,
-        now(),
-    )?;
-    for event in run.events {
-        let _ = events.send(event);
-    }
-    let _ = events.send(Event::Synced {
-        account: account.name.clone(),
-        new_messages: new.len(),
-        actions: run.actions,
-    });
-    Ok(())
+    let mut ops = connect(account)?;
+    AccountSync::open(account, paths)?.pass(&mut ops, true, events)
 }
 
 pub fn run_loop(
@@ -400,13 +449,7 @@ pub fn run_loop(
         paths,
         events,
         shutdown,
-        move || {
-            let secret = credentials::resolve(&account)?;
-            Ok(
-                Box::new(crate::mail_ops::imap::ImapOps::connect(&account, &secret)?)
-                    as Box<dyn MailOps>,
-            )
-        },
+        move || Ok(Box::new(connect(&account)?) as Box<dyn MailOps>),
         |delay| {
             log::warn!("{name}: reconnecting in {}s", delay.as_secs());
             std::thread::sleep(delay);
@@ -460,52 +503,18 @@ fn run_session(
     completed_cycle: &mut bool,
 ) -> Result<(), SyncError> {
     let mut ops = connect()?;
-    paths.ensure_account(&account.name)?;
-    let store = Store::open(&paths.mail_db(&account.name))?;
-    let trash = Trash::new(paths.trash_dir(&account.name));
-    let identity = account.identity()?;
-    let rules_path = paths.rules_file();
-    let mut rules = load_rules_for(&store, &rules_path, now())?;
+    let mut state = AccountSync::open(account, paths)?;
     let interval = Duration::from_secs(account.sync_interval_secs.max(10));
     let mut last_purge = 0i64;
     let mut full = true;
 
     while !shutdown.load(Ordering::Relaxed) {
-        let new = if full {
-            let (new, sync_errors) = sync_all(ops.as_mut(), &store)?;
-            for message in sync_errors {
-                let _ = events.send(account_error(account, message));
-            }
-            new
-        } else {
-            let inbox = RemoteFolder {
-                name: "INBOX".into(),
-                special_use: None,
-            };
-            sync_folder(ops.as_mut(), &store, &inbox)?
-        };
-        rules = reload_rules(&store, &rules_path, now(), rules);
-        let run = run_rules(
-            ops.as_mut(),
-            &store,
-            &trash,
-            &rules,
-            account,
-            &identity,
-            &new,
-            Mode::Normal,
-            now(),
-        )?;
-        for event in run.events {
-            let _ = events.send(event);
-        }
-        let _ = events.send(Event::Synced {
-            account: account.name.clone(),
-            new_messages: new.len(),
-            actions: run.actions,
-        });
+        state.pass(ops.as_mut(), full, events)?;
         if now() - last_purge > 3600 {
-            match trash.purge(account.trash_retention_days as i64 * 86_400, now()) {
+            match state
+                .trash
+                .purge(account.trash_retention_days as i64 * 86_400, now())
+            {
                 Ok(0) => {}
                 Ok(removed) => log::info!("{}: purged {removed} trash files", account.name),
                 Err(e) => log::warn!("{}: trash purge failed: {e}", account.name),

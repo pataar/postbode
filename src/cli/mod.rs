@@ -202,9 +202,7 @@ pub fn run() -> Result<()> {
                     if json {
                         println!("{}", serde_json::to_string(&m)?);
                     } else {
-                        let date = chrono::DateTime::from_timestamp(m.internaldate, 0)
-                            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-                            .unwrap_or_default();
+                        let date = format_time(m.internaldate);
                         let flag = if m.is_seen() { " " } else { "*" };
                         println!(
                             "{flag} {:>6}  {date}  {:<30}  {}",
@@ -232,8 +230,7 @@ pub fn run() -> Result<()> {
             let body = match store.raw(&folder, uid)? {
                 Some(raw) => raw,
                 None => {
-                    let secret = credentials::resolve(acc)?;
-                    let mut ops = postbode::mail_ops::imap::ImapOps::connect(acc, &secret)?;
+                    let mut ops = sync::connect(acc)?;
                     let info = ops.select(&folder)?;
                     let stored = store.folder(&folder)?.map(|f| f.uidvalidity);
                     if stored != Some(info.uidvalidity) {
@@ -273,9 +270,7 @@ pub fn run() -> Result<()> {
                     if json {
                         println!("{}", serde_json::to_string(&e)?);
                     } else {
-                        let at = chrono::DateTime::from_timestamp(e.at, 0)
-                            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-                            .unwrap_or_default();
+                        let at = format_time(e.at);
                         println!(
                             "{at}  {:<20} {:<12} {}/{}  {}",
                             e.rule_name,
@@ -321,6 +316,12 @@ fn single_account<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Acco
 fn open_store(paths: &Paths, account: &str) -> Result<Store> {
     paths.ensure_account(account)?;
     Ok(Store::open(&paths.mail_db(account))?)
+}
+
+fn format_time(timestamp: i64) -> String {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
 }
 
 fn truncate(s: &str, width: usize) -> String {
@@ -455,8 +456,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                     print_planned_actions(&rules, &store, acc, &identity)?;
                     continue;
                 }
-                let secret = credentials::resolve(acc)?;
-                let mut ops = postbode::mail_ops::imap::ImapOps::connect(acc, &secret)?;
+                let mut ops = sync::connect(acc)?;
                 let trash = Trash::new(paths.trash_dir(&acc.name));
                 let run = sync::run_rules(
                     &mut ops,
@@ -545,9 +545,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         TrashCommand::List { account } => {
             for acc in select_accounts(config, account.as_deref())? {
                 for e in Trash::new(paths.trash_dir(&acc.name)).list()? {
-                    let at = chrono::DateTime::from_timestamp(e.saved_at, 0)
-                        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-                        .unwrap_or_default();
+                    let at = format_time(e.saved_at);
                     println!(
                         "{at}  {}/{}  {}",
                         clean(&e.folder, false),
@@ -567,8 +565,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
                 .context("bad file name")?;
             let (_, folder, _) = Trash::parse_name(name).context("not a postbode trash file")?;
             let raw = std::fs::read(path)?;
-            let secret = credentials::resolve(acc)?;
-            let mut ops = postbode::mail_ops::imap::ImapOps::connect(acc, &secret)?;
+            let mut ops = sync::connect(acc)?;
             ops.append(&folder, &raw)?;
             std::fs::remove_file(path)?;
             println!(
