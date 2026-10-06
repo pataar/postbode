@@ -4,6 +4,7 @@ mod app;
 mod body;
 mod folders;
 mod list;
+mod rules;
 mod status;
 #[cfg(test)]
 mod test_support;

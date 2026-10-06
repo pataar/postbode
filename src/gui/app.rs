@@ -1,8 +1,8 @@
 //! App state, the frame loop, and the only code that changes state: `handle` for events, `apply` for UI actions.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use eframe::egui;
 
@@ -10,17 +10,21 @@ use crate::config::{self, Config, Theme};
 use crate::engine::{Engine, StartState};
 use crate::message::{self, Attachment, clean};
 use crate::paths::Paths;
-use crate::rules::Action;
+use crate::rules::{self as rule_file, Action, RulesError};
 use crate::store::{Message, Store, StoreError};
 use crate::sync::{self, Activity, Command, Event};
 
 use super::body;
 use super::folders;
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
+use super::rules::{self, RulesState};
 use super::status;
 
 /// Lines kept for the history window.
 const HISTORY: usize = 50;
+
+/// Seconds between checks of rules.toml and config.toml for outside edits.
+const POLL: f64 = 2.0;
 
 /// How long a message stays on screen before it is marked read.
 const READ_DELAY: f64 = 1.0;
@@ -107,6 +111,7 @@ pub(crate) enum View {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UiAction {
     Act(Action),
+    ApproveRule(String),
     Collapse,
     Escape,
     Expand,
@@ -116,11 +121,14 @@ pub(crate) enum UiAction {
     MoveTo(String),
     NextFocus,
     OpenMovePicker,
+    OpenRulesFile,
+    RejectRule(String),
     SaveAttachment(usize),
     SearchFocused,
     SearchFor(String),
     SelectRow(usize),
     SelectView(View),
+    SetRuleEnabled(String, bool),
     SetTheme(egui::ThemePreference),
     StartSearch,
     StepFolder(isize),
@@ -141,6 +149,8 @@ pub(crate) enum Focus {
 pub struct App {
     pub(crate) accounts: Vec<Account>,
     pub(crate) body: Option<BodyState>,
+    pub(crate) config_changed: bool,
+    pub(crate) config_mtime: Option<SystemTime>,
     pub(crate) downloads: PathBuf,
     pub(crate) engine: Option<Engine>,
     pub(crate) error: Option<String>,
@@ -149,11 +159,14 @@ pub struct App {
     pub(crate) focus_search: bool,
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
+    pub(crate) last_poll: f64,
     pub(crate) list: ListState,
     pub(crate) move_picker: Option<String>,
     pub(crate) notifier: fn(&str, &str),
     pub(crate) paths: Paths,
     pub(crate) requested: HashSet<(usize, RowKey)>,
+    pub(crate) rules: RulesState,
+    pub(crate) rules_mtime: Option<SystemTime>,
     pub(crate) search: Option<String>,
     pub(crate) theme: egui::ThemePreference,
     pub(crate) theme_applied: bool,
@@ -184,9 +197,14 @@ impl App {
                 account
             })
             .collect();
+        let rules_path = paths.rules_file();
+        let rules = RulesState::load(&rules_path, Vec::new());
+        let (config_mtime, rules_mtime) = (mtime(&paths.config_file()), mtime(&rules_path));
         let mut app = App {
             accounts,
             body: None,
+            config_changed: false,
+            config_mtime,
             downloads: downloads_dir(),
             engine: Some(engine),
             error: None,
@@ -195,11 +213,14 @@ impl App {
             focus_search: false,
             history: VecDeque::new(),
             history_open: false,
+            last_poll: 0.0,
             list: ListState::default(),
             move_picker: None,
             notifier: crate::notify::new_mail,
             paths,
             requested: HashSet::new(),
+            rules,
+            rules_mtime,
             search: None,
             theme: preference(config.ui.theme),
             theme_applied: false,
@@ -226,6 +247,8 @@ impl App {
         if std::mem::take(&mut self.view_dirty) {
             self.reload_view();
         }
+        let now = ui.input(|input| input.time);
+        self.poll_files(now);
         for action in self.keys(&ctx) {
             self.apply(&ctx, action);
         }
@@ -237,30 +260,43 @@ impl App {
                 }
             });
         }
-        let now = ui.input(|input| input.time);
         self.sync_body(now);
         self.mark_read_after_delay(now, &ctx);
         let mut actions = Vec::new();
+        if self.config_changed {
+            egui::Panel::top("banner").show(ui, |ui| {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "config.toml changed — restart Postbode to apply",
+                );
+            });
+        }
         egui::Panel::bottom("status").show(ui, |ui| actions.extend(status::show(self, ui)));
         egui::Panel::left("folders")
             .resizable(true)
             .default_size(220.0)
             .show(ui, |ui| actions.extend(folders::show(self, ui)));
-        if let View::Folder { .. } = self.view {
-            egui::Panel::left("list")
-                .resizable(true)
-                .default_size(480.0)
-                .show(ui, |ui| actions.extend(list::show(self, ui)));
-        }
-        if let View::Folder { .. } = self.view {
-            egui::CentralPanel::default().show(ui, |ui| actions.extend(body::show(self, ui)));
-        } else {
-            egui::CentralPanel::default().show(ui, |_ui| {});
+        match &self.view {
+            View::Folder { .. } => {
+                egui::Panel::left("list")
+                    .resizable(true)
+                    .default_size(480.0)
+                    .show(ui, |ui| actions.extend(list::show(self, ui)));
+                egui::CentralPanel::default().show(ui, |ui| actions.extend(body::show(self, ui)));
+            }
+            View::Rules => {
+                egui::CentralPanel::default()
+                    .show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
+            }
+            View::Activity | View::Trash => {
+                egui::CentralPanel::default().show(ui, |_ui| {});
+            }
         }
         actions.extend(list::show_move_picker(self, &ctx));
         for action in actions {
             self.apply(&ctx, action);
         }
+        ctx.request_repaint_after(Duration::from_secs_f64(POLL));
     }
 
     fn handle(&mut self, event: Event) {
@@ -379,6 +415,9 @@ impl App {
     fn apply(&mut self, ctx: &egui::Context, action: UiAction) {
         match action {
             UiAction::Act(action) => self.act(action),
+            UiAction::ApproveRule(name) => {
+                self.edit_rules(|path| rule_file::edit::approve(path, &name));
+            }
             UiAction::Collapse => self.collapse(),
             UiAction::Escape => {
                 if self.move_picker.is_some() {
@@ -422,6 +461,10 @@ impl App {
                     self.move_picker = Some(String::new());
                 }
             }
+            UiAction::OpenRulesFile => self.open_rules_file(),
+            UiAction::RejectRule(name) => {
+                self.edit_rules(|path| rule_file::edit::reject(path, &name));
+            }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
             UiAction::SearchFocused => self.focus_search = false,
             UiAction::SearchFor(query) => {
@@ -434,12 +477,16 @@ impl App {
                 self.focus = Focus::List;
             }
             UiAction::SelectView(view) => self.select_view(view),
+            UiAction::SetRuleEnabled(name, enabled) => {
+                self.edit_rules(|path| rule_file::edit::set_enabled(path, &name, enabled));
+            }
             UiAction::SetTheme(preference) => {
                 ctx.set_theme(preference);
                 self.theme = preference;
-                if let Err(e) = config::save_theme(&self.paths.config_file(), theme_of(preference))
-                {
-                    self.note_error(None, format!("could not save the theme: {e}"));
+                let path = self.paths.config_file();
+                match config::save_theme(&path, theme_of(preference)) {
+                    Ok(()) => self.config_mtime = mtime(&path),
+                    Err(e) => self.note_error(None, format!("could not save the theme: {e}")),
                 }
             }
             UiAction::StartSearch => {
@@ -845,6 +892,55 @@ impl App {
         false
     }
 
+    /// Notices edits to rules.toml and config.toml made outside the app.
+    fn poll_files(&mut self, now: f64) {
+        if now - self.last_poll < POLL {
+            return;
+        }
+        self.last_poll = now;
+        if mtime(&self.paths.rules_file()) != self.rules_mtime {
+            self.rules_changed();
+        }
+        if mtime(&self.paths.config_file()) != self.config_mtime {
+            self.config_changed = true;
+        }
+    }
+
+    /// Rules act on mail synced after they change, so every running account syncs at once.
+    fn rules_changed(&mut self) {
+        let path = self.paths.rules_file();
+        self.rules_mtime = mtime(&path);
+        self.rules = RulesState::load(&path, std::mem::take(&mut self.rules.rules));
+        self.sync_all();
+    }
+
+    fn edit_rules(&mut self, edit: impl FnOnce(&Path) -> Result<(), RulesError>) {
+        match edit(&self.paths.rules_file()) {
+            Ok(()) => self.rules_changed(),
+            Err(e) => self.note_error(None, e.to_string()),
+        }
+    }
+
+    fn open_rules_file(&mut self) {
+        let path = self.paths.rules_file();
+        let opened = (|| -> std::io::Result<()> {
+            if !path.exists() {
+                crate::paths::write_atomic(&path, b"")?;
+            }
+            let opener = if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            };
+            let mut child = std::process::Command::new(opener).arg(&path).spawn()?;
+            std::thread::spawn(move || child.wait());
+            Ok(())
+        })();
+        if let Err(e) = opened {
+            self.note_error(None, format!("could not open rules.toml: {e}"));
+        }
+    }
+
     pub(crate) fn sync_all(&mut self) {
         for index in 0..self.accounts.len() {
             if self.accounts[index].state == StartState::Running {
@@ -1000,6 +1096,10 @@ pub(crate) fn stop_within(stop: impl FnOnce() + Send + 'static, limit: Duration)
         let _ = done.send(());
     });
     let _ = finished.recv_timeout(limit);
+}
+
+fn mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 pub(crate) fn preference(theme: Theme) -> egui::ThemePreference {
