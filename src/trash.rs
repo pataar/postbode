@@ -1,5 +1,5 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::paths::write_atomic;
 
@@ -69,10 +69,6 @@ impl Trash {
         let folder = encoded.replace("%2F", "/").replace("%25", "%");
         Some((ts.parse().ok()?, folder, uid.parse().ok()?))
     }
-}
-
-pub fn read_eml(path: &Path) -> io::Result<Vec<u8>> {
-    std::fs::read(path)
 }
 
 #[cfg(test)]
