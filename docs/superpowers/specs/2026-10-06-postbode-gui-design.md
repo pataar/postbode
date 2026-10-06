@@ -30,7 +30,7 @@ Out of scope, recorded in §11: compose and send, HTML rendering, unified inbox,
 | Packaging | `gui` cargo feature, on by default; `postbode gui` | Separate binary; workspace |
 | Thread spawning | `postbode::engine`, shared by `run` and `gui` | Each front end spawns its own threads |
 | Concurrent processes | Per-account lock file; a second process gets that account read-only | Allow, and run rules twice |
-| First sync | Envelopes in 500-UID chunks, one transaction each, resumable | One fetch per folder |
+| First sync | `UID SEARCH`, then envelopes 500 messages at a time, one transaction each, resumable | One fetch per folder; 500-UID ranges (sparse UIDs) |
 | Mark read | After 1 s visible in the body panel | On selection; never automatically |
 | Theme | System by default; `[ui] theme` in `config.toml`, switchable in the app | Fixed dark; eframe's own persistence file |
 | GUI tests | `egui_kittest` (headless, AccessKit queries) | Hand-rolled `Context::run_ui` harness |
@@ -125,10 +125,11 @@ pub enum Activity {
 
 ### Chunked envelope fetch
 
-- `SelectInfo` gains `exists: u32` and `uid_next: u32`, both from the SELECT response.
-- `sync_folder` fetches envelopes in ranges of 500 UIDs from `last_uid + 1` up to `uid_next - 1`, then once more with `n:*` for mail that arrived meanwhile. Each range is written in its own transaction, which also advances `last_uid`. The flag refresh for already-stored messages stays one fetch before the chunks.
-- `FetchingHeaders.total` is `exists` minus the rows already stored, an estimate; the progress bar clamps at 100%.
-- An interrupted first sync resumes at the last committed chunk.
+UIDs can be sparse (Gmail and Exchange folders span millions of UID values for a few thousand messages), so chunks are counted in messages, not UID ranges.
+- `MailOps::fetch_new` is replaced by `search_uids(from_uid) -> Vec<u32>` (`UID SEARCH UID n:*`, ascending) and `fetch_envelopes(first, last)` (`UID FETCH first:last`).
+- `sync_folder` lists the UIDs above `last_uid`, then fetches them 500 at a time, each chunk spanning its first to last UID. Each chunk is written in its own transaction, which also advances `last_uid`. The flag refresh for already-stored messages stays one fetch, written before the chunks.
+- `FetchingHeaders.total` is the number of UIDs listed, so the counter is exact.
+- An interrupted first sync resumes after the last committed chunk. Mail that arrives during a pass is picked up by the next one.
 
 ### Migration 002
 
@@ -136,7 +137,7 @@ pub enum Activity {
 ALTER TABLE folders ADD COLUMN initial_uid_next INTEGER NOT NULL DEFAULT 0;
 ```
 
-When a folder is newly tracked, a placeholder is adopted, or a UIDVALIDITY change resets it, `initial_uid_next` is set to the server's `uid_next`. A message is `initial` (never notifies) when `uid < initial_uid_next`. This replaces "the pass started at `last_uid == 0`", which chunking would break: after the first chunk commits, a resumed sync would notify for every remaining old message. Existing folders migrate with 0, so nothing in them counts as initial, matching today. This also closes the plan-1 follow-up "a first pass that dies mid-fetch leaves the folder tracked at last_uid 0, so the retry … may notify".
+When a folder is newly tracked, a placeholder is adopted, or a UIDVALIDITY change resets it, `initial_uid_next` is set to one above the highest UID that pass's `search_uids` returned, or 0 when the folder is empty. A message is `initial` (never notifies) when `uid < initial_uid_next`. This replaces "the pass started at `last_uid == 0`", which chunking would break: after the first chunk commits, a resumed sync would notify for every remaining old message. Existing folders migrate with 0, so nothing in them counts as initial, matching today. This also closes the plan-1 follow-up "a first pass that dies mid-fetch leaves the folder tracked at last_uid 0, so the retry … may notify".
 
 ### Store queries for the list
 
@@ -258,7 +259,7 @@ Three fixed entries below the account trees; selecting one replaces the list and
 **Engine and sync,** with `RecordingOps`:
 - Commands are drained before a pass, after IDLE, between folders and between chunks; the wake flag ends IDLE; shutdown still stops the loop.
 - Commands sent while offline run after reconnect; a failing command emits `Error` and the session continues.
-- Chunked fetch: 1,200 messages arrive in three chunks, each committed; an error in chunk 2 leaves chunk 1 stored and the next session resumes from it.
+- Chunked fetch: 1,200 messages with sparse UIDs arrive in three chunks, each committed; an error in chunk 2 leaves chunk 1 stored and the next session resumes from it.
 - `initial_uid_next`: a first sync interrupted after one chunk, then resumed, sends no `NewMail`; mail with a uid at or above it notifies.
 - Migration 002 on a store created by 001 keeps every row and sets 0.
 - Activity events arrive in order for a full pass.
