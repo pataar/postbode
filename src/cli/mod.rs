@@ -837,6 +837,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         }
         RulesCommand::Approve { name } => {
             postbode::rules::edit::approve(&paths.rules_file(), &name)?;
+            for acc in &config.accounts {
+                open_store(paths, &acc.name)?.restart_rule_clock(&name, sync::now())?;
+            }
             println!(
                 "enabled '{}'; it acts on mail that arrives from now on",
                 clean(&name, false)

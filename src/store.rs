@@ -378,6 +378,15 @@ impl Store {
         )?)
     }
 
+    /// Starts the rule's clock at `now`, replacing any stale first-seen time.
+    pub fn restart_rule_clock(&self, name: &str, now: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO rules_seen (name, first_seen_at) VALUES (?1, ?2)",
+            params![name, now],
+        )?;
+        Ok(())
+    }
+
     /// Drops first-seen times of rules no longer in the file, so a re-added rule starts fresh instead of acting on history.
     pub fn forget_rules_except(&self, names: &[&str]) -> Result<(), StoreError> {
         let names = serde_json::to_string(names).expect("a list of strings serializes");
@@ -675,6 +684,16 @@ mod tests {
         assert_eq!(s.rule_first_seen("purge", 100).unwrap(), 100);
         assert_eq!(s.rule_first_seen("purge", 200).unwrap(), 100);
         assert_eq!(s.rule_first_seen("other", 200).unwrap(), 200);
+    }
+
+    #[test]
+    fn restart_rule_clock_overwrites_the_first_seen_time() {
+        let s = store_with_inbox();
+        assert_eq!(s.rule_first_seen("purge", 100).unwrap(), 100);
+        s.restart_rule_clock("purge", 300).unwrap();
+        assert_eq!(s.rule_first_seen("purge", 400).unwrap(), 300);
+        s.restart_rule_clock("fresh", 500).unwrap();
+        assert_eq!(s.rule_first_seen("fresh", 600).unwrap(), 500);
     }
 
     #[test]

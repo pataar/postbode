@@ -449,7 +449,7 @@ fn postbode_stdin(home: &std::path::Path, args: &[&str], stdin: &str) -> std::pr
 
 #[test]
 fn agent_proposes_and_a_human_approves_or_rejects() {
-    let (home, _store) = seeded_home(&[message(42, "noreply@example.com", "Your code is 123456")]);
+    let (home, store) = seeded_home(&[message(42, "noreply@example.com", "Your code is 123456")]);
     let rule =
         r#"{"name": "codes", "match": {"subject": {"contains": "code"}}, "actions": ["delete"]}"#;
     let list = |home: &std::path::Path| {
@@ -485,6 +485,10 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
             .success()
     );
     assert!(list(home.path()).contains("on \tcodes"));
+    assert!(
+        store.rule_first_seen("codes", 0).unwrap() > 1_000_000_000,
+        "approval stamps the rule's clock with the current time"
+    );
     assert!(
         !postbode(home.path(), &["rules", "reject", "codes"])
             .status
