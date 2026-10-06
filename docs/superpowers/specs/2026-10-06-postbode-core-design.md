@@ -192,6 +192,8 @@ Special-use folders come from `LIST (SPECIAL-USE)` or the folder attributes in a
 
 `rules_seen` records when a rule name was first loaded by this account. A rule only acts on messages whose `internaldate` is at or after its `first_seen_at`, so adding a rule never mass-deletes history. Renaming a rule resets this. `rules apply-existing` is the explicit opt-in to older mail.
 
+Disabled rules have no entry: a rule's clock starts the first time it is loaded enabled, so a proposal approved a week later does not act on that week's mail, and disabling then enabling a rule restarts it.
+
 ## 7. Sync
 
 One std thread per account owning one IMAP connection on a current-thread tokio runtime. Loop:
@@ -217,6 +219,7 @@ evaluate(rules: &[Rule], msg: &Message, now: Timestamp, mode: Mode) -> Vec<(Rule
 
 Pure. For each rule in file order:
 
+0. Skip the message entirely, with no actions and no notification, if it carries the `$PostbodeRestored` keyword.
 1. Skip if disabled, or `account`/`folder` don't match.
 2. Skip if `msg.internaldate < rule.first_seen_at`, unless `mode == ApplyExisting`. `first_seen_at` is filled from `rules_seen` when the rules file is loaded for an account.
 3. Evaluate each match condition. `body` requires `msg.raw`; the caller fetches it beforehand when any enabled rule for that folder has a body condition. Body text is the `text/plain` part via `mail-parser`, else the HTML part converted to text by `mail-parser`.
@@ -237,7 +240,7 @@ Dry runs (`rules test`, `apply-existing --dry-run`) stop after `evaluate` and pr
 
 `notify` and `silent` are not applied through `MailOps`; `apply` returns them as a `NewMail { account, folder, uid, from, subject }` event the sync loop forwards to whoever is listening.
 
-Direct actions from the CLI (`mark`, `move`, `delete`, `archive`) build the same `Action` values and go through the same `apply`, logged in `rule_log` with `rule_name = "cli"`. One difference: a user-initiated `delete` moves to the `\Trash` folder when the server has one, like other clients, and only falls back to expunge-plus-`.eml` when there is no Trash folder. Rule deletes always expunge-plus-`.eml`, because the point is a clean mailbox.
+Direct actions from the CLI (`mark`, `move`, `delete`, `archive`) build the same `Action` values and go through the same `apply`, logged in `rule_log` with `rule_name = "cli"`. One difference: a user-initiated `delete` moves to the `\Trash` folder when the server has one, like other clients, and only falls back to expunge-plus-`.eml` when there is no Trash folder. Rule deletes always expunge-plus-`.eml`, because the point is a clean mailbox. Direct actions also offer `mark_unread`, `unflag` and the user delete (`trash`); these are not valid in `rules.toml`. `--dry-run` previews any direct action from the local store.
 
 `MailOps` is the trait that `apply` and `sync` call: `list_folders`, `select`, `fetch_envelopes`, `fetch_flags`, `fetch_raw`, `store_flags`, `expunge`, `move_message`, `create_folder`, `idle`. Real impl wraps `async-imap`; `RecordingOps` in tests records calls and serves canned data. The trait exists for the fake.
 
@@ -245,7 +248,7 @@ Rules file validation fails as a whole on any error (bad regex, unknown action, 
 
 ## 9. Trash
 
-`accounts/<name>/trash/` holds `.eml` files. `postbode trash list` reads the directory plus `rule_log` for context. `restore FILE` does `APPEND` into the original folder (from the filename) and removes the file. `purge` removes files older than `trash_retention_days`; the sync loop runs purge once per hour.
+`accounts/<name>/trash/` holds `.eml` files. `postbode trash list` reads the directory plus `rule_log` for context. `restore FILE` does `APPEND` into the original folder with the `$PostbodeRestored` keyword, which every rule skips, and removes the file. `purge` removes files older than `trash_retention_days`; the sync loop runs purge once per hour.
 
 ## 10. Credentials
 
@@ -262,30 +265,30 @@ Errors map to `CredentialError::{NotFound, Locked, Unavailable, CommandFailed}` 
 postbode run                                  sync loops for all accounts, foreground until Ctrl-C
 postbode sync [--account NAME]                one-shot sync + rules pass
 postbode rules check                          validate rules.toml
-postbode rules test [NAME] [--account NAME]   dry run against the store; prints rule → message → action
+postbode rules test [NAME | --stdin] [--account NAME]   dry run; NAME previews a disabled proposal too, --stdin a draft JSON rule
 postbode rules apply-existing NAME [--dry-run]
 postbode rules schema                         JSON Schema for rules.toml, from the Rust types via schemars
 postbode rules propose [--by WHO]             read one rule as JSON on stdin, append with enabled = false
 postbode rules approve NAME | reject NAME     flip enabled, or remove the proposal
-postbode rules list [--json]                  name, enabled, proposed_by, first_seen_at
+postbode rules list [--json]                  name, enabled, proposed_by
 postbode guide                                print docs/agent-guide.md
 postbode folders [--account NAME] [--json]
-postbode list [--account NAME] [--folder INBOX] [--limit 50] [--json]
+postbode list [--account NAME] [--folder INBOX] [--limit 50] [--threads] [--json]
 postbode show UID [--account NAME] [--folder INBOX] [--raw] [--json]
 postbode log [--limit 50] [--json]
-postbode search QUERY [--account NAME] [--folder NAME] [--bodies] [--json]
-postbode mark read|unread|flag|unflag UID... [--account NAME] [--folder INBOX]
-postbode move UID... --to FOLDER [--account NAME] [--folder INBOX]
-postbode archive UID... [--account NAME] [--folder INBOX]
-postbode delete UID... [--account NAME] [--folder INBOX]     to Trash, or expunge + .eml if none
-postbode attachment list UID | save UID N [--dir DIR]
+postbode search QUERY [--account NAME] [--folder NAME] [--bodies] [--limit 50] [--json]
+postbode mark read|unread|flag|unflag UID... [--account NAME] [--folder INBOX] [--dry-run]
+postbode move UID... --to FOLDER [--account NAME] [--folder INBOX] [--dry-run]
+postbode archive UID... [--account NAME] [--folder INBOX] [--dry-run]
+postbode delete UID... [--account NAME] [--folder INBOX] [--dry-run]     to Trash, or expunge + .eml if none
+postbode attachment list UID [--json] | save UID N [--dir DIR]   [--account NAME] [--folder INBOX]
 postbode trash list | restore FILE | purge
 postbode account add                          interactive; tests login before saving
 ```
 
 `rules propose` is the only write path agents use; they never edit `rules.toml` directly. A proposed rule carries `proposed_by = "cli:<who>"` now and `"mcp:<client>"` later. `rules check` errors name the rule and the TOML span, which is what lets an agent self-correct.
 
-`list --threads` groups rows by `thread_id`, newest thread first, with a depth indicator. `folders` shows total and unread counts. `search` uses FTS5 syntax (`invoice from_addr:acme`); `--bodies` fetches and indexes missing bodies in the matching folders first, which can be slow on a large folder and says so.
+`list --threads` groups rows by `thread_id`, newest thread first, with a depth indicator. `folders` shows total and unread counts. `search` uses FTS5 syntax (`invoice from_addr:acme`); `--bodies` fetches and indexes missing bodies in the matching folders first, which can be slow on a large folder and says so. A query FTS5 cannot parse, such as a bare address, is retried with each word quoted.
 
 Plain text, one record per line, so it pipes into grep and fzf. `--json` output shapes are the ones the MCP server returns later. Logging via `log` + `env_logger` to stderr, default filter `warn,postbode=info`, `RUST_LOG` overrides. `account add` is the only interactive command.
 
@@ -356,7 +359,6 @@ docs/
     rules.md               the rules reference: every match key, action, examples
     cli.md                 generated from clap by clap-markdown; CI fails if stale
     agent-guide.md         how an LLM controls Postbode; printed by `postbode guide`
-    mcp.md                 phase 3
   superpowers/specs/       design specs, not part of the book
 ```
 
