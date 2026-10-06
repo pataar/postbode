@@ -276,6 +276,10 @@ impl MailOps for ImapOps {
     }
 
     fn idle(&mut self, timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome> {
+        if interrupt.load(Ordering::Relaxed) {
+            return Ok(IdleOutcome::Interrupted);
+        }
+        let timeout = timeout.min(Duration::from_secs(29 * 60));
         let session = self
             .session
             .take()
@@ -283,8 +287,11 @@ impl MailOps for ImapOps {
         let (outcome, session) = self.rt.block_on(async {
             let mut handle = session.idle();
             handle.init().await.map_err(proto)?;
-            let (wait, stop) = handle.wait_with_timeout(timeout.min(Duration::from_secs(29 * 60)));
+            // async-imap's timeout only bounds silence; server keepalives reset it, so also keep an absolute deadline.
+            let (wait, stop) = handle.wait_with_timeout(timeout);
             let mut stop = Some(stop);
+            let deadline = tokio::time::sleep(timeout);
+            tokio::pin!(deadline);
             let outcome = {
                 let mut wait = std::pin::pin!(wait);
                 loop {
@@ -293,6 +300,10 @@ impl MailOps for ImapOps {
                             IdleResponse::NewData(_) => IdleOutcome::NewMail,
                             IdleResponse::Timeout => IdleOutcome::Timeout,
                             IdleResponse::ManualInterrupt => IdleOutcome::Interrupted,
+                        },
+                        _ = &mut deadline => {
+                            drop(stop.take());
+                            break IdleOutcome::Timeout;
                         },
                         _ = tokio::time::sleep(Duration::from_millis(500)) => {
                             if interrupt.load(Ordering::Relaxed) {
