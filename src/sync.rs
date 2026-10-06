@@ -288,14 +288,16 @@ pub fn run_rules(
             let plan = evaluate(rules, &msg, &ctx);
             run.evaluated += 1;
             if !plan.actions.is_empty() {
-                if let Err(e) = apply(&plan, &msg, ops, store, trash, now) {
-                    run.events.push(account_error(
-                        account,
-                        format!("{}/{}: {e}", msg.folder, msg.uid),
-                    ));
-                    continue;
+                match apply(&plan, &msg, ops, store, trash, now) {
+                    Ok(executed) => run.actions += executed,
+                    Err(e) => {
+                        run.events.push(account_error(
+                            account,
+                            format!("{}/{}: {e}", msg.folder, msg.uid),
+                        ));
+                        continue;
+                    }
                 }
-                run.actions += plan.actions.len();
                 ops.select(&folder)?;
             }
             if new_ref.is_some_and(|n| !n.initial)
@@ -1010,6 +1012,49 @@ mod tests {
             "{:?}",
             run.events
         );
+    }
+
+    #[test]
+    fn flag_rule_acts_and_logs_once_across_passes() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let rules = rules_from(
+            "[[rules]]\nname = \"boss\"\nmatch.from = { contains = \"boss@\" }\nactions = [\"flag\"]\n",
+            &store,
+            0,
+        );
+        sync_all(&mut ops, &store).unwrap();
+        ops.add_mail("INBOX", 1, 10 * H, &headers("boss@x", "hi", "b1@x"), None);
+        let mut actions = 0;
+        for _ in 0..5 {
+            let new = sync_all(&mut ops, &store).unwrap().0;
+            actions += run_rules(
+                &mut ops,
+                &store,
+                &trash,
+                &rules,
+                &acc,
+                &identity,
+                &new,
+                Mode::Normal,
+                12 * H,
+            )
+            .unwrap()
+            .actions;
+        }
+        assert_eq!(store.log(100).unwrap().len(), 1);
+        assert_eq!(
+            ops.calls
+                .iter()
+                .filter(|c| c.starts_with("add_flags"))
+                .count(),
+            1
+        );
+        assert_eq!(actions, 1);
     }
 
     #[test]

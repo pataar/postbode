@@ -40,6 +40,7 @@ pub fn ensure_raw(
 }
 
 /// A delete wins over everything else in the plan. Otherwise flag actions run first, then only the first move or archive.
+/// Returns how many actions ran; a flag the message already has is skipped without a log row.
 pub fn apply(
     plan: &Plan,
     msg: &Message,
@@ -47,30 +48,37 @@ pub fn apply(
     store: &Store,
     trash: &Trash,
     now: i64,
-) -> Result<(), ApplyError> {
+) -> Result<usize, ApplyError> {
     if let Some(planned) = plan
         .actions
         .iter()
         .find(|planned| planned.action == Action::Delete)
     {
-        return delete(planned, msg, ops, store, trash, now);
+        delete(planned, msg, ops, store, trash, now)?;
+        return Ok(1);
     }
     let first_move = first_move(plan, msg, store)?;
     let mut current = msg.clone();
+    let mut executed = 0;
     for planned in &plan.actions {
         let flag = match planned.action {
             Action::MarkRead => "\\Seen",
             Action::Flag => "\\Flagged",
             _ => continue,
         };
+        if current.flags.split(' ').any(|f| f == flag) {
+            continue;
+        }
         store.log_action(&log_entry(planned, msg, now))?;
         set_flag(&mut current, flag, ops, store)?;
+        executed += 1;
     }
     if let Some((planned, target)) = first_move {
         store.log_action(&log_entry(planned, msg, now))?;
         move_to(&current, &target, ops, store)?;
+        executed += 1;
     }
-    Ok(())
+    Ok(executed)
 }
 
 /// The first move or archive in the plan with its resolved target. Resolved before anything runs so a failure leaves no
@@ -142,9 +150,6 @@ fn set_flag(
     ops: &mut dyn MailOps,
     store: &Store,
 ) -> Result<(), ApplyError> {
-    if current.flags.split(' ').any(|f| f == flag) {
-        return Ok(());
-    }
     ops.add_flags(current.uid, &[flag])?;
     let mut flags: Vec<&str> = current.flags.split(' ').filter(|f| !f.is_empty()).collect();
     flags.push(flag);
