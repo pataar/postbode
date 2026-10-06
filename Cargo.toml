@@ -2,7 +2,7 @@
 name = "postbode"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 description = "A fast, simple mail client with automatic mailbox rules"
 repository = "https://github.com/pataar/postbode"
@@ -25,12 +25,12 @@ mail-parser = "0.11"                                 # RFC 5322 header and body 
 notify-rust = "4"                                    # desktop notifications from `run`
 regex = "1"                                          # rule regex conditions
 rpassword = "7"                                      # hidden password prompt in `account add`
-rusqlite = { version = "0.37", features = ["bundled"] }       # SQLite, bundled build includes FTS5
-rusqlite_migration = { version = "2.1", features = ["from-directory"] }  # numbered SQL migrations
+rusqlite = { version = "0.40", features = ["bundled"] }       # SQLite, bundled build includes FTS5
+rusqlite_migration = { version = "2", features = ["from-directory"] }  # numbered SQL migrations
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }  # TLS without a C toolchain
 serde = { version = "1", features = ["derive"] }     # config, rules, rows
 serde_json = "1"                                     # --json output
-serde_rusqlite = "0.40"                              # rows to structs
+serde_rusqlite = "0.43"                              # rows to structs
 thiserror = "2"                                      # user-facing error enums
 tokio = { version = "1", features = ["rt", "net", "time", "macros", "sync"] }  # runtime for async-imap only
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }  # TLS stream for tokio
