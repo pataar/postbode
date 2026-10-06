@@ -201,6 +201,18 @@ mod tests {
         }
     }
 
+    /// A concurrent test spawning a password command briefly inherits a lock's descriptor until its exec closes it.
+    fn lock_soon(paths: &Paths, name: &str) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while lock_account(paths, name).unwrap().is_err() {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        true
+    }
+
     #[test]
     fn an_account_locked_elsewhere_is_reported_and_not_started() {
         let dir = tempfile::tempdir().unwrap();
@@ -222,7 +234,7 @@ mod tests {
         assert!(!engine.send("work", Command::SyncNow));
         engine.stop();
         drop(held);
-        assert!(lock_account(&paths, "work").unwrap().is_ok());
+        assert!(lock_soon(&paths, "work"));
     }
 
     #[test]
@@ -271,7 +283,7 @@ mod tests {
             Err(mpsc::TryRecvError::Disconnected),
             "every sync thread has ended"
         );
-        assert!(lock_account(&paths, "work").unwrap().is_ok());
+        assert!(lock_soon(&paths, "work"));
     }
 
     #[test]
