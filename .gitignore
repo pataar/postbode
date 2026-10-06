@@ -1,0 +1,7 @@
+/target
+*.db
+*.db-wal
+*.db-shm
+.brainstorm_projects/
+mise.lock
+/.superpowers/

@@ -1,0 +1,59 @@
+[package]
+name = "postbode"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+description = "A fast, simple mail client with automatic mailbox rules"
+repository = "https://github.com/pataar/postbode"
+
+[dependencies]
+anyhow = "1"                                         # error context in the binary and sync loop
+async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }  # IMAP client, maintained, IDLE support
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }         # INTERNALDATE comes back as chrono; also list output
+clap = { version = "4", features = ["derive"] }      # CLI
+directories = "6"                                    # platform config/state/cache dirs
+env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
+futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
+globset = "0.4"                                      # alias globs
+html2text = "0.17"                                   # HTML-only mail to text for body rules
+humantime = "2"                                      # "1h", "2d" in rules
+include_dir = "0.7"                                  # embed migrations/ in the binary
+keyring-core = "1"                                   # OS keyring API
+log = "0.4"                                          # logging facade
+mail-parser = "0.11"                                 # RFC 5322 header and body parsing
+notify-rust = "4"                                    # desktop notifications from `run`
+regex = "1"                                          # rule regex conditions
+rpassword = "7"                                      # hidden password prompt in `account add`
+rusqlite = { version = "0.37", features = ["bundled"] }       # SQLite, bundled build includes FTS5
+rusqlite_migration = { version = "2.1", features = ["from-directory"] }  # numbered SQL migrations
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }  # TLS without a C toolchain
+serde = { version = "1", features = ["derive"] }     # config, rules, rows
+serde_json = "1"                                     # --json output
+serde_rusqlite = "0.40"                              # rows to structs
+thiserror = "2"                                      # user-facing error enums
+tokio = { version = "1", features = ["rt", "net", "time", "macros", "sync"] }  # runtime for async-imap only
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }  # TLS stream for tokio
+toml = "1"                                           # config.toml and rules.toml
+webpki-roots = "1"                                   # root certificates
+zeroize = "1"                                        # wipe secrets on drop
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
+
+[dev-dependencies]
+tempfile = "3"                                       # temp dirs for store and paths tests
+
+[features]
+testing = []                                         # exposes RecordingOps to integration tests
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
