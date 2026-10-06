@@ -1,4 +1,3 @@
-// src/rules/engine.rs
 use crate::config::Identity;
 use crate::message::{bare_addresses, header_value};
 use crate::rules::{Action, CompiledRule};
@@ -78,10 +77,12 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
             break;
         }
     }
-    plan.notify = match explicit_notify {
-        Some(explicit) => explicit,
-        None => ctx.notify_default && !plan.moves_or_deletes(),
-    };
+    let deleted = plan.actions.iter().any(|a| a.action == Action::Delete);
+    plan.notify = !deleted
+        && match explicit_notify {
+            Some(explicit) => explicit,
+            None => ctx.notify_default && !plan.moves_or_deletes(),
+        };
     plan
 }
 
@@ -123,7 +124,7 @@ fn matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
         }
     }
     if let Some(min_age) = rule.older_than
-        && ctx.now - msg.internaldate < min_age.as_secs() as i64
+        && ctx.now - msg.internaldate < i64::try_from(min_age.as_secs()).unwrap_or(i64::MAX)
     {
         return false;
     }
@@ -434,6 +435,89 @@ actions = ["silent"]
         assert!(evaluate(&r, &moved_but_notify, &ctx(&id, 200)).notify);
         let quiet = msg("a@x", "pieter@example.com", "Weekly newsletter", 100, false);
         assert!(!evaluate(&r, &quiet, &ctx(&id, 200)).notify);
+    }
+
+    #[test]
+    fn deleted_mail_never_notifies() {
+        let id = identity();
+        let toml = r#"
+[[rules]]
+name = "loud"
+match.subject = { contains = "x" }
+actions = ["notify"]
+
+[[rules]]
+name = "purge"
+match.subject = { contains = "x" }
+actions = ["delete"]
+"#;
+        let plan = evaluate(
+            &rules(toml, 0),
+            &msg("a@x", "pieter@example.com", "x", 100, false),
+            &ctx(&id, 200),
+        );
+        assert!(!plan.notify);
+        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.actions[0].action, Action::Delete);
+    }
+
+    #[test]
+    fn huge_older_than_never_matches() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"never\"\nmatch.older_than = \"300000000000y\"\nactions = [\"delete\"]\n";
+        let m = msg("a@x", "pieter@example.com", "s", 0, true);
+        assert!(
+            evaluate(&rules(toml, 0), &m, &ctx(&id, 10 * HOUR))
+                .actions
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn to_me_via_delivered_to_and_cc() {
+        let id = identity();
+        let toml = r#"
+[[rules]]
+name = "lists"
+match.to_me = false
+actions = [{ move = "Lists" }]
+
+[[rules]]
+name = "shop"
+match.alias = "orders@shop.example.com"
+actions = [{ move = "Shopping" }]
+"#;
+        let r = rules(toml, 0);
+        let mut delivered = msg("a@x", "dev@lists.example", "s", 100, false);
+        delivered.delivered_to = Some("pieter@example.com".into());
+        assert!(evaluate(&r, &delivered, &ctx(&id, 200)).actions.is_empty());
+        let mut cc = msg("a@x", "pieter@example.com", "s", 100, false);
+        cc.cc_addr = Some("Shop <orders@shop.example.com>".into());
+        let plan = evaluate(&r, &cc, &ctx(&id, 200));
+        assert_eq!(
+            plan.actions
+                .iter()
+                .map(|a| a.rule.as_str())
+                .collect::<Vec<_>>(),
+            vec!["shop"]
+        );
+    }
+
+    #[test]
+    fn older_than_boundary_is_inclusive() {
+        let id = identity();
+        let toml = "[[rules]]\nname = \"age\"\nmatch.older_than = \"1h\"\nactions = [\"flag\"]\n";
+        let r = rules(toml, 0);
+        let exact = msg("a@x", "pieter@example.com", "s", 1000, false);
+        assert_eq!(
+            evaluate(&r, &exact, &ctx(&id, 1000 + HOUR)).actions.len(),
+            1
+        );
+        assert!(
+            evaluate(&r, &exact, &ctx(&id, 1000 + HOUR - 1))
+                .actions
+                .is_empty()
+        );
     }
 
     #[test]
