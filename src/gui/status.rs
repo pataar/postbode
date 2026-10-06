@@ -21,26 +21,12 @@ pub(crate) fn activity_text(activity: &Activity) -> String {
             folder,
             done,
             total,
-        } => {
-            format!(
-                "{} headers {} / {}",
-                clean(folder, false),
-                thousands(*done),
-                thousands(*total)
-            )
-        }
+        } => fetching(folder, "headers", *done, *total),
         Activity::FetchingBodies {
             folder,
             done,
             total,
-        } => {
-            format!(
-                "{} bodies {} / {}",
-                clean(folder, false),
-                thousands(*done),
-                thousands(*total)
-            )
-        }
+        } => fetching(folder, "bodies", *done, *total),
         Activity::RunningRules { folder } => format!("running rules on {}", clean(folder, false)),
         Activity::RunningCommand { what } => clean(what, false),
         Activity::Idle { since } => format!("up to date · {}", clock(*since)),
@@ -76,6 +62,16 @@ pub(crate) fn local_time(ts: i64, format: &str) -> String {
         .single()
         .map(|at| at.format(format).to_string())
         .unwrap_or_default()
+}
+
+/// "INBOX headers 1,200 / 5,000".
+fn fetching(folder: &str, what: &str, done: usize, total: usize) -> String {
+    format!(
+        "{} {what} {} / {}",
+        clean(folder, false),
+        thousands(done),
+        thousands(total)
+    )
 }
 
 pub(crate) fn clock(ts: i64) -> String {

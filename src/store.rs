@@ -50,9 +50,18 @@ pub struct Message {
     pub body_text: Option<String>,
 }
 
+/// Whether the space-separated `flags` contain `flag`.
+fn has_flag(flags: &str, flag: &str) -> bool {
+    flags.split_whitespace().any(|f| f == flag)
+}
+
 impl Message {
     pub fn is_seen(&self) -> bool {
-        self.flags.split(' ').any(|f| f == "\\Seen")
+        has_flag(&self.flags, "\\Seen")
+    }
+
+    pub fn is_flagged(&self) -> bool {
+        has_flag(&self.flags, "\\Flagged")
     }
 
     /// How deep in its thread the message sits, judged from its own reply headers.
@@ -78,11 +87,11 @@ pub struct MessageSummary {
 
 impl MessageSummary {
     pub fn is_seen(&self) -> bool {
-        self.flags.split(' ').any(|f| f == "\\Seen")
+        has_flag(&self.flags, "\\Seen")
     }
 
     pub fn is_flagged(&self) -> bool {
-        self.flags.split(' ').any(|f| f == "\\Flagged")
+        has_flag(&self.flags, "\\Flagged")
     }
 }
 
@@ -225,31 +234,28 @@ impl Store {
 
     /// One above the highest uid already on the server when `folder` was first tracked; 0 when unknown.
     pub fn initial_uid_next(&self, folder: &str) -> Result<u32, StoreError> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT initial_uid_next FROM folders WHERE name = ?1",
-                params![folder],
-                |r| r.get(0),
-            )
-            .optional()?
-            .unwrap_or(0))
+        self.folder_uid(folder, "initial_uid_next")
     }
 
     pub fn set_initial_uid_next(&self, folder: &str, uid_next: u32) -> Result<(), StoreError> {
-        self.conn.execute(
-            "UPDATE folders SET initial_uid_next = ?2 WHERE name = ?1",
-            params![folder, uid_next],
-        )?;
-        Ok(())
+        self.set_folder_uid(folder, "initial_uid_next", uid_next)
     }
 
     /// The highest uid the rules have evaluated in `folder`; above it mail is fresh. 0 when unknown.
     pub fn rules_uid(&self, folder: &str) -> Result<u32, StoreError> {
+        self.folder_uid(folder, "rules_uid")
+    }
+
+    pub fn set_rules_uid(&self, folder: &str, uid: u32) -> Result<(), StoreError> {
+        self.set_folder_uid(folder, "rules_uid", uid)
+    }
+
+    /// A uid column of the `folders` row; 0 when the folder is untracked.
+    fn folder_uid(&self, folder: &str, column: &'static str) -> Result<u32, StoreError> {
         Ok(self
             .conn
             .query_row(
-                "SELECT rules_uid FROM folders WHERE name = ?1",
+                &format!("SELECT {column} FROM folders WHERE name = ?1"),
                 params![folder],
                 |r| r.get(0),
             )
@@ -257,9 +263,14 @@ impl Store {
             .unwrap_or(0))
     }
 
-    pub fn set_rules_uid(&self, folder: &str, uid: u32) -> Result<(), StoreError> {
+    fn set_folder_uid(
+        &self,
+        folder: &str,
+        column: &'static str,
+        uid: u32,
+    ) -> Result<(), StoreError> {
         self.conn.execute(
-            "UPDATE folders SET rules_uid = ?2 WHERE name = ?1",
+            &format!("UPDATE folders SET {column} = ?2 WHERE name = ?1"),
             params![folder, uid],
         )?;
         Ok(())
@@ -506,6 +517,17 @@ impl Store {
         self.conn.execute(
             "INSERT OR REPLACE INTO rules_seen (name, first_seen_at) VALUES (?1, ?2)",
             params![name, now],
+        )?;
+        Ok(())
+    }
+
+    /// Moves `rules_uid` up to `last_uid` in every folder not in `except`, so their mail stops counting as fresh.
+    pub fn mark_rules_seen_except(&self, except: &[String]) -> Result<(), StoreError> {
+        let except = serde_json::to_string(except).expect("a list of strings serializes");
+        self.conn.execute(
+            "UPDATE folders SET rules_uid = last_uid
+             WHERE last_uid > rules_uid AND name NOT IN (SELECT value FROM json_each(?1))",
+            params![except],
         )?;
         Ok(())
     }
@@ -927,6 +949,25 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.rules_uid("INBOX").unwrap(), 77);
+    }
+
+    #[test]
+    fn mark_rules_seen_except_skips_listed_folders_and_never_lowers() {
+        let s = store_with_inbox();
+        for (name, last_uid) in [("INBOX", 50), ("Lists", 30), ("Old", 10)] {
+            s.upsert_folder(&Folder {
+                name: name.into(),
+                uidvalidity: 1,
+                last_uid,
+                special_use: None,
+            })
+            .unwrap();
+        }
+        s.set_rules_uid("Old", 20).unwrap();
+        s.mark_rules_seen_except(&["INBOX".to_string()]).unwrap();
+        assert_eq!(s.rules_uid("INBOX").unwrap(), 0);
+        assert_eq!(s.rules_uid("Lists").unwrap(), 30);
+        assert_eq!(s.rules_uid("Old").unwrap(), 20);
     }
 
     #[test]
