@@ -184,7 +184,7 @@ pub fn run() -> Result<()> {
                             serde_json::json!({ "account": acc.name, "folder": f.name, "total": total, "unread": unread, "special_use": f.special_use })
                         );
                     } else {
-                        println!("{}\t{}\t{total}\t{unread}", acc.name, f.name);
+                        println!("{}\t{}\t{total}\t{unread}", acc.name, clean(&f.name, false));
                     }
                 }
             }
@@ -209,8 +209,8 @@ pub fn run() -> Result<()> {
                         println!(
                             "{flag} {:>6}  {date}  {:<30}  {}",
                             m.uid,
-                            truncate(m.from_addr.as_deref().unwrap_or(""), 30),
-                            m.subject.as_deref().unwrap_or("")
+                            truncate(&clean(m.from_addr.as_deref().unwrap_or(""), false), 30),
+                            clean(m.subject.as_deref().unwrap_or(""), false)
                         );
                     }
                 }
@@ -254,11 +254,11 @@ pub fn run() -> Result<()> {
             } else {
                 println!(
                     "From: {}\nTo: {}\nSubject: {}\n",
-                    msg.from_addr.as_deref().unwrap_or(""),
-                    msg.to_addr.as_deref().unwrap_or(""),
-                    msg.subject.as_deref().unwrap_or("")
+                    clean(msg.from_addr.as_deref().unwrap_or(""), false),
+                    clean(msg.to_addr.as_deref().unwrap_or(""), false),
+                    clean(msg.subject.as_deref().unwrap_or(""), false)
                 );
-                println!("{}", postbode::message::body_text(&body));
+                println!("{}", clean(&postbode::message::body_text(&body), true));
             }
             Ok(())
         }
@@ -280,9 +280,9 @@ pub fn run() -> Result<()> {
                             "{at}  {:<20} {:<12} {}/{}  {}",
                             e.rule_name,
                             e.action,
-                            e.folder,
+                            clean(&e.folder, false),
                             e.uid,
-                            e.subject.as_deref().unwrap_or("")
+                            clean(e.subject.as_deref().unwrap_or(""), false)
                         );
                     }
                 }
@@ -332,6 +332,30 @@ fn truncate(s: &str, width: usize) -> String {
     out
 }
 
+/// Server-supplied text with control characters removed, so a header cannot drive the terminal. `keep_layout` keeps
+/// newlines and tabs, for message bodies.
+fn clean(text: &str, keep_layout: bool) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || (keep_layout && matches!(c, '\n' | '\t')))
+        .collect()
+}
+
+/// Linux notification servers render a subset of HTML in the summary and body.
+fn escape_markup(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn notification_text(text: &str) -> String {
+    let text = clean(text, false);
+    if cfg!(target_os = "linux") {
+        escape_markup(&text)
+    } else {
+        text
+    }
+}
+
 fn print_event(event: &Event) {
     match event {
         Event::NewMail {
@@ -339,13 +363,19 @@ fn print_event(event: &Event) {
             from,
             subject,
             ..
-        } => println!("[{account}] new mail from {from}: {subject}"),
+        } => println!(
+            "[{account}] new mail from {}: {}",
+            clean(from, false),
+            clean(subject, false)
+        ),
         Event::Synced {
             account,
             new_messages,
             actions,
         } => println!("[{account}] synced: {new_messages} new, {actions} rule actions"),
-        Event::Error { account, message } => eprintln!("[{account}] error: {message}"),
+        Event::Error { account, message } => {
+            eprintln!("[{account}] error: {}", clean(message, false))
+        }
     }
 }
 
@@ -370,8 +400,8 @@ fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
         print_event(&event);
         if let Event::NewMail { from, subject, .. } = &event {
             let _ = notify_rust::Notification::new()
-                .summary(from)
-                .body(subject)
+                .summary(&notification_text(from))
+                .body(&notification_text(subject))
                 .appname("Postbode")
                 .show();
         }
@@ -498,10 +528,10 @@ fn print_planned_actions(
                 println!(
                     "{}\t{}/{}\t{}\t{}",
                     a.rule,
-                    msg.folder,
+                    clean(&msg.folder, false),
                     msg.uid,
                     a.action.label(),
-                    msg.subject.as_deref().unwrap_or("")
+                    clean(msg.subject.as_deref().unwrap_or(""), false)
                 );
             }
         }
@@ -517,7 +547,12 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
                     let at = chrono::DateTime::from_timestamp(e.saved_at, 0)
                         .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
                         .unwrap_or_default();
-                    println!("{at}  {}/{}  {}", e.folder, e.uid, e.path.display());
+                    println!(
+                        "{at}  {}/{}  {}",
+                        clean(&e.folder, false),
+                        e.uid,
+                        clean(&e.path.display().to_string(), false)
+                    );
                 }
             }
             Ok(())
@@ -535,7 +570,10 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
             let mut ops = postbode::mail_ops::imap::ImapOps::connect(acc, &secret)?;
             ops.append(&folder, &raw)?;
             std::fs::remove_file(path)?;
-            println!("restored to {folder}; run `postbode sync` to see it");
+            println!(
+                "restored to {}; run `postbode sync` to see it",
+                clean(&folder, false)
+            );
             eprintln!(
                 "note: if a rule still matches this message it will be deleted again on the next sync; disable or fix that rule first"
             );
@@ -608,4 +646,24 @@ fn prompt(label: &str) -> Result<String> {
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
     Ok(line.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_strips_control_characters() {
+        let hostile = "Re: \u{1b}]0;pwned\u{7}hi\u{9b}2J\r\n\tthere\u{7f}";
+        assert_eq!(clean(hostile, false), "Re: ]0;pwnedhi2Jthere");
+        assert_eq!(clean(hostile, true), "Re: ]0;pwnedhi2J\n\tthere");
+    }
+
+    #[test]
+    fn escape_markup_escapes_tags_and_entities() {
+        assert_eq!(
+            escape_markup("<b>Tom & Jerry</b>"),
+            "&lt;b&gt;Tom &amp; Jerry&lt;/b&gt;"
+        );
+    }
 }
