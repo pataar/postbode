@@ -747,10 +747,12 @@ fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
     let mut handles = Vec::new();
     for account in config.accounts.clone() {
         let (paths, tx, shutdown) = (paths.clone(), tx.clone(), shutdown.clone());
+        let (_commands_tx, commands) = mpsc::channel();
+        let wake = Arc::new(AtomicBool::new(false));
         handles.push(
             std::thread::Builder::new()
                 .name(format!("sync-{}", account.name))
-                .spawn(move || sync::run_loop(account, paths, tx, shutdown))?,
+                .spawn(move || sync::run_loop(account, paths, tx, shutdown, commands, wake))?,
         );
     }
     drop(tx);

@@ -78,6 +78,7 @@ pub use recording::RecordingOps;
 #[cfg(any(test, feature = "testing"))]
 mod recording {
     use std::collections::{HashMap, VecDeque};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
@@ -95,6 +96,8 @@ mod recording {
         pub fail_fetch_after: Option<usize>,
         /// Makes the next `add_flags`, `append` or `fetch_raw` fail with this error, once.
         pub fail_next: Option<MailError>,
+        /// With no queued outcome, `idle` sets this flag and returns instead of waiting for a wake-up.
+        pub shutdown_when_idle_empty: Option<Arc<AtomicBool>>,
         envelope_fetches: usize,
         selected: String,
         next_uid: HashMap<String, u32>,
@@ -111,6 +114,7 @@ mod recording {
                 idle_outcomes: VecDeque::new(),
                 fail_fetch_after: None,
                 fail_next: None,
+                shutdown_when_idle_empty: None,
                 envelope_fetches: 0,
                 selected: String::new(),
                 next_uid: HashMap::new(),
@@ -355,10 +359,18 @@ mod recording {
             if interrupt.load(Ordering::Relaxed) {
                 return Ok(IdleOutcome::Interrupted);
             }
-            Ok(self
-                .idle_outcomes
-                .pop_front()
-                .unwrap_or(IdleOutcome::Interrupted))
+            if let Some(outcome) = self.idle_outcomes.pop_front() {
+                return Ok(outcome);
+            }
+            if let Some(shutdown) = &self.shutdown_when_idle_empty {
+                shutdown.store(true, Ordering::Relaxed);
+                return Ok(IdleOutcome::Interrupted);
+            }
+            // Like a real server: wait until someone wakes the session.
+            while !interrupt.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(IdleOutcome::Interrupted)
         }
     }
 }

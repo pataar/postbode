@@ -693,6 +693,7 @@ struct AccountSync<'a> {
     identity: Identity,
     rules_path: PathBuf,
     rules: Vec<CompiledRule>,
+    pending_full: bool,
 }
 
 impl<'a> AccountSync<'a> {
@@ -708,20 +709,39 @@ impl<'a> AccountSync<'a> {
             store,
             rules_path,
             rules,
+            pending_full: false,
         })
     }
 
-    /// Syncs every folder (`full`) or only INBOX, reloads the rules, runs them and sends the events.
+    /// Syncs every folder (`full`) or only INBOX, reloads the rules, runs them and sends the events. Queued
+    /// commands run at the pass's checkpoints.
     fn pass(
         &mut self,
         ops: &mut dyn MailOps,
         full: bool,
         events: &Sender<Event>,
+        commands: &Receiver<Command>,
+        shutdown: &AtomicBool,
     ) -> Result<(), SyncError> {
+        let (account, store, trash) = (self.account, &self.store, &self.trash);
+        let activity = |activity| Event::Activity {
+            account: account.name.clone(),
+            activity,
+        };
+        let mut pending_full = false;
+        let mut checkpoint = |ops: &mut dyn MailOps, step: Activity| {
+            let _ = events.send(activity(step));
+            if shutdown.load(Ordering::Relaxed) {
+                return Err(SyncError::Stopped);
+            }
+            let run = run_commands(ops, store, trash, account, commands, events)?;
+            pending_full |= run.wants_full_pass;
+            Ok(run.used_connection)
+        };
         let new = if full {
-            let (new, sync_errors) = sync_all(ops, &self.store)?;
+            let (new, sync_errors) = sync_all_with(ops, store, &mut checkpoint)?;
             for message in sync_errors {
-                let _ = events.send(account_error(self.account, message));
+                let _ = events.send(account_error(account, message));
             }
             new
         } else {
@@ -729,11 +749,12 @@ impl<'a> AccountSync<'a> {
                 name: "INBOX".into(),
                 special_use: None,
             };
-            sync_folder(ops, &self.store, &inbox)?
+            sync_folder_with(ops, store, &inbox, &mut checkpoint)?
         };
+        self.pending_full |= pending_full;
         let previous = std::mem::take(&mut self.rules);
         self.rules = reload_rules(&self.store, &self.rules_path, now(), previous);
-        let run = run_rules(
+        let run = run_rules_with(
             ops,
             &self.store,
             &self.trash,
@@ -743,6 +764,9 @@ impl<'a> AccountSync<'a> {
             &new,
             Mode::Normal,
             now(),
+            &mut |step| {
+                let _ = events.send(activity(step));
+            },
         )?;
         for event in run.events {
             let _ = events.send(event);
@@ -762,7 +786,14 @@ pub fn run_once(
     events: &Sender<Event>,
 ) -> Result<(), SyncError> {
     let mut ops = connect(account)?;
-    AccountSync::open(account, paths)?.pass(&mut ops, true, events)
+    let (_, no_commands) = std::sync::mpsc::channel();
+    AccountSync::open(account, paths)?.pass(
+        &mut ops,
+        true,
+        events,
+        &no_commands,
+        &AtomicBool::new(false),
+    )
 }
 
 pub fn run_loop(
@@ -770,27 +801,42 @@ pub fn run_loop(
     paths: Paths,
     events: Sender<Event>,
     shutdown: Arc<AtomicBool>,
+    commands: Receiver<Command>,
+    wake: Arc<AtomicBool>,
 ) {
     let name = account.name.clone();
+    let (stop, woken) = (shutdown.clone(), wake.clone());
     run_loop_with(
         account.clone(),
         paths,
         events,
         shutdown,
+        commands,
+        wake,
         move || Ok(Box::new(connect(&account)?) as Box<dyn MailOps>),
         |delay| {
             log::warn!("{name}: reconnecting in {}s", delay.as_secs());
-            std::thread::sleep(delay);
+            // Stop or a new command cuts this wait short; clearing the flag keeps later waits at full length.
+            let until = std::time::Instant::now() + delay;
+            while std::time::Instant::now() < until
+                && !stop.load(Ordering::Relaxed)
+                && !woken.swap(false, Ordering::Relaxed)
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
         },
     );
 }
 
 /// The loop body, with connection and back-off sleeping injected so tests can drive it with the fake.
+#[allow(clippy::too_many_arguments)]
 pub fn run_loop_with(
     account: AccountConfig,
     paths: Paths,
     events: Sender<Event>,
     shutdown: Arc<AtomicBool>,
+    commands: Receiver<Command>,
+    wake: Arc<AtomicBool>,
     mut connect: impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
     mut sleep: impl FnMut(Duration),
 ) {
@@ -802,6 +848,8 @@ pub fn run_loop_with(
             &paths,
             &events,
             &shutdown,
+            &commands,
+            &wake,
             &mut connect,
             &mut completed_cycle,
         );
@@ -810,10 +858,18 @@ pub fn run_loop_with(
         }
         match result {
             Ok(()) => return,
+            Err(_) if shutdown.load(Ordering::Relaxed) => return,
             Err(e) => {
                 let _ = events.send(Event::Error {
                     account: account.name.clone(),
                     message: e.to_string(),
+                });
+                let _ = events.send(Event::Activity {
+                    account: account.name.clone(),
+                    activity: Activity::Offline {
+                        reason: e.to_string(),
+                        retry_at: now() + backoff.as_secs() as i64,
+                    },
                 });
                 sleep(backoff);
                 backoff = (backoff * 2).min(Duration::from_secs(300));
@@ -822,41 +878,72 @@ pub fn run_loop_with(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_session(
     account: &AccountConfig,
     paths: &Paths,
     events: &Sender<Event>,
     shutdown: &AtomicBool,
+    commands: &Receiver<Command>,
+    wake: &AtomicBool,
     connect: &mut impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
     completed_cycle: &mut bool,
 ) -> Result<(), SyncError> {
+    let _ = events.send(Event::Activity {
+        account: account.name.clone(),
+        activity: Activity::Connecting,
+    });
     let mut ops = connect()?;
     let mut state = AccountSync::open(account, paths)?;
     let interval = Duration::from_secs(account.sync_interval_secs.max(10));
     let mut last_purge = 0i64;
     let mut full = true;
+    let mut pass = true;
 
     while !shutdown.load(Ordering::Relaxed) {
-        state.pass(ops.as_mut(), full, events)?;
-        if now() - last_purge > 3600 {
-            match state
-                .trash
-                .purge(account.trash_retention_days as i64 * 86_400, now())
-            {
-                Ok(0) => {}
-                Ok(removed) => log::info!("{}: purged {removed} trash files", account.name),
-                Err(e) => log::warn!("{}: trash purge failed: {e}", account.name),
+        if pass {
+            state.pass(ops.as_mut(), full, events, commands, shutdown)?;
+            if now() - last_purge > 3600 {
+                match state
+                    .trash
+                    .purge(account.trash_retention_days as i64 * 86_400, now())
+                {
+                    Ok(0) => {}
+                    Ok(removed) => log::info!("{}: purged {removed} trash files", account.name),
+                    Err(e) => log::warn!("{}: trash purge failed: {e}", account.name),
+                }
+                last_purge = now();
             }
-            last_purge = now();
         }
+        let drained = run_commands(
+            ops.as_mut(),
+            &state.store,
+            &state.trash,
+            account,
+            commands,
+            events,
+        )?;
+        if drained.wants_full_pass || std::mem::take(&mut state.pending_full) {
+            (full, pass) = (true, true);
+            continue;
+        }
+        let _ = events.send(Event::Activity {
+            account: account.name.clone(),
+            activity: Activity::Idle { since: now() },
+        });
         ops.select("INBOX")?;
-        let outcome = ops.idle(interval, shutdown)?;
+        let outcome = ops.idle(interval, wake)?;
         // A pass plus a wait means the connection is healthy; a pass alone does not, e.g. when IDLE always fails.
         *completed_cycle = true;
-        full = match outcome {
-            IdleOutcome::NewMail => false,
-            IdleOutcome::Timeout => true,
-            IdleOutcome::Interrupted => return Ok(()),
+        (full, pass) = match outcome {
+            IdleOutcome::NewMail => (false, true),
+            IdleOutcome::Timeout => (true, true),
+            IdleOutcome::Interrupted if shutdown.load(Ordering::Relaxed) => return Ok(()),
+            // Woken for queued commands: run them, then wait again.
+            IdleOutcome::Interrupted => {
+                wake.store(false, Ordering::Relaxed);
+                (full, false)
+            }
         };
     }
     Ok(())
@@ -1324,6 +1411,7 @@ mod tests {
         ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
         let (tx, rx) = std::sync::mpsc::channel();
         let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_when_idle_empty = Some(shutdown.clone());
         let stop = shutdown.clone();
         let mut connects = 0;
         run_loop_with(
@@ -1331,6 +1419,8 @@ mod tests {
             paths,
             tx,
             shutdown,
+            std::sync::mpsc::channel::<Command>().1,
+            Arc::new(AtomicBool::new(false)),
             || {
                 connects += 1;
                 Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>)
@@ -1581,10 +1671,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let (tx, rx) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_when_idle_empty = Some(shutdown.clone());
         run_loop_with(
             account(),
             paths.clone(),
             tx,
+            shutdown,
+            std::sync::mpsc::channel::<Command>().1,
             Arc::new(AtomicBool::new(false)),
             || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
             |_| panic!("the session must not fail"),
@@ -1904,6 +1998,8 @@ mod tests {
             paths,
             tx,
             shutdown,
+            std::sync::mpsc::channel::<Command>().1,
+            Arc::new(AtomicBool::new(false)),
             || {
                 connects += 1;
                 match connects {
@@ -1929,6 +2025,176 @@ mod tests {
         );
         assert_eq!(connects, 10);
         assert_eq!(sleeps, vec![5, 10, 20, 40, 80, 160, 300, 300, 300, 5]);
+    }
+
+    /// Receives until `wanted` matches, keeping every event in `log`.
+    fn wait_for(
+        rx: &std::sync::mpsc::Receiver<Event>,
+        log: &mut Vec<Event>,
+        wanted: impl Fn(&Event) -> bool,
+    ) -> Event {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let event = rx
+                .recv_timeout(left)
+                .unwrap_or_else(|e| panic!("no matching event within 5 s: {e}; got {log:?}"));
+            log.push(event.clone());
+            if wanted(&event) {
+                return event;
+            }
+        }
+    }
+
+    #[test]
+    fn a_command_sent_during_idle_runs_on_the_same_session() {
+        let ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let wake = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let (shutdown, wake) = (shutdown.clone(), wake.clone());
+            let mut ops = Some(ops);
+            std::thread::spawn(move || {
+                let mut connects = 0;
+                run_loop_with(
+                    account(),
+                    paths,
+                    tx,
+                    shutdown,
+                    commands,
+                    wake,
+                    || {
+                        connects += 1;
+                        Ok(Box::new(ops.take().expect("one connection")) as Box<dyn MailOps>)
+                    },
+                    |_| panic!("the session must not fail"),
+                );
+                connects
+            })
+        };
+        let mut log = Vec::new();
+        wait_for(&rx, &mut log, |e| {
+            matches!(
+                e,
+                Event::Activity {
+                    activity: Activity::Idle { .. },
+                    ..
+                }
+            )
+        });
+        commands_tx
+            .send(Command::Apply {
+                folder: "INBOX".into(),
+                uids: vec![1],
+                action: Action::MarkRead,
+            })
+            .unwrap();
+        wake.store(true, Ordering::Relaxed);
+        let done = wait_for(&rx, &mut log, |e| matches!(e, Event::ActionDone { .. }));
+        assert!(matches!(done, Event::ActionDone { results, .. } if results == [(1, Ok(1))]));
+        wait_for(&rx, &mut log, |e| {
+            matches!(
+                e,
+                Event::Activity {
+                    activity: Activity::Idle { .. },
+                    ..
+                }
+            )
+        });
+        shutdown.store(true, Ordering::Relaxed);
+        wake.store(true, Ordering::Relaxed);
+        assert_eq!(worker.join().unwrap(), 1);
+        log.extend(rx.try_iter());
+        let passes = log
+            .iter()
+            .filter(|e| matches!(e, Event::Synced { .. }))
+            .count();
+        assert_eq!(
+            passes, 1,
+            "only the first pass; the command ran without one: {log:?}"
+        );
+    }
+
+    #[test]
+    fn sync_now_during_a_pass_runs_another_full_pass() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(Command::SyncNow).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_when_idle_empty = Some(shutdown.clone());
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| panic!("the session must not fail"),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        let passes = events
+            .iter()
+            .filter(|e| matches!(e, Event::Synced { .. }))
+            .count();
+        let listings = events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    Event::Activity {
+                        activity: Activity::ListingFolders,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!((passes, listings), (2, 2), "{events:?}");
+    }
+
+    #[test]
+    fn stop_interrupts_the_reconnect_wait() {
+        let mut offline = account();
+        offline.host = "127.0.0.1".into();
+        offline.port = 1;
+        offline.password = PasswordSource::Command {
+            command: "printf x".into(),
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let wake = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let (paths, shutdown, wake) =
+                (Paths::under(dir.path()), shutdown.clone(), wake.clone());
+            let commands = std::sync::mpsc::channel::<Command>().1;
+            std::thread::spawn(move || run_loop(offline, paths, tx, shutdown, commands, wake))
+        };
+        wait_for(&rx, &mut Vec::new(), |e| {
+            matches!(
+                e,
+                Event::Activity {
+                    activity: Activity::Offline { .. },
+                    ..
+                }
+            )
+        });
+        let started = std::time::Instant::now();
+        shutdown.store(true, Ordering::Relaxed);
+        wake.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     fn synced() -> (RecordingOps, Store, tempfile::TempDir) {
