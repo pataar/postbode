@@ -127,8 +127,8 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     ui.separator();
     egui::ScrollArea::vertical()
         .auto_shrink(false)
-        .show(ui, |ui| match &message.body_text {
-            Some(text) => show_text(ui, &clean(text, true)),
+        .show(ui, |ui| match &body.text {
+            Some(text) => show_text(ui, text),
             None => {
                 ui.weak(missing_text(&app.accounts[body.account]));
             }

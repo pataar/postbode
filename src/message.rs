@@ -150,7 +150,8 @@ pub fn save_attachment(raw: &[u8], index: usize, dir: &Path) -> io::Result<PathB
     Ok(path)
 }
 
-/// The sender picks the name: keep only its last path segment, without control characters.
+/// The sender picks the name: keep only its last path segment, without control characters or leading dots, so it
+/// cannot be a hidden file such as `.bash_profile`.
 fn safe_file_name(name: Option<&str>, index: usize) -> String {
     let base: String = name
         .unwrap_or("")
@@ -160,9 +161,12 @@ fn safe_file_name(name: Option<&str>, index: usize) -> String {
         .chars()
         .filter(|c| !c.is_control())
         .collect();
-    match base.trim() {
-        "" | "." | ".." => format!("attachment-{index}"),
-        _ => base,
+    match base
+        .trim_start_matches(|c: char| c == '.' || c.is_whitespace())
+        .trim_end()
+    {
+        "" => format!("attachment-{index}"),
+        name => name.to_string(),
     }
 }
 
@@ -332,5 +336,13 @@ JVBERi0=\r\n\
         assert_eq!(safe_file_name(Some(".."), 3), "attachment-3");
         assert_eq!(safe_file_name(Some("a\u{1b}b.txt"), 1), "ab.txt");
         assert_eq!(safe_file_name(None, 2), "attachment-2");
+    }
+
+    #[test]
+    fn safe_file_name_strips_leading_dots() {
+        assert_eq!(safe_file_name(Some(".bash_profile"), 1), "bash_profile");
+        assert_eq!(safe_file_name(Some("../.ssh/.config"), 1), "config");
+        assert_eq!(safe_file_name(Some(" ..."), 4), "attachment-4");
+        assert_eq!(safe_file_name(Some("report.v2.pdf"), 1), "report.v2.pdf");
     }
 }

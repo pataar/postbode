@@ -42,6 +42,8 @@ pub(crate) struct BodyState {
     pub read_sent: bool,
     pub saved: Option<String>,
     pub shown_at: f64,
+    /// The body text cleaned once on load, since the panel draws it every frame.
+    pub text: Option<String>,
 }
 
 pub(crate) struct HistoryLine {
@@ -290,26 +292,32 @@ impl App {
             });
         }
         egui::Panel::bottom("status").show(ui, |ui| actions.extend(status::show(self, ui)));
+        let side = egui::Frame::side_top_panel(ui.style());
         egui::Panel::left("folders")
+            .frame(theme::pane(side, ui, self.focus == Focus::Folders))
             .resizable(true)
             .default_size(220.0)
             .show(ui, |ui| actions.extend(folders::show(self, ui)));
+        // Rules, Activity and Trash have no list pane, so the central panel stands for both list and body there.
+        let central = central_panel(ui, self.focus != Focus::Folders);
         match &self.view {
             View::Folder { .. } => {
                 egui::Panel::left("list")
+                    .frame(theme::pane(side, ui, self.focus == Focus::List))
                     .resizable(true)
                     .default_size(480.0)
                     .show(ui, |ui| actions.extend(list::show(self, ui)));
-                central_panel(ui).show(ui, |ui| actions.extend(body::show(self, ui)));
+                central_panel(ui, self.focus == Focus::Body)
+                    .show(ui, |ui| actions.extend(body::show(self, ui)));
             }
             View::Rules => {
-                central_panel(ui).show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
+                central.show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
             }
             View::Activity => {
-                central_panel(ui).show(ui, |ui| actions.extend(rules::show_activity(self, ui)));
+                central.show(ui, |ui| actions.extend(rules::show_activity(self, ui)));
             }
             View::Trash => {
-                central_panel(ui).show(ui, |ui| actions.extend(rules::show_trash(self, ui)));
+                central.show(ui, |ui| actions.extend(rules::show_trash(self, ui)));
             }
         }
         actions.extend(list::show_move_picker(self, &ctx));
@@ -779,6 +787,7 @@ impl App {
         }
         let (message, attachments) = self.read_stored(account, &key);
         if let Some(body) = &mut self.body {
+            body.text = body_text(message.as_ref());
             body.message = message;
             body.attachments = attachments;
         }
@@ -800,6 +809,7 @@ impl App {
                 },
             );
         }
+        let text = body_text(stored.as_ref());
         BodyState {
             account,
             armed,
@@ -809,6 +819,7 @@ impl App {
             read_sent: false,
             saved: None,
             shown_at: now,
+            text,
         }
     }
 
@@ -1138,9 +1149,13 @@ impl App {
 }
 
 /// The central panel on the base colour; side panels and the status bar keep the darker panel colour.
-pub(crate) fn central_panel(ui: &egui::Ui) -> egui::CentralPanel {
-    egui::CentralPanel::default()
-        .frame(egui::Frame::central_panel(ui.style()).fill(ui.visuals().window_fill))
+pub(crate) fn central_panel(ui: &egui::Ui, focused: bool) -> egui::CentralPanel {
+    let frame = egui::Frame::central_panel(ui.style()).fill(ui.visuals().window_fill);
+    egui::CentralPanel::default().frame(theme::pane(frame, ui, focused))
+}
+
+fn body_text(message: Option<&Message>) -> Option<String> {
+    message?.body_text.as_deref().map(|text| clean(text, true))
 }
 
 /// A printable shortcut, matched on the typed text so it follows the keyboard layout.

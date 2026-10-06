@@ -111,6 +111,15 @@ pub(crate) fn palette(ui: &egui::Ui) -> &'static Palette {
     }
 }
 
+/// `frame` with an accent outline when its pane has the keyboard focus.
+pub(crate) fn pane(frame: egui::Frame, ui: &egui::Ui, focused: bool) -> egui::Frame {
+    if focused {
+        frame.stroke(Stroke::new(1.0, palette(ui).accent))
+    } else {
+        frame
+    }
+}
+
 /// Runs `add` with the focus ring of a text field in the accent: egui draws it with `selection.stroke`, which stays
 /// `on_accent` for the text of selected rows.
 pub(crate) fn text_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
