@@ -1,13 +1,16 @@
 //! Live IMAP tests against tests/dovecot/compose.yml, skipped unless POSTBODE_TEST_IMAP_HOST is set.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use postbode::config::{AccountConfig, PasswordSource};
+use postbode::config::{AccountConfig, Config, PasswordSource};
 use postbode::credentials::Secret;
 use postbode::mail_ops::imap::ImapOps;
 use postbode::mail_ops::{IdleOutcome, MailOps};
+use postbode::paths::Paths;
+use postbode::store::Store;
+use postbode::sync::{self, Event};
 
 const PASSWORD: &str = "postbode-test";
 const PORT: u16 = 10993;
@@ -171,4 +174,153 @@ fn idle_wakes_when_mail_arrives() {
     delivery.join().unwrap();
     assert_eq!(outcome, IdleOutcome::NewMail);
     assert!(started.elapsed() < Duration::from_secs(30));
+}
+
+/// Mail newer than a rule's first pass is what the rule acts on; INTERNALDATE has one-second resolution.
+fn wait_past_the_rule_clock() {
+    std::thread::sleep(Duration::from_millis(1100));
+}
+
+fn postbode(home: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .args(args)
+        .env("POSTBODE_HOME", home)
+        .env("RUST_LOG", "error")
+        .output()
+        .unwrap()
+}
+
+fn home_with(account: &AccountConfig, rules: &str) -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    Config {
+        accounts: vec![account.clone()],
+    }
+    .save(&paths.config_file())
+    .unwrap();
+    if !rules.is_empty() {
+        std::fs::write(paths.rules_file(), rules).unwrap();
+    }
+    home
+}
+
+#[test]
+fn sync_resets_a_folder_whose_uidvalidity_changed() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "uidvalidity"));
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("mail.db")).unwrap();
+    ops.create_folder("Lists").unwrap();
+    ops.append("Lists", &mail("before"), &[]).unwrap();
+    sync::sync_all(&mut ops, &store).unwrap();
+    let before = store.folder("Lists").unwrap().unwrap().uidvalidity;
+
+    ops.select("INBOX").unwrap();
+    ops.delete_folder("Lists").unwrap();
+    // Dovecot derives UIDVALIDITY from the clock.
+    std::thread::sleep(Duration::from_millis(1100));
+    ops.create_folder("Lists").unwrap();
+    ops.append("Lists", &mail("after"), &[]).unwrap();
+    let (_, errors) = sync::sync_all(&mut ops, &store).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+
+    assert_ne!(store.folder("Lists").unwrap().unwrap().uidvalidity, before);
+    let subjects: Vec<Option<String>> = store
+        .messages_in_folder("Lists")
+        .unwrap()
+        .into_iter()
+        .map(|m| m.subject)
+        .collect();
+    assert_eq!(subjects, vec![Some("after".to_string())]);
+}
+
+#[test]
+fn rule_delete_keeps_a_backup_then_expunges() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "rule-delete");
+    let home = home_with(
+        &account,
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"sign-in code\" }\nactions = [\"delete\"]\n",
+    );
+    let paths = Paths::under(home.path());
+    let (events, received) = std::sync::mpsc::channel();
+    sync::run_once(&account, &paths, &events).unwrap();
+    wait_past_the_rule_clock();
+    connect(&account)
+        .append("INBOX", &mail("Your sign-in code"), &[])
+        .unwrap();
+    sync::run_once(&account, &paths, &events).unwrap();
+    drop(events);
+    let errors: Vec<Event> = received
+        .iter()
+        .filter(|e| matches!(e, Event::Error { .. }))
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+
+    let backups = std::fs::read_dir(paths.trash_dir(&account.name))
+        .unwrap()
+        .count();
+    assert_eq!(backups, 1, "expected one .eml backup");
+    let mut ops = connect(&account);
+    for folder in ["INBOX", "Trash"] {
+        ops.select(folder).unwrap();
+        assert!(
+            ops.fetch_new(1).unwrap().is_empty(),
+            "{folder} is not empty"
+        );
+    }
+}
+
+#[test]
+fn cli_delete_moves_to_the_trash_folder() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "cli-delete");
+    let home = home_with(&account, "");
+    connect(&account)
+        .append("INBOX", &mail("old newsletter"), &[])
+        .unwrap();
+    for args in [&["sync"][..], &["delete", "1"][..]] {
+        let out = postbode(home.path(), args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let mut ops = connect(&account);
+    ops.select("INBOX").unwrap();
+    assert!(ops.fetch_new(1).unwrap().is_empty(), "still in INBOX");
+    ops.select("Trash").unwrap();
+    assert_eq!(ops.fetch_new(1).unwrap().len(), 1);
+}
+
+#[test]
+fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "cli-sync-error");
+    // Dovecot refuses a 300-character mailbox name, so the move fails for this message only.
+    let target = "x".repeat(300);
+    let home = home_with(
+        &account,
+        &format!(
+            "[[rules]]\nname = \"impossible\"\nmatch.subject = {{ contains = \"move me\" }}\nactions = [{{ move = \"{target}\" }}]\n"
+        ),
+    );
+    let first = postbode(home.path(), &["sync"]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    wait_past_the_rule_clock();
+    connect(&account)
+        .append("INBOX", &mail("please move me"), &[])
+        .unwrap();
+    let out = postbode(home.path(), &["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("sync failed for at least one account or folder"),
+        "{stderr}"
+    );
 }
