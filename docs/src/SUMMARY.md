@@ -1,6 +1,6 @@
 # Summary
 
-[Postbode](index.md)
+[Introduction](index.md)
 
 - [Install](install.md)
 - [Accounts](accounts.md)

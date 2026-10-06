@@ -87,8 +87,9 @@
     font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-/* The ❯ prompt from the logo. */
-.menu-title::before {
-    content: "❯ ";
-    color: #a6e3a1;
+/* The logo replaces the title text; font-size 0 keeps "Postbode" for screen readers. */
+.menu-title {
+    background: url("../logo.svg") center / contain no-repeat;
+    font-size: 0;
+    height: 32px;
 }
