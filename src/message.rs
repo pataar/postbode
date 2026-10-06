@@ -166,9 +166,24 @@ fn safe_file_name(name: Option<&str>, index: usize) -> String {
     }
 }
 
+/// Server-supplied text with control characters removed, so a header cannot drive the terminal. `keep_layout` keeps
+/// newlines and tabs, for message bodies.
+pub fn clean(text: &str, keep_layout: bool) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || (keep_layout && matches!(c, '\n' | '\t')))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_strips_control_characters() {
+        let hostile = "Re: \u{1b}]0;pwned\u{7}hi\u{9b}2J\r\n\tthere\u{7f}";
+        assert_eq!(clean(hostile, false), "Re: ]0;pwnedhi2Jthere");
+        assert_eq!(clean(hostile, true), "Re: ]0;pwnedhi2J\n\tthere");
+    }
 
     const HEADERS: &[u8] = b"From: Alice <alice@example.com>\r\n\
 To: Bob <bob@example.com>, carol@example.com\r\n\

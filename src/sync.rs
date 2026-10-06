@@ -755,7 +755,7 @@ impl<'a> AccountSync<'a> {
                 return Err(SyncError::Stopped);
             }
             let _ = events.send(activity(step));
-            if shutdown.load(Ordering::Relaxed) {
+            if shutdown.load(Ordering::Acquire) {
                 return Err(SyncError::Stopped);
             }
             match run_commands(ops, store, trash, account, commands, events) {
@@ -849,8 +849,8 @@ pub fn run_loop(
             // Stop or a new command cuts this wait short; clearing the flag keeps later waits at full length.
             let until = std::time::Instant::now() + delay;
             while std::time::Instant::now() < until
-                && !stop.load(Ordering::Relaxed)
-                && !woken.swap(false, Ordering::Relaxed)
+                && !stop.load(Ordering::Acquire)
+                && !woken.swap(false, Ordering::AcqRel)
             {
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -871,7 +871,7 @@ pub fn run_loop_with(
     mut sleep: impl FnMut(Duration),
 ) {
     let mut backoff = Duration::from_secs(5);
-    while !shutdown.load(Ordering::Relaxed) {
+    while !shutdown.load(Ordering::Acquire) {
         let mut completed_cycle = false;
         let result = run_session(
             &account,
@@ -888,7 +888,7 @@ pub fn run_loop_with(
         }
         match result {
             Ok(()) => return,
-            Err(_) if shutdown.load(Ordering::Relaxed) => return,
+            Err(_) if shutdown.load(Ordering::Acquire) => return,
             Err(e) => {
                 let _ = events.send(Event::Error {
                     account: account.name.clone(),
@@ -930,7 +930,7 @@ fn run_session(
     let mut full = true;
     let mut pass = true;
 
-    while !shutdown.load(Ordering::Relaxed) {
+    while !shutdown.load(Ordering::Acquire) {
         if pass {
             state.pass(ops.as_mut(), full, events, commands, shutdown)?;
             if now() - last_purge > 3600 {
@@ -968,7 +968,7 @@ fn run_session(
         (full, pass) = match outcome {
             IdleOutcome::NewMail => (false, true),
             IdleOutcome::Timeout => (true, true),
-            IdleOutcome::Interrupted if shutdown.load(Ordering::Relaxed) => return Ok(()),
+            IdleOutcome::Interrupted if shutdown.load(Ordering::Acquire) => return Ok(()),
             // Woken for queued commands: run them, then wait again.
             IdleOutcome::Interrupted => {
                 wake.store(false, Ordering::Relaxed);

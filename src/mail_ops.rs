@@ -356,7 +356,7 @@ mod recording {
 
         fn idle(&mut self, _timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome> {
             self.calls.push(format!("idle {}", self.selected));
-            if interrupt.load(Ordering::Relaxed) {
+            if interrupt.load(Ordering::Acquire) {
                 return Ok(IdleOutcome::Interrupted);
             }
             if let Some(outcome) = self.idle_outcomes.pop_front() {
@@ -367,7 +367,7 @@ mod recording {
                 return Ok(IdleOutcome::Interrupted);
             }
             // Like a real server: wait until someone wakes the session.
-            while !interrupt.load(Ordering::Relaxed) {
+            while !interrupt.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(IdleOutcome::Interrupted)

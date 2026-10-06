@@ -1,8 +1,10 @@
 pub mod actions;
 pub mod config;
 pub mod credentials;
+pub mod engine;
 pub mod mail_ops;
 pub mod message;
+pub mod notify;
 pub mod paths;
 pub mod rules;
 pub mod store;

@@ -1,7 +1,5 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
 use anyhow::{Context as _, Result, bail};
@@ -9,7 +7,9 @@ use clap::{Parser, Subcommand};
 
 use postbode::config::{AccountConfig, Config, Identity, PasswordSource};
 use postbode::credentials::{self, Secret};
+use postbode::engine::{Engine, StartState};
 use postbode::mail_ops::MailOps;
+use postbode::message::clean;
 use postbode::paths::Paths;
 use postbode::rules::engine::{Context, Mode, evaluate};
 use postbode::rules::{Action, CompiledRule, Rule, RuleFile};
@@ -52,7 +52,7 @@ enum Mark {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sync all accounts continuously and apply rules; Ctrl-C stops
+    /// Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
     Run,
     /// Sync once, apply rules, exit
     Sync {
@@ -687,30 +687,6 @@ fn truncate(s: &str, width: usize) -> String {
     out
 }
 
-/// Server-supplied text with control characters removed, so a header cannot drive the terminal. `keep_layout` keeps
-/// newlines and tabs, for message bodies.
-pub(crate) fn clean(text: &str, keep_layout: bool) -> String {
-    text.chars()
-        .filter(|c| !c.is_control() || (keep_layout && matches!(c, '\n' | '\t')))
-        .collect()
-}
-
-/// Linux notification servers render a subset of HTML in the summary and body.
-fn escape_markup(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn notification_text(text: &str) -> String {
-    let text = clean(text, false);
-    if cfg!(target_os = "linux") {
-        escape_markup(&text)
-    } else {
-        text
-    }
-}
-
 fn print_event(event: &Event) {
     match event {
         Event::NewMail {
@@ -742,32 +718,27 @@ fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
     }
     compiled_rules(paths, None)?;
     // Ctrl-C ends the process through the default SIGINT handler; WAL and trash-before-delete leave nothing half done.
-    let shutdown = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = mpsc::channel();
-    let mut handles = Vec::new();
-    for account in config.accounts.clone() {
-        let (paths, tx, shutdown) = (paths.clone(), tx.clone(), shutdown.clone());
-        let (_commands_tx, commands) = mpsc::channel();
-        let wake = Arc::new(AtomicBool::new(false));
-        handles.push(
-            std::thread::Builder::new()
-                .name(format!("sync-{}", account.name))
-                .spawn(move || sync::run_loop(account, paths, tx, shutdown, commands, wake))?,
-        );
-    }
-    drop(tx);
-    for event in rx {
-        print_event(&event);
-        if let Event::NewMail { from, subject, .. } = &event {
-            let _ = notify_rust::Notification::new()
-                .summary(&notification_text(from))
-                .body(&notification_text(subject))
-                .appname("Postbode")
-                .show();
+    // `engine` holds the account locks until `run` exits.
+    let (engine, events) = Engine::start(config, paths)?;
+    let mut running = 0;
+    for (name, state) in engine.accounts() {
+        match state {
+            StartState::Running => running += 1,
+            StartState::Locked { pid } => eprintln!(
+                "[{name}] already synced by another Postbode process{}; skipped",
+                pid.map(|p| format!(" (pid {p})")).unwrap_or_default()
+            ),
+            StartState::Failed(e) => eprintln!("[{name}] could not start: {}", clean(e, false)),
         }
     }
-    for h in handles {
-        let _ = h.join();
+    if running == 0 {
+        bail!("no account could start");
+    }
+    for event in events {
+        print_event(&event);
+        if let Event::NewMail { from, subject, .. } = &event {
+            postbode::notify::new_mail(from, subject);
+        }
     }
     Ok(())
 }
@@ -1076,21 +1047,6 @@ mod tests {
             std::fs::read_to_string(path).unwrap(),
             generated,
             "docs/src/cli.md is stale; run POSTBODE_BLESS=1 cargo test"
-        );
-    }
-
-    #[test]
-    fn clean_strips_control_characters() {
-        let hostile = "Re: \u{1b}]0;pwned\u{7}hi\u{9b}2J\r\n\tthere\u{7f}";
-        assert_eq!(clean(hostile, false), "Re: ]0;pwnedhi2Jthere");
-        assert_eq!(clean(hostile, true), "Re: ]0;pwnedhi2J\n\tthere");
-    }
-
-    #[test]
-    fn escape_markup_escapes_tags_and_entities() {
-        assert_eq!(
-            escape_markup("<b>Tom & Jerry</b>"),
-            "&lt;b&gt;Tom &amp; Jerry&lt;/b&gt;"
         );
     }
 }

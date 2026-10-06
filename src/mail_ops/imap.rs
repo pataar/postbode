@@ -374,7 +374,7 @@ impl MailOps for ImapOps {
     }
 
     fn idle(&mut self, timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome> {
-        if interrupt.load(Ordering::Relaxed) {
+        if interrupt.load(Ordering::Acquire) {
             return Ok(IdleOutcome::Interrupted);
         }
         if !self.has_idle {
@@ -407,7 +407,7 @@ impl MailOps for ImapOps {
                             break IdleOutcome::Timeout;
                         },
                         _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                            if interrupt.load(Ordering::Relaxed) {
+                            if interrupt.load(Ordering::Acquire) {
                                 // Dropping the StopSource makes `wait` resolve with ManualInterrupt.
                                 drop(stop.take());
                             }
@@ -427,7 +427,7 @@ impl MailOps for ImapOps {
 fn sleep_until(timeout: Duration, interrupt: &AtomicBool) -> IdleOutcome {
     let deadline = Instant::now() + timeout;
     loop {
-        if interrupt.load(Ordering::Relaxed) {
+        if interrupt.load(Ordering::Acquire) {
             return IdleOutcome::Interrupted;
         }
         let left = deadline.saturating_duration_since(Instant::now());

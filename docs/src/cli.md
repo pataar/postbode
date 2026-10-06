@@ -44,7 +44,7 @@ A fast, simple mail client with automatic mailbox rules
 
 ###### **Subcommands:**
 
-* `run` — Sync all accounts continuously and apply rules; Ctrl-C stops
+* `run` — Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
 * `sync` — Sync once, apply rules, exit
 * `attachment` — List or save a message's attachments
 * `rules` — Inspect and test rules.toml
@@ -65,7 +65,7 @@ A fast, simple mail client with automatic mailbox rules
 
 ## `postbode run`
 
-Sync all accounts continuously and apply rules; Ctrl-C stops
+Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
 
 **Usage:** `postbode run`
 

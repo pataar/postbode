@@ -7,12 +7,14 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `paths` platform dirs, atomic writes
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
+- `engine` one sync thread per account, the per-account lock, commands in and events out; what `run` and the GUI use
 - `message` header parsing, thread id, body text
+- `notify` desktop notifications for new mail
 - `store` one SQLite file per account; migrations in `migrations/`
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
 - `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
 - `trash` `.eml` backups before any rule delete
-- `sync` per-account loop: sync folders, run rules, IDLE
+- `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
 - `main` + `cli/` clap only; no logic
 
 ## Definition of done
