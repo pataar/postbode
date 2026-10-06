@@ -65,6 +65,50 @@ impl Message {
     }
 }
 
+/// What a list row shows; no headers or body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageSummary {
+    pub uid: u32,
+    pub from: String,
+    pub to: String,
+    pub subject: String,
+    pub date: i64,
+    pub flags: String,
+}
+
+impl MessageSummary {
+    pub fn is_seen(&self) -> bool {
+        self.flags.split(' ').any(|f| f == "\\Seen")
+    }
+
+    pub fn is_flagged(&self) -> bool {
+        self.flags.split(' ').any(|f| f == "\\Flagged")
+    }
+}
+
+/// A collapsed thread row: its latest message plus counts over all members in the folder.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadSummary {
+    pub thread_id: String,
+    pub latest: MessageSummary,
+    pub count: u32,
+    pub unread: bool,
+    pub flagged: bool,
+}
+
+fn summary_from_row(row: &rusqlite::Row, offset: usize) -> rusqlite::Result<MessageSummary> {
+    Ok(MessageSummary {
+        uid: row.get(offset)?,
+        from: row.get(offset + 1)?,
+        to: row.get(offset + 2)?,
+        subject: row.get(offset + 3)?,
+        date: row.get(offset + 4)?,
+        flags: row.get(offset + 5)?,
+    })
+}
+
+const SUMMARY_COLUMNS: &str = "uid, COALESCE(from_addr, ''), COALESCE(to_addr, ''), COALESCE(subject, ''), internaldate, flags";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
     #[serde(default)]
@@ -179,6 +223,27 @@ impl Store {
         Ok(())
     }
 
+    /// One above the highest uid already on the server when `folder` was first tracked; 0 when unknown.
+    pub fn initial_uid_next(&self, folder: &str) -> Result<u32, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT initial_uid_next FROM folders WHERE name = ?1",
+                params![folder],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    pub fn set_initial_uid_next(&self, folder: &str, uid_next: u32) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE folders SET initial_uid_next = ?2 WHERE name = ?1",
+            params![folder, uid_next],
+        )?;
+        Ok(())
+    }
+
     pub fn reset_folder(&self, name: &str, uidvalidity: u32) -> Result<(), StoreError> {
         self.conn
             .execute("DELETE FROM messages WHERE folder = ?1", params![name])?;
@@ -288,6 +353,43 @@ impl Store {
                 Ok(rows.collect::<Result<Vec<_>, _>>()?)
             })
             .collect()
+    }
+
+    /// One row per thread in `folder`, the most recently active first. With exactly one MAX() in the query, SQLite fills
+    /// the bare columns from the row holding it: the thread's latest message. A second MAX() anywhere breaks that.
+    pub fn thread_summaries(
+        &self,
+        folder: &str,
+        limit: u32,
+    ) -> Result<Vec<ThreadSummary>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            r"SELECT thread_id, {SUMMARY_COLUMNS}, MAX(internaldate) AS latest, COUNT(*),
+                     SUM(instr(' ' || flags || ' ', ' \Seen ') = 0), SUM(instr(' ' || flags || ' ', ' \Flagged ') > 0)
+              FROM messages WHERE folder = ?1 GROUP BY thread_id
+              ORDER BY latest DESC, uid DESC LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(params![folder, limit], |r| {
+            Ok(ThreadSummary {
+                thread_id: r.get(0)?,
+                latest: summary_from_row(r, 1)?,
+                count: r.get(8)?,
+                unread: r.get::<_, i64>(9)? > 0,
+                flagged: r.get::<_, i64>(10)? > 0,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn thread_members(
+        &self,
+        folder: &str,
+        thread_id: &str,
+    ) -> Result<Vec<MessageSummary>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {SUMMARY_COLUMNS} FROM messages WHERE folder = ?1 AND thread_id = ?2 ORDER BY internaldate, uid"
+        ))?;
+        let rows = stmt.query_map(params![folder, thread_id], |r| summary_from_row(r, 0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     pub fn messages_in_folder(&self, folder: &str) -> Result<Vec<Message>, StoreError> {
@@ -772,5 +874,108 @@ mod tests {
         assert!(s.search("pineapple", None, 10).unwrap().is_empty());
         s.set_raw("INBOX", 1, b"raw", "pineapple pie").unwrap();
         assert_eq!(s.search("pineapple", None, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migration_002_keeps_rows_and_starts_at_zero() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Store::migrations().to_version(&mut conn, 1).unwrap();
+        conn.execute(
+            "INSERT INTO folders (name, uidvalidity, last_uid) VALUES ('INBOX', 7, 42)",
+            [],
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        let inbox = s.folder("INBOX").unwrap().unwrap();
+        assert_eq!((inbox.uidvalidity, inbox.last_uid), (7, 42));
+        assert_eq!(s.initial_uid_next("INBOX").unwrap(), 0);
+    }
+
+    #[test]
+    fn initial_uid_next_round_trips_and_survives_upsert() {
+        let s = store_with_inbox();
+        assert_eq!(s.initial_uid_next("INBOX").unwrap(), 0);
+        assert_eq!(s.initial_uid_next("Nope").unwrap(), 0);
+        s.set_initial_uid_next("INBOX", 1201).unwrap();
+        s.upsert_folder(&Folder {
+            name: "INBOX".into(),
+            uidvalidity: 1,
+            last_uid: 500,
+            special_use: None,
+        })
+        .unwrap();
+        assert_eq!(s.initial_uid_next("INBOX").unwrap(), 1201);
+    }
+
+    #[test]
+    fn thread_summaries_describe_the_latest_message() {
+        let s = store_with_inbox();
+        let mut first = msg("INBOX", 1, 10);
+        first.thread_id = "t1".into();
+        first.flags = "\\Seen".into();
+        let mut reply = msg("INBOX", 2, 30);
+        reply.thread_id = "t1".into();
+        reply.flags = "\\Flagged".into();
+        let mut other = msg("INBOX", 3, 20);
+        other.thread_id = "t2".into();
+        other.flags = "\\Seen".into();
+        for m in [&first, &reply, &other] {
+            s.insert_message(m).unwrap();
+        }
+        let threads = s.thread_summaries("INBOX", 10).unwrap();
+        assert_eq!(
+            threads,
+            vec![
+                ThreadSummary {
+                    thread_id: "t1".into(),
+                    latest: MessageSummary {
+                        uid: 2,
+                        from: "Alice <alice@x>".into(),
+                        to: "bob@x".into(),
+                        subject: "subject 2".into(),
+                        date: 30,
+                        flags: "\\Flagged".into(),
+                    },
+                    count: 2,
+                    unread: true,
+                    flagged: true,
+                },
+                ThreadSummary {
+                    thread_id: "t2".into(),
+                    latest: MessageSummary {
+                        uid: 3,
+                        from: "Alice <alice@x>".into(),
+                        to: "bob@x".into(),
+                        subject: "subject 3".into(),
+                        date: 20,
+                        flags: "\\Seen".into(),
+                    },
+                    count: 1,
+                    unread: false,
+                    flagged: false,
+                },
+            ]
+        );
+        assert_eq!(s.thread_summaries("INBOX", 1).unwrap().len(), 1);
+        let members: Vec<u32> = s
+            .thread_members("INBOX", "t1")
+            .unwrap()
+            .iter()
+            .map(|m| m.uid)
+            .collect();
+        assert_eq!(members, [1, 2]);
+    }
+
+    #[test]
+    fn summaries_tolerate_missing_headers() {
+        let s = store_with_inbox();
+        let mut bare = msg("INBOX", 1, 10);
+        bare.from_addr = None;
+        bare.to_addr = None;
+        bare.subject = None;
+        s.insert_message(&bare).unwrap();
+        let latest = &s.thread_summaries("INBOX", 10).unwrap()[0].latest;
+        assert_eq!((latest.from.as_str(), latest.subject.as_str()), ("", ""));
+        assert!(!latest.is_seen() && !latest.is_flagged());
     }
 }
