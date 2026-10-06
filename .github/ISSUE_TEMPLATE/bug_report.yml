@@ -1,0 +1,55 @@
+name: Bug report
+description: Something does not work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste passwords, tokens or real message contents. Replace addresses and subjects with made-up ones.
+        Security problems go through [private vulnerability reporting](https://github.com/pataar/postbode/security/advisories/new) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. postbode sync
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: rules
+    attributes:
+      label: Relevant rules.toml
+      description: Only the rules involved, with personal details removed.
+      render: toml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or logs
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Postbode version
+      description: Output of `postbode --version`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 26.0, Ubuntu 24.04, …
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: IMAP server or provider
+      placeholder: Fastmail, Gmail, Dovecot, …
