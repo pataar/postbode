@@ -244,8 +244,17 @@ pub fn sync_folder_with(
             total,
         };
         // A command ran on the connection and may have selected another folder.
-        if checkpoint(ops, progress)? && ops.select(&folder.name)?.uidvalidity != info.uidvalidity {
-            break;
+        if checkpoint(ops, progress)? {
+            let uidvalidity = ops.select(&folder.name)?.uidvalidity;
+            if uidvalidity != info.uidvalidity {
+                log::info!(
+                    "{}: UIDVALIDITY changed {} -> {} during sync, resyncing next pass",
+                    folder.name,
+                    info.uidvalidity,
+                    uidvalidity
+                );
+                break;
+            }
         }
         let (first, last) = (chunk[0], chunk[chunk.len() - 1]);
         let envelopes = ops.fetch_envelopes(first, last)?;
@@ -1892,6 +1901,40 @@ mod tests {
             ["select Trash", "select INBOX", "fetch_envelopes INBOX 1 2"]
         );
         assert_eq!(store.message_count("INBOX").unwrap(), 2);
+    }
+
+    #[test]
+    fn a_uidvalidity_change_between_chunks_stops_the_folder_until_the_next_pass_resets_it() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        for uid in 1..=600 {
+            let id = format!("o{uid}@x");
+            ops.add_mail("INBOX", uid, 10 * H, &headers("a@x", "old", &id), None);
+        }
+        let next_uidvalidity = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        ops.next_inbox_uidvalidity = Some(next_uidvalidity.clone());
+        let store = Store::open_in_memory().unwrap();
+        let mut changed = false;
+        sync_folder_with(&mut ops, &store, &inbox(), &mut |_, activity| {
+            if !changed && matches!(activity, Activity::FetchingHeaders { done: 500, .. }) {
+                changed = true;
+                next_uidvalidity.store(9, Ordering::Release);
+                return Ok(true);
+            }
+            Ok(false)
+        })
+        .unwrap();
+        let fetches = |ops: &RecordingOps| {
+            let calls = ops.calls.iter();
+            calls.filter(|c| c.starts_with("fetch_envelopes")).count()
+        };
+        assert_eq!(fetches(&ops), 1, "{:?}", ops.calls);
+        assert_eq!(store.message_count("INBOX").unwrap(), 500);
+
+        sync_folder(&mut ops, &store, &inbox()).unwrap();
+        let folder = store.folder("INBOX").unwrap().unwrap();
+        assert_eq!((folder.uidvalidity, folder.last_uid), (9, 600));
+        assert_eq!(store.message_count("INBOX").unwrap(), 600);
+        assert_eq!(store.initial_uid_next("INBOX").unwrap(), 601);
     }
 
     #[test]

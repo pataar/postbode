@@ -79,7 +79,7 @@ pub use recording::RecordingOps;
 mod recording {
     use std::collections::{HashMap, VecDeque};
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::time::Duration;
 
     use super::*;
@@ -98,6 +98,8 @@ mod recording {
         pub fail_next: Option<MailError>,
         /// With no queued outcome, `idle` sets this flag and returns instead of waiting for a wake-up.
         pub shutdown_when_idle_empty: Option<Arc<AtomicBool>>,
+        /// A non-zero value becomes INBOX's uidvalidity at its next select; a test can set it while the fake is borrowed.
+        pub next_inbox_uidvalidity: Option<Arc<AtomicU32>>,
         envelope_fetches: usize,
         selected: String,
         next_uid: HashMap<String, u32>,
@@ -115,6 +117,7 @@ mod recording {
                 fail_fetch_after: None,
                 fail_next: None,
                 shutdown_when_idle_empty: None,
+                next_inbox_uidvalidity: None,
                 envelope_fetches: 0,
                 selected: String::new(),
                 next_uid: HashMap::new(),
@@ -177,6 +180,16 @@ mod recording {
 
         fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
             self.calls.push(format!("select {folder}"));
+            if folder == "INBOX"
+                && let Some(next) = &self.next_inbox_uidvalidity
+            {
+                match next.swap(0, Ordering::AcqRel) {
+                    0 => {}
+                    changed => {
+                        self.uidvalidity.insert(folder.into(), changed);
+                    }
+                }
+            }
             let uidvalidity = *self
                 .uidvalidity
                 .get(folder)
