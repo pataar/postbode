@@ -797,7 +797,6 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                     &rules,
                     acc,
                     &identity,
-                    &[],
                     Mode::ApplyExisting,
                     sync::now(),
                 )?;

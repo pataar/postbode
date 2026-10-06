@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -85,8 +84,6 @@ pub enum Event {
 pub struct NewMessageRef {
     pub folder: String,
     pub uid: u32,
-    /// The uid was already on the server when the folder was first tracked or reset; such messages never notify.
-    pub initial: bool,
 }
 
 #[derive(Debug, Default)]
@@ -225,6 +222,7 @@ pub fn sync_folder_with(
         store.upsert_folder(&row(last_uid))?;
         if starts_tracking {
             store.set_initial_uid_next(&folder.name, uids.last().map_or(0, |uid| uid + 1))?;
+            store.set_rules_uid(&folder.name, 0)?;
         }
         let present: Vec<u32> = updates.iter().map(|u| u.uid).collect();
         for u in &updates {
@@ -236,7 +234,6 @@ pub fn sync_folder_with(
         Ok::<_, SyncError>(())
     })?;
 
-    let initial_uid_next = store.initial_uid_next(&folder.name)?;
     let total = uids.len();
     let mut done = 0;
     let mut new = Vec::new();
@@ -259,7 +256,6 @@ pub fn sync_folder_with(
                 new.push(NewMessageRef {
                     folder: folder.name.clone(),
                     uid,
-                    initial: uid < initial_uid_next,
                 });
             }
             store.upsert_folder(&row(last))
@@ -403,7 +399,6 @@ pub fn run_rules(
     rules: &[CompiledRule],
     account: &AccountConfig,
     identity: &Identity,
-    new: &[NewMessageRef],
     mode: Mode,
     now: i64,
 ) -> Result<RulesRun, SyncError> {
@@ -414,7 +409,6 @@ pub fn run_rules(
         rules,
         account,
         identity,
-        new,
         mode,
         now,
         &mut |_| {},
@@ -429,7 +423,6 @@ pub fn run_rules_with(
     rules: &[CompiledRule],
     account: &AccountConfig,
     identity: &Identity,
-    new: &[NewMessageRef],
     mode: Mode,
     now: i64,
     report: &mut dyn FnMut(Activity),
@@ -450,12 +443,6 @@ pub fn run_rules_with(
     folders.sort();
     folders.dedup();
 
-    // Only mail new since the folder was first tracked can notify or earn a body fetch.
-    let fresh: HashSet<(&str, u32)> = new
-        .iter()
-        .filter(|n| !n.initial)
-        .map(|n| (n.folder.as_str(), n.uid))
-        .collect();
     let mut run = RulesRun::default();
     for folder in folders {
         let Some(stored) = store.folder(&folder)? else {
@@ -488,18 +475,23 @@ pub fn run_rules_with(
         report(Activity::RunningRules {
             folder: folder.clone(),
         });
+        let (rules_uid, initial_uid_next) =
+            (store.rules_uid(&folder)?, store.initial_uid_next(&folder)?);
+        // Fresh: not yet seen by the rules and not already on the server when the folder was first tracked.
+        let fresh = |uid: u32| mode == Mode::Normal && uid > rules_uid && uid >= initial_uid_next;
         let messages = store.messages_in_folder(&folder)?;
+        let highest_uid = messages.last().map(|m| m.uid);
         let bodies_total = if needs_body {
             messages
                 .iter()
-                .filter(|m| m.body_text.is_none() && fresh.contains(&(m.folder.as_str(), m.uid)))
+                .filter(|m| m.body_text.is_none() && fresh(m.uid))
                 .count()
         } else {
             0
         };
         let mut bodies_done = 0;
         for mut msg in messages {
-            let is_fresh = fresh.contains(&(msg.folder.as_str(), msg.uid));
+            let is_fresh = fresh(msg.uid);
             // Mail found by a first sync or resync already sat on the server; fetching it would download the whole folder.
             if needs_body && msg.body_text.is_none() && is_fresh {
                 match ensure_raw(&msg, ops, store) {
@@ -527,7 +519,7 @@ pub fn run_rules_with(
                     }
                 }
             }
-            if is_fresh && plan.notify && folder == "INBOX" && mode == Mode::Normal {
+            if is_fresh && plan.notify && folder == "INBOX" {
                 run.events.push(Event::NewMail {
                     account: account.name.clone(),
                     folder: msg.folder.clone(),
@@ -536,6 +528,11 @@ pub fn run_rules_with(
                     subject: msg.subject.clone().unwrap_or_default(),
                 });
             }
+        }
+        if mode == Mode::Normal
+            && let Some(highest_uid) = highest_uid.filter(|&uid| uid > rules_uid)
+        {
+            store.set_rules_uid(&folder, highest_uid)?;
         }
     }
     Ok(run)
@@ -791,7 +788,6 @@ impl<'a> AccountSync<'a> {
             &self.rules,
             self.account,
             &self.identity,
-            &new,
             Mode::Normal,
             now(),
             &mut |step| {
@@ -1045,7 +1041,6 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let new = sync_all(&mut ops, &store).unwrap().0;
         assert_eq!(new.len(), 2);
-        assert!(new.iter().all(|n| n.initial));
         let inbox = store.folder("INBOX").unwrap().unwrap();
         assert_eq!((inbox.uidvalidity, inbox.last_uid), (1, 2));
         assert_eq!(
@@ -1071,7 +1066,7 @@ mod tests {
         let trash = Trash::new(dir.path().to_path_buf());
         let acc = account();
         let identity = acc.identity().unwrap();
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1079,7 +1074,6 @@ mod tests {
             &[],
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -1101,7 +1095,7 @@ mod tests {
         let identity = acc.identity().unwrap();
         assert!(sync_all(&mut ops, &store).unwrap().0.is_empty());
         ops.add_mail("INBOX", 1, 12 * H, &headers("bob@x", "first", "f1@x"), None);
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1109,7 +1103,6 @@ mod tests {
             &[],
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -1135,7 +1128,6 @@ mod tests {
             vec![NewMessageRef {
                 folder: "INBOX".into(),
                 uid: 3,
-                initial: false
             }]
         );
         assert!(store.message("INBOX", 1).unwrap().unwrap().is_seen());
@@ -1221,7 +1213,7 @@ mod tests {
             &headers("alice@x", "hello", "m1@x"),
             None,
         );
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1229,7 +1221,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             13 * H,
         )
@@ -1251,7 +1242,7 @@ mod tests {
         let identity = acc.identity().unwrap();
         sync_all(&mut ops, &store).unwrap();
         ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
-        let second = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1259,7 +1250,6 @@ mod tests {
             &[],
             &acc,
             &identity,
-            &second,
             Mode::Normal,
             12 * H,
         )
@@ -1278,7 +1268,6 @@ mod tests {
             &[],
             &acc,
             &identity,
-            &resync,
             Mode::Normal,
             12 * H,
         )
@@ -1307,7 +1296,7 @@ mod tests {
             &headers("noreply@login.x", "Your sign-in code", "m2@x"),
             Some("From: noreply@login.x\r\n\r\ncode 1234"),
         );
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1315,7 +1304,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -1336,7 +1324,7 @@ mod tests {
         let identity = acc.identity().unwrap();
         let toml = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
         let rules = rules_from(toml, &store, 0);
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         run_rules(
             &mut ops,
             &store,
@@ -1344,7 +1332,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -1498,7 +1485,7 @@ mod tests {
             &store,
             0,
         );
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1506,7 +1493,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -1549,7 +1535,7 @@ mod tests {
             &store,
             0,
         );
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1557,7 +1543,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -1584,7 +1569,7 @@ mod tests {
             &store,
             0,
         );
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         ops.calls.clear();
         let run = run_rules(
             &mut ops,
@@ -1593,7 +1578,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -1625,7 +1609,7 @@ mod tests {
             &store,
             0,
         );
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let special_use = |name: &str| store.folder(name).unwrap().unwrap().special_use;
         assert_eq!(special_use("archive").as_deref(), Some("Archive"));
         assert_eq!(special_use("Trash"), None, "a marked Trash folder wins");
@@ -1636,7 +1620,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -1662,7 +1645,7 @@ mod tests {
         ops.add_mail("INBOX", 1, 10 * H, &headers("boss@x", "hi", "b1@x"), None);
         let mut actions = 0;
         for _ in 0..5 {
-            let new = sync_all(&mut ops, &store).unwrap().0;
+            sync_all(&mut ops, &store).unwrap();
             actions += run_rules(
                 &mut ops,
                 &store,
@@ -1670,7 +1653,6 @@ mod tests {
                 &rules,
                 &acc,
                 &identity,
-                &new,
                 Mode::Normal,
                 12 * H,
             )
@@ -1751,8 +1733,7 @@ mod tests {
         assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 0);
         assert_eq!(store.message_count("INBOX").unwrap(), 0);
         ops.fail_fetch_after = None;
-        let new = sync_folder(&mut ops, &store, &inbox).unwrap();
-        assert!(new.iter().all(|n| n.initial), "{new:?}");
+        sync_folder(&mut ops, &store, &inbox).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1760,12 +1741,30 @@ mod tests {
             &[],
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
         .unwrap();
         assert!(run.events.is_empty(), "{:?}", run.events);
+    }
+
+    /// Runs no rules over the store and returns the uids that notify.
+    fn notify_uids(ops: &mut RecordingOps, store: &Store) -> Vec<u32> {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let run = run_rules(
+            ops,
+            store,
+            &trash,
+            &[],
+            &acc,
+            &identity,
+            Mode::Normal,
+            12 * H,
+        );
+        notified(&run.unwrap().events)
     }
 
     fn inbox() -> RemoteFolder {
@@ -1829,8 +1828,7 @@ mod tests {
         ops.add_mail("INBOX", 1201, 11 * H, &headers("b@x", "new", "n@x"), None);
         let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
         assert_eq!(new.len(), 701);
-        assert!(new.iter().filter(|n| n.uid <= 1200).all(|n| n.initial));
-        assert!(!new.iter().find(|n| n.uid == 1201).unwrap().initial);
+        assert_eq!(notify_uids(&mut ops, &store), [1201]);
     }
 
     #[test]
@@ -1840,8 +1838,8 @@ mod tests {
         assert!(sync_folder(&mut ops, &store, &inbox()).unwrap().is_empty());
         assert_eq!(store.initial_uid_next("INBOX").unwrap(), 0);
         ops.add_mail("INBOX", 1, 10 * H, &headers("a@x", "first", "f@x"), None);
-        let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
-        assert!(!new[0].initial);
+        sync_folder(&mut ops, &store, &inbox()).unwrap();
+        assert_eq!(notify_uids(&mut ops, &store), [1]);
     }
 
     #[test]
@@ -1920,7 +1918,7 @@ mod tests {
             &headers("bob@x", "code", "m3@x"),
             Some("From: bob@x\r\n\r\nyour code 99"),
         );
-        let new = sync_all(&mut ops, &store).unwrap().0;
+        sync_all(&mut ops, &store).unwrap();
         let rules = rules_from(
             "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
             &store,
@@ -1934,7 +1932,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             13 * H,
             &mut |a| seen.push(a),
@@ -1989,7 +1986,7 @@ mod tests {
             name: "INBOX".into(),
             special_use: None,
         };
-        let new = sync_folder(&mut ops, &store, &inbox).unwrap();
+        sync_folder(&mut ops, &store, &inbox).unwrap();
         let run = run_rules(
             &mut ops,
             &store,
@@ -1997,7 +1994,6 @@ mod tests {
             &rules,
             &acc,
             &identity,
-            &new,
             Mode::Normal,
             12 * H,
         )
@@ -2227,14 +2223,15 @@ mod tests {
         );
     }
 
-    /// Queues commands and a connection failure when the pass selects its first folder, i.e. before a chunk checkpoint.
-    struct QueuesCommandsOnList {
+    /// Queues commands and a connection failure when the pass selects `folder`, i.e. before its chunk checkpoint.
+    struct QueuesCommandsOnSelect {
         inner: RecordingOps,
         commands: std::sync::mpsc::Sender<Command>,
         queued: Vec<Command>,
+        folder: &'static str,
     }
 
-    impl MailOps for QueuesCommandsOnList {
+    impl MailOps for QueuesCommandsOnSelect {
         fn list_folders(&mut self) -> crate::mail_ops::MailResult<Vec<RemoteFolder>> {
             self.inner.list_folders()
         }
@@ -2242,6 +2239,9 @@ mod tests {
             &mut self,
             folder: &str,
         ) -> crate::mail_ops::MailResult<crate::mail_ops::SelectInfo> {
+            if folder != self.folder {
+                return self.inner.select(folder);
+            }
             if !self.queued.is_empty() {
                 self.inner.fail_next = Some(MailError::Io("reset".into()));
             }
@@ -2319,10 +2319,11 @@ mod tests {
         sync_all(&mut inner, &state.store).unwrap();
         inner.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
         let (commands_tx, commands) = std::sync::mpsc::channel();
-        let mut ops = QueuesCommandsOnList {
+        let mut ops = QueuesCommandsOnSelect {
             inner,
             commands: commands_tx,
             queued: vec![mark_read(1), mark_read(2)],
+            folder: "INBOX",
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let result = state.pass(&mut ops, true, &tx, &commands, &AtomicBool::new(false));
@@ -2341,6 +2342,115 @@ mod tests {
             "{events:?}"
         );
         assert_eq!(commands.try_recv().unwrap(), mark_read(2));
+    }
+
+    fn notified(events: &[Event]) -> Vec<u32> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::NewMail { uid, .. } => Some(*uid),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A pass commits new INBOX mail (uid 3), then loses the connection at a later folder's chunk checkpoint; a clean
+    /// pass follows. Returns the clean pass's events and the account's store.
+    fn clean_pass_after_an_aborted_one(rules: &str) -> (Vec<Event>, Store, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        if !rules.is_empty() {
+            std::fs::create_dir_all(paths.rules_file().parent().unwrap()).unwrap();
+            std::fs::write(paths.rules_file(), rules).unwrap();
+        }
+        let acct = account();
+        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut inner = ops_with_inbox().with_folder("Later", None);
+        sync_all(&mut inner, &state.store).unwrap();
+        inner.add_mail(
+            "INBOX",
+            3,
+            now(),
+            &headers("bob@x", "your code", "m3@x"),
+            Some("From: bob@x\r\n\r\ncode 99"),
+        );
+        inner.add_mail("Later", 1, 12 * H, &headers("c@x", "later", "l1@x"), None);
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        let mut ops = QueuesCommandsOnSelect {
+            inner,
+            commands: commands_tx,
+            queued: vec![mark_read(1)],
+            folder: "Later",
+        };
+        let stop = AtomicBool::new(false);
+        let (tx, _) = std::sync::mpsc::channel();
+        assert!(state.pass(&mut ops, true, &tx, &commands, &stop).is_err());
+        assert_eq!(state.store.folder("INBOX").unwrap().unwrap().last_uid, 3);
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .pass(&mut ops.inner, true, &tx, &commands, &stop)
+            .unwrap();
+        (rx.try_iter().collect(), state.store, dir)
+    }
+
+    #[test]
+    fn mail_committed_by_a_pass_aborted_at_a_checkpoint_notifies_on_the_next_pass() {
+        let (events, _store, _dir) = clean_pass_after_an_aborted_one("");
+        assert_eq!(notified(&events), [3], "{events:?}");
+    }
+
+    #[test]
+    fn a_body_rule_fetches_the_body_of_mail_committed_by_an_aborted_pass() {
+        let rules = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
+        let (events, store, _dir) = clean_pass_after_an_aborted_one(rules);
+        let message = store.message("INBOX", 3).unwrap().unwrap();
+        assert!(message.body_text.is_some(), "{events:?}");
+        assert!(message.flags.contains("\\Flagged"));
+    }
+
+    #[test]
+    fn mail_committed_before_a_failed_chunk_notifies_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let acct = account();
+        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let commands = std::sync::mpsc::channel::<Command>().1;
+        let stop = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.pass(&mut ops, true, &tx, &commands, &stop).unwrap();
+        for uid in 1..=600 {
+            let id = format!("n{uid}@x");
+            ops.add_mail("INBOX", uid, 12 * H, &headers("bob@x", "new", &id), None);
+        }
+        ops.fail_fetch_after = Some(1);
+        let _ = state.pass(&mut ops, true, &tx, &commands, &stop);
+        assert_eq!(state.store.message_count("INBOX").unwrap(), 500);
+        ops.fail_fetch_after = None;
+        state.pass(&mut ops, true, &tx, &commands, &stop).unwrap();
+        let mut uids = notified(&rx.try_iter().collect::<Vec<_>>());
+        uids.sort_unstable();
+        assert_eq!(uids, (1..=600).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn processed_mail_does_not_notify_again_on_later_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let acct = account();
+        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut ops = ops_with_inbox();
+        let commands = std::sync::mpsc::channel::<Command>().1;
+        let stop = AtomicBool::new(false);
+        let mut pass = |ops: &mut RecordingOps| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            state.pass(ops, true, &tx, &commands, &stop).unwrap();
+            notified(&rx.try_iter().collect::<Vec<_>>())
+        };
+        assert!(pass(&mut ops).is_empty());
+        ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
+        assert_eq!(pass(&mut ops), [3]);
+        assert!(pass(&mut ops).is_empty());
     }
 
     #[test]

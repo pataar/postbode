@@ -244,6 +244,27 @@ impl Store {
         Ok(())
     }
 
+    /// The highest uid the rules have evaluated in `folder`; above it mail is fresh. 0 when unknown.
+    pub fn rules_uid(&self, folder: &str) -> Result<u32, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT rules_uid FROM folders WHERE name = ?1",
+                params![folder],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    pub fn set_rules_uid(&self, folder: &str, uid: u32) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE folders SET rules_uid = ?2 WHERE name = ?1",
+            params![folder, uid],
+        )?;
+        Ok(())
+    }
+
     pub fn reset_folder(&self, name: &str, uidvalidity: u32) -> Result<(), StoreError> {
         self.conn
             .execute("DELETE FROM messages WHERE folder = ?1", params![name])?;
@@ -877,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_002_keeps_rows_and_starts_at_zero() {
+    fn migration_002_keeps_rows_and_marks_existing_mail_as_processed() {
         let mut conn = Connection::open_in_memory().unwrap();
         Store::migrations().to_version(&mut conn, 1).unwrap();
         conn.execute(
@@ -889,6 +910,23 @@ mod tests {
         let inbox = s.folder("INBOX").unwrap().unwrap();
         assert_eq!((inbox.uidvalidity, inbox.last_uid), (7, 42));
         assert_eq!(s.initial_uid_next("INBOX").unwrap(), 0);
+        assert_eq!(s.rules_uid("INBOX").unwrap(), 42);
+    }
+
+    #[test]
+    fn rules_uid_round_trips_and_survives_upsert() {
+        let s = store_with_inbox();
+        assert_eq!(s.rules_uid("INBOX").unwrap(), 0);
+        assert_eq!(s.rules_uid("Nope").unwrap(), 0);
+        s.set_rules_uid("INBOX", 77).unwrap();
+        s.upsert_folder(&Folder {
+            name: "INBOX".into(),
+            uidvalidity: 1,
+            last_uid: 500,
+            special_use: None,
+        })
+        .unwrap();
+        assert_eq!(s.rules_uid("INBOX").unwrap(), 77);
     }
 
     #[test]
