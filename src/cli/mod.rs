@@ -763,7 +763,11 @@ fn cmd_mcp(
                 InstallTarget::ClaudeDesktop => Target::ClaudeDesktop,
                 InstallTarget::Json => Target::Json,
             };
-            print!("{}", install(target, &scopes, &account, remove, dry_run)?);
+            let (stdout, hint) = install(target, &scopes, &account, remove, dry_run)?;
+            print!("{stdout}");
+            if let Some(hint) = hint {
+                eprint!("{hint}");
+            }
             Ok(())
         }
     }

@@ -680,3 +680,15 @@ fn mcp_install_rejects_an_unknown_account_and_accepts_none() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("mcpServers"));
 }
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_install_json_keeps_stdout_machine_readable() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postbode(home.path(), &["mcp", "install", "json"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
+    assert_eq!(parsed["mcpServers"]["postbode"]["args"][0], "mcp");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Scopes: read, rules:propose"));
+}

@@ -82,16 +82,22 @@ pub fn claude_desktop_path() -> Result<PathBuf> {
         .join("claude_desktop_config.json"))
 }
 
-/// Sets `mcpServers.postbode`, or removes it when `entry` is None, keeping every other key; returns the new text.
-/// The old file is copied to `.bak` first. A file that is not a JSON object is refused untouched; `dry_run` writes nothing.
-pub fn edit_claude_desktop(path: &Path, entry: Option<&Entry>, dry_run: bool) -> Result<String> {
+/// Sets `mcpServers.postbode`, or removes it when `entry` is None, keeping every other key.
+/// Returns the new file text, or None when there is nothing to change. The old file is copied to `.bak`
+/// unless it already is Postbode's own output, so the user's original survives re-runs. A file that is
+/// not a JSON object is refused untouched; `dry_run` writes nothing.
+pub fn edit_claude_desktop(
+    path: &Path,
+    entry: Option<&Entry>,
+    dry_run: bool,
+) -> Result<Option<String>> {
     let old = match std::fs::read_to_string(path) {
         Ok(text) => Some(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
     if old.is_none() && entry.is_none() {
-        return Ok(String::new());
+        return Ok(None);
     }
     let mut config: Value = match old.as_deref() {
         Some(text) if !text.trim().is_empty() => serde_json::from_str(text).with_context(|| {
@@ -102,28 +108,41 @@ pub fn edit_claude_desktop(path: &Path, entry: Option<&Entry>, dry_run: bool) ->
         })?,
         _ => json!({}),
     };
+    let own_output = serde_json::to_string_pretty(&config)? + "\n";
     let Some(root) = config.as_object_mut() else {
         bail!("{} is not a JSON object", path.display());
     };
-    let Some(servers) = root
-        .entry("mcpServers")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
-    else {
-        bail!("mcpServers in {} is not a JSON object", path.display());
-    };
     match entry {
-        Some(entry) => servers.insert("postbode".into(), entry.server()),
-        None => servers.remove("postbode"),
-    };
+        Some(entry) => {
+            let Some(servers) = root
+                .entry("mcpServers")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+            else {
+                bail!("mcpServers in {} is not a JSON object", path.display());
+            };
+            servers.insert("postbode".into(), entry.server());
+        }
+        None => match root.get_mut("mcpServers") {
+            Some(servers) => {
+                let Some(servers) = servers.as_object_mut() else {
+                    bail!("mcpServers in {} is not a JSON object", path.display());
+                };
+                if servers.remove("postbode").is_none() {
+                    return Ok(None);
+                }
+            }
+            None => return Ok(None),
+        },
+    }
     let text = serde_json::to_string_pretty(&config)? + "\n";
     if !dry_run {
-        if let Some(old) = &old {
-            std::fs::write(path.with_extension("json.bak"), old)?;
+        if old.as_deref().is_some_and(|old| old != own_output) {
+            std::fs::copy(path, path.with_extension("json.bak"))?;
         }
         write_atomic(path, text.as_bytes())?;
     }
-    Ok(text)
+    Ok(Some(text))
 }
 
 /// `claude` invocations at user scope; an add follows a remove so a re-run replaces the old entry.
@@ -148,14 +167,15 @@ fn on_path(program: &str) -> bool {
         .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
-/// Registers or removes the server for `target` and returns what to tell the user.
+/// Registers or removes the server for `target`. Returns the text for stdout and, when something was
+/// installed, a hint for stderr so that stdout stays machine-readable.
 pub fn install(
     target: Target,
     scopes: &str,
     accounts: &[String],
     remove: bool,
     dry_run: bool,
-) -> Result<String> {
+) -> Result<(String, Option<String>)> {
     let granted: Vec<&str> = parse_scopes(scopes)?
         .into_iter()
         .map(|s| s.as_str())
@@ -163,53 +183,66 @@ pub fn install(
     let exe = std::env::current_exe().context("finding the postbode binary")?;
     let entry = Entry::new(&exe, &granted.join(","), accounts);
     let wanted = (!remove).then_some(&entry);
-    let mut out = String::new();
-    match target {
-        Target::Json => out.push_str(&json_snippet(&entry)),
-        Target::ClaudeDesktop => {
-            let path = claude_desktop_path()?;
-            let text = edit_claude_desktop(&path, wanted, dry_run)?;
-            if dry_run {
-                out.push_str(&format!("would write {}:\n{text}", path.display()));
-            } else {
-                out.push_str(&format!(
-                    "updated {}\nRestart Claude Desktop to load Postbode.\n",
-                    path.display()
-                ));
-            }
-        }
-        Target::ClaudeCode => {
-            let commands = claude_code_commands(wanted);
-            if dry_run || !on_path("claude") {
-                out.push_str(if dry_run {
-                    "would run:\n"
-                } else {
-                    "claude is not on PATH; run:\n"
-                });
-                for command in &commands {
-                    out.push_str(&format!("  {}\n", shell_words(command)));
-                }
-            } else {
-                for (i, command) in commands.iter().enumerate() {
-                    let status = std::process::Command::new(&command[0])
-                        .args(&command[1..])
-                        .status()?;
-                    // The first command removes an entry that may not exist; only the add must succeed.
-                    if i > 0 && !status.success() {
-                        bail!("`{}` failed", shell_words(command));
-                    }
-                }
-                out.push_str("registered with Claude Code at user scope\n");
-            }
-        }
-    }
-    if !remove {
-        out.push_str(&format!(
+    let out = match target {
+        Target::Json => json_snippet(&entry),
+        Target::ClaudeDesktop => install_claude_desktop(wanted, &entry, dry_run)?,
+        Target::ClaudeCode => install_claude_code(wanted, remove, dry_run)?,
+    };
+    let hint = (!remove).then(|| {
+        format!(
             "Scopes: {}. For an inbox assistant: --scopes read,read:bodies,rules:propose,mail:modify\n",
             granted.join(", ")
-        ));
+        )
+    });
+    Ok((out, hint))
+}
+
+/// Real runs never echo the config: it may hold other servers' secrets.
+fn install_claude_desktop(wanted: Option<&Entry>, entry: &Entry, dry_run: bool) -> Result<String> {
+    let path = claude_desktop_path()?;
+    let changed = edit_claude_desktop(&path, wanted, dry_run)?.is_some();
+    let path = path.display();
+    Ok(match (wanted.is_some(), changed, dry_run) {
+        (false, false, _) => format!("nothing to remove in {path}\n"),
+        (false, true, true) => format!("would remove mcpServers.postbode from {path}\n"),
+        (false, true, false) => {
+            format!("removed Postbode from {path}\nRestart Claude Desktop to apply.\n")
+        }
+        (true, _, true) => format!("would write to {path}:\n{}", json_snippet(entry)),
+        (true, _, false) => {
+            format!("updated {path}\nRestart Claude Desktop to load Postbode.\n")
+        }
+    })
+}
+
+fn install_claude_code(wanted: Option<&Entry>, remove: bool, dry_run: bool) -> Result<String> {
+    let commands = claude_code_commands(wanted);
+    if dry_run || !on_path("claude") {
+        let mut out = String::from(if dry_run {
+            "would run:\n"
+        } else {
+            "claude is not on PATH; run:\n"
+        });
+        for command in &commands {
+            out.push_str(&format!("  {}\n", shell_words(command)));
+        }
+        return Ok(out);
     }
-    Ok(out)
+    for (index, command) in commands.iter().enumerate() {
+        let status = std::process::Command::new(&command[0])
+            .args(&command[1..])
+            .status()
+            .with_context(|| format!("running {}", shell_words(command)))?;
+        // In an install the leading remove clears an entry that may not exist; every other command must succeed.
+        if (remove || index > 0) && !status.success() {
+            bail!("`{}` failed", shell_words(command));
+        }
+    }
+    Ok(if remove {
+        "removed from Claude Code\n".into()
+    } else {
+        "registered with Claude Code at user scope\n".into()
+    })
 }
 
 #[cfg(test)]
@@ -275,20 +308,93 @@ mod tests {
         assert!(!dir.path().join("claude_desktop_config.json.bak").exists());
     }
 
+    fn read_json(path: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
     #[test]
-    fn remove_and_dry_run() {
+    fn remove_keeps_other_servers_and_never_adds_an_empty_section() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("claude_desktop_config.json");
-        let preview = edit_claude_desktop(&path, Some(&entry()), true).unwrap();
-        assert!(preview.contains("postbode") && !path.exists());
-        edit_claude_desktop(&path, Some(&entry()), false).unwrap();
-        edit_claude_desktop(&path, None, false).unwrap();
-        let config: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"other":{"command":"x"},"postbode":{"command":"p"}}}"#,
+        )
+        .unwrap();
+        assert!(edit_claude_desktop(&path, None, false).unwrap().is_some());
+        let config = read_json(&path);
         assert!(config["mcpServers"].get("postbode").is_none());
+        assert_eq!(config["mcpServers"]["other"]["command"], "x");
+
+        let bare = dir.path().join("bare.json");
+        std::fs::write(&bare, r#"{"theme":"dark"}"#).unwrap();
+        assert!(edit_claude_desktop(&bare, None, false).unwrap().is_none());
+        assert_eq!(
+            std::fs::read_to_string(&bare).unwrap(),
+            r#"{"theme":"dark"}"#
+        );
+
         let missing = dir.path().join("none.json");
-        edit_claude_desktop(&missing, None, false).unwrap();
+        assert!(
+            edit_claude_desktop(&missing, None, false)
+                .unwrap()
+                .is_none()
+        );
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn dry_run_writes_neither_config_nor_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("none.json");
+        let preview = edit_claude_desktop(&missing, Some(&entry()), true)
+            .unwrap()
+            .unwrap();
+        assert!(preview.contains("postbode") && !missing.exists());
+
+        let path = dir.path().join("claude_desktop_config.json");
+        let old = r#"{"theme":"dark"}"#;
+        std::fs::write(&path, old).unwrap();
+        edit_claude_desktop(&path, Some(&entry()), true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        assert!(!dir.path().join("claude_desktop_config.json.bak").exists());
+    }
+
+    #[test]
+    fn the_original_backup_survives_a_re_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude_desktop_config.json");
+        let bak = dir.path().join("claude_desktop_config.json.bak");
+        let original = r#"{"theme":"dark"}"#;
+        std::fs::write(&path, original).unwrap();
+        edit_claude_desktop(&path, Some(&entry()), false).unwrap();
+        let wider = Entry::new(
+            Path::new("/opt/homebrew/bin/postbode"),
+            "read,read:bodies",
+            &[],
+        );
+        edit_claude_desktop(&path, Some(&wider), false).unwrap();
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
+        assert_eq!(
+            read_json(&path)["mcpServers"]["postbode"]["args"][2],
+            "read,read:bodies"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_backup_keeps_the_config_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude_desktop_config.json");
+        std::fs::write(&path, "{}\n ").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        edit_claude_desktop(&path, Some(&entry()), false).unwrap();
+        let bak = dir.path().join("claude_desktop_config.json.bak");
+        assert_eq!(
+            std::fs::metadata(bak).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
@@ -314,11 +420,11 @@ mod tests {
 
     #[test]
     fn install_json_validates_scopes_and_lists_them() {
-        let text = install(Target::Json, "read,rules:propose", &[], false, false).unwrap();
-        assert!(
-            text.contains("mcpServers") && text.contains("read, rules:propose"),
-            "{text}"
-        );
+        let (text, hint) = install(Target::Json, "read,rules:propose", &[], false, false).unwrap();
+        assert!(text.contains("mcpServers") && serde_json::from_str::<Value>(&text).is_ok());
+        assert!(hint.unwrap().contains("read, rules:propose"));
+        let (_, removed_hint) = install(Target::Json, "read", &[], true, false).unwrap();
+        assert!(removed_hint.is_none());
         assert!(install(Target::Json, "read,everything", &[], false, false).is_err());
     }
 
