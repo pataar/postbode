@@ -53,13 +53,9 @@ pub fn body_text(raw: &[u8]) -> String {
     let Some(msg) = MessageParser::default().parse(raw) else {
         return String::new();
     };
-    if let Some(text) = msg.body_text(0) {
-        return text.into_owned();
-    }
-    match msg.body_html(0) {
-        Some(html) => html2text::from_read(html.as_bytes(), 100).unwrap_or_default(),
-        None => String::new(),
-    }
+    msg.body_text(0)
+        .map(|text| text.into_owned())
+        .unwrap_or_default()
 }
 
 pub fn bare_addresses(field: &str) -> Vec<String> {

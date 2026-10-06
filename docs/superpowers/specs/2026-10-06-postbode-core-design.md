@@ -219,7 +219,7 @@ Pure. For each rule in file order:
 
 1. Skip if disabled, or `account`/`folder` don't match.
 2. Skip if `msg.internaldate < rule.first_seen_at`, unless `mode == ApplyExisting`. `first_seen_at` is filled from `rules_seen` when the rules file is loaded for an account.
-3. Evaluate each match condition. `body` requires `msg.raw`; the caller fetches it beforehand when any enabled rule for that folder has a body condition. Body text is the `text/plain` part via `mail-parser`, else HTML converted with `html2text`.
+3. Evaluate each match condition. `body` requires `msg.raw`; the caller fetches it beforehand when any enabled rule for that folder has a body condition. Body text is the `text/plain` part via `mail-parser`, else the HTML part converted to text by `mail-parser`.
 4. `older_than`: `now - internaldate >= duration`. `seen`: presence of `\Seen`.
 5. Collect actions. After a `delete`, stop evaluating further rules for this message.
 6. Decide notification: `notify` if any matched rule says `notify`; `silent` if any says `silent` or the message was moved or deleted; else the account default. `notify` beats `silent` only when both are explicit, in which case the later rule wins. Only messages new in this sync pass are considered.
@@ -319,7 +319,7 @@ Plain text, one record per line, so it pipes into grep and fzf. `--json` output 
 - GitHub Actions `ci.yml`: fmt, clippy `-D warnings`, tests on `ubuntu-latest` and `macos-latest`, `cargo audit`. The Ubuntu job additionally runs the Dovecot service container for the live IMAP tests. Concurrency with cancel-in-progress, `permissions: contents: read`.
 - `LICENSE-MIT`, `LICENSE-APACHE`, README with a 20-line quickstart.
 
-Dependencies for phase 1: `anyhow`, `async-imap` (runtime-tokio), `clap` (derive), `directories`, `env_logger`, `globset` (alias globs), `html2text`, `humantime`, `include_dir`, `keyring-core` plus the two platform stores, `log`, `mail-parser`, `notify-rust`, `regex`, `rusqlite` (bundled, FTS5 is included in the bundled build), `rusqlite_migration`, `rustls` via `tokio-rustls` and `webpki-roots`, `schemars`, `serde`, `serde_json`, `serde_rusqlite`, `thiserror`, `tokio` (rt, net, time, macros), `toml`, `zeroize`. Dev: `tempfile`, `clap-markdown`.
+Dependencies for phase 1: `anyhow`, `async-imap` (runtime-tokio), `clap` (derive), `directories`, `env_logger`, `globset` (alias globs), `humantime`, `include_dir`, `keyring-core` plus the two platform stores, `log`, `mail-parser`, `notify-rust`, `regex`, `rusqlite` (bundled, FTS5 is included in the bundled build), `rusqlite_migration`, `rustls` via `tokio-rustls` and `webpki-roots`, `schemars`, `serde`, `serde_json`, `serde_rusqlite`, `thiserror`, `tokio` (rt, net, time, macros), `toml`, `zeroize`. Dev: `tempfile`, `clap-markdown`.
 
 ## 15. Release and distribution
 

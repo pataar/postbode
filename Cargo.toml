@@ -16,7 +16,6 @@ directories = "6"                                    # platform config/state/cac
 env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
 futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
 globset = "0.4"                                      # alias globs
-html2text = "0.17"                                   # HTML-only mail to text for body rules
 humantime = "2"                                      # "1h", "2d" in rules
 include_dir = "0.7"                                  # embed migrations/ in the binary
 keyring-core = "1"                                   # OS keyring API
