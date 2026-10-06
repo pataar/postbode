@@ -18,6 +18,7 @@ use eframe::egui;
 use crate::config::Config;
 use crate::engine::Engine;
 use crate::paths::Paths;
+use crate::store::Store;
 
 pub use app::App;
 
@@ -26,6 +27,10 @@ const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 
 /// Opens the window and returns when it closes.
 pub fn run(config: &Config, paths: &Paths) -> Result<()> {
+    // Opening a store migrates it; doing that here, before the sync threads open theirs, keeps two migrations apart.
+    for account in &config.accounts {
+        let _ = Store::open(&paths.mail_db(&account.name));
+    }
     let (engine, events) = Engine::start(config, paths);
     let (config, paths) = (config.clone(), paths.clone());
     let options = eframe::NativeOptions {
