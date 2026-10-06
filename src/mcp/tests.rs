@@ -735,6 +735,18 @@ async fn trash_restore_refuses_paths() {
         );
         assert!(text.contains("trash_list"), "{file}: {text}");
     }
+    // It parses as a backup name, so only the bare-name check stands between it and a path outside the trash.
+    let sneaky = "1-x/../../../../tmp/evil-1.eml";
+    assert!(crate::trash::Trash::parse_name(sneaky).is_some());
+    let text = error_text(
+        &call(
+            &client,
+            "trash_restore",
+            json!({ "file": sneaky, "dry_run": true }),
+        )
+        .await,
+    );
+    assert!(text.contains("file must be a name"), "{text}");
 }
 
 #[tokio::test]
@@ -786,6 +798,8 @@ async fn move_needs_a_folder_name() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "mail:modify", &[]).await;
     assert!(
-        error_text(&call(&client, "move", json!({ "uids": [1], "to": " " })).await).contains("to")
+        error_text(&call(&client, "move", json!({ "uids": [1], "to": " " })).await)
+            .contains("to must name a folder")
     );
 }
+
