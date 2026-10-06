@@ -29,8 +29,6 @@ jobs:
         env:
           # A tag pushed with the default GITHUB_TOKEN would not start release.yml.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-          # crates.io needs a token for a crate's first publish; drop this and the secret once trusted publishing is registered.
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   release-pr:
     name: Release PR
