@@ -714,4 +714,34 @@ mod tests {
         };
         assert_eq!(wires.sent(), [("work".to_string(), archive)]);
     }
+
+    #[test]
+    fn the_read_delay_starts_when_the_body_text_appears() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 2, "old"));
+        let mut later = unread(1, "later");
+        later.body_text = None;
+        fx.add("work", later);
+        let (mut harness, wires) = fx.harness();
+        harness.input_mut().time = Some(10.0);
+        harness.event(egui::Event::Text("j".into()));
+        harness.step();
+        assert_eq!(wires.sent(), [fetch(1)]);
+        fx.store("work")
+            .set_raw("INBOX", 1, b"Subject: later\r\n\r\nFetched\r\n", "Fetched")
+            .unwrap();
+        wires
+            .events
+            .send(Event::BodyReady {
+                account: "work".into(),
+                folder: "INBOX".into(),
+                uid: 1,
+            })
+            .unwrap();
+        at(&mut harness, 20.0);
+        at(&mut harness, 20.5);
+        assert!(wires.sent().is_empty());
+        at(&mut harness, 21.1);
+        assert_eq!(wires.sent(), [read(1)]);
+    }
 }

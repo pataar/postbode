@@ -259,13 +259,13 @@ impl App {
             ctx.set_theme(self.theme);
             self.theme_applied = true;
         }
+        let now = ui.input(|input| input.time);
         while let Ok(event) = self.events.try_recv() {
-            self.handle(event);
+            self.handle(event, now);
         }
         if std::mem::take(&mut self.view_dirty) {
             self.reload_view();
         }
-        let now = ui.input(|input| input.time);
         self.poll_files(now);
         for action in self.keys(&ctx) {
             self.apply(&ctx, action);
@@ -328,7 +328,7 @@ impl App {
         ctx.request_repaint_after(Duration::from_secs_f64(POLL));
     }
 
-    fn handle(&mut self, event: Event) {
+    fn handle(&mut self, event: Event, now: f64) {
         let name = match &event {
             Event::Activity { account, .. }
             | Event::ActionDone { account, .. }
@@ -397,7 +397,7 @@ impl App {
                 }
                 self.refresh(index);
             }
-            Event::BodyReady { folder, uid, .. } => self.reload_body(index, (folder, uid)),
+            Event::BodyReady { folder, uid, .. } => self.reload_body(index, (folder, uid), now),
             Event::Restored { folder, .. } => {
                 let line = format!(
                     "{}: restored to {}",
@@ -796,8 +796,8 @@ impl App {
         }
     }
 
-    /// Refreshes the shown message after its body arrived, keeping the read timer and the saved line.
-    fn reload_body(&mut self, account: usize, key: RowKey) {
+    /// Refreshes the shown message after its body arrived; the read delay restarts when the text first appears.
+    fn reload_body(&mut self, account: usize, key: RowKey, now: f64) {
         if self
             .body
             .as_ref()
@@ -807,7 +807,11 @@ impl App {
         }
         let (message, attachments) = self.read_stored(account, &key);
         if let Some(body) = &mut self.body {
-            body.text = body_text(message.as_ref());
+            let text = body_text(message.as_ref());
+            if body.text.is_none() && text.is_some() {
+                body.shown_at = now;
+            }
+            body.text = text;
             body.message = message;
             body.attachments = attachments;
         }
