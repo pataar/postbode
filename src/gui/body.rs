@@ -520,4 +520,37 @@ mod tests {
         );
         assert!(harness.query_by_label_contains("Saved to").is_some());
     }
+
+    fn unread(uid: u32, subject: &str) -> crate::store::Message {
+        let mut m = message("INBOX", uid, subject);
+        m.flags = String::new();
+        m
+    }
+
+    fn at(harness: &mut egui_kittest::Harness<'_, crate::gui::App>, time: f64) {
+        harness.input_mut().time = Some(time);
+        harness.step();
+    }
+
+    #[test]
+    fn a_sync_that_adds_newer_mail_keeps_the_cursor_on_its_message() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "old"));
+        let (mut harness, wires) = fx.harness();
+        fx.add("work", unread(2, "new"));
+        wires
+            .events
+            .send(Event::Synced {
+                account: "work".into(),
+                new_messages: 1,
+                actions: 0,
+            })
+            .unwrap();
+        at(&mut harness, 10.0);
+        at(&mut harness, 12.0);
+        assert!(wires.sent().is_empty());
+        let list = &harness.state().list;
+        assert_eq!(list.rows.len(), 2);
+        assert_eq!(list.rows[list.cursor].uid, 1);
+    }
 }

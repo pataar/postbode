@@ -501,6 +501,7 @@ impl App {
             UiAction::SearchFor(query) => {
                 self.search = Some(query);
                 self.list.cursor = 0;
+                self.list.rows.clear();
                 self.reload_view();
             }
             UiAction::SelectRow(index) => {
@@ -844,19 +845,31 @@ impl App {
         }
     }
 
-    /// Rows from the cached threads, without a store query; keeps the cursor in range.
+    /// Rows from the cached threads, without a store query. The cursor stays on its message; when that row is gone it
+    /// keeps its index, so the next row is selected.
     pub(crate) fn rebuild_rows(&mut self) {
         let View::Folder { account, folder } = &self.view else {
             return;
         };
+        // A thread row and its expanded latest member share a key, so `member` tells them apart.
+        let current = self
+            .list
+            .rows
+            .get(self.list.cursor)
+            .map(|row| (row.key(), row.member));
         let mut rows = if self.search.is_some() {
             self.list.hits.clone()
         } else {
             list::build_rows(folder, &self.list.threads, &self.list.expanded)
         };
         list::apply_pending(&mut rows, &self.accounts[*account].pending);
+        let kept = current.and_then(|(key, member)| {
+            rows.iter()
+                .position(|row| row.member == member && row.key() == key)
+        });
         self.list.rows = rows;
-        self.list.cursor = self.list.cursor.min(self.list.rows.len().saturating_sub(1));
+        self.list.cursor =
+            kept.unwrap_or_else(|| self.list.cursor.min(self.list.rows.len().saturating_sub(1)));
     }
 
     /// Sends `action` for the marked rows, or the cursor row, and shows its effect before the server confirms it.
