@@ -319,6 +319,7 @@ pub fn sync_all(
 }
 
 /// Syncs every listed folder. A folder that fails is skipped and reported in the second list; the others still sync.
+/// A lost connection or a stop ends the pass with that error instead.
 pub fn sync_all_with(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -339,7 +340,7 @@ pub fn sync_all_with(
         checkpoint(ops, syncing)?;
         match sync_folder_with(ops, store, folder, checkpoint) {
             Ok(found) => new.extend(found),
-            Err(SyncError::Stopped) => return Err(SyncError::Stopped),
+            Err(e) if matches!(e, SyncError::Stopped) || is_lost_connection(&e) => return Err(e),
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
         }
     }
@@ -640,6 +641,14 @@ pub fn run_commands(
 
 fn is_connection_error(e: &MailError) -> bool {
     matches!(e, MailError::Io(_) | MailError::Connect(_))
+}
+
+fn is_lost_connection(e: &SyncError) -> bool {
+    match e {
+        SyncError::Action(e) => connection_lost(e),
+        SyncError::Mail(e) | SyncError::Restore(RestoreError::Mail(e)) => is_connection_error(e),
+        _ => false,
+    }
 }
 
 fn connection_lost(e: &ActionError) -> bool {
@@ -1717,6 +1726,23 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_connection_ends_a_full_pass_instead_of_skipping_every_folder() {
+        let mut ops = ops_with_inbox();
+        ops.fail_fetch_after = Some(0);
+        let store = Store::open_in_memory().unwrap();
+        let result = sync_all(&mut ops, &store);
+        assert!(
+            matches!(result, Err(SyncError::Mail(MailError::Io(_)))),
+            "{result:?}"
+        );
+        assert!(
+            !ops.calls.iter().any(|c| c == "select Trash"),
+            "{:?}",
+            ops.calls
+        );
+    }
+
+    #[test]
     fn interrupted_first_sync_stays_initial_on_retry() {
         let mut ops = RecordingOps::new().with_folder("INBOX", None);
         for uid in 1..=3 {
@@ -2075,9 +2101,10 @@ mod tests {
                     1..=8 => Err(SyncError::Mail(MailError::Connect("refused".into()))),
                     // No folders: the pass completes, then selecting INBOX before IDLE fails.
                     9 => Ok(Box::new(RecordingOps::new()) as Box<dyn MailOps>),
-                    // The full pass skips the failing INBOX; after an IDLE wake the INBOX-only pass fails.
+                    // INBOX is selectable but not listed, so the full pass completes; after an IDLE wake the INBOX-only pass fails.
                     _ => {
                         let mut ops = RecordingOps::new().with_folder("INBOX", None);
+                        ops.folders.clear();
                         ops.add_mail("INBOX", 1, 0, "Subject: a\r\n\r\n", None);
                         ops.fail_fetch_after = Some(0);
                         ops.idle_outcomes.push_back(IdleOutcome::NewMail);
