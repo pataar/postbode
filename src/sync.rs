@@ -34,6 +34,8 @@ pub enum SyncError {
     Config(#[from] ConfigError),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("stopped")]
+    Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,7 +62,7 @@ pub enum Event {
 pub struct NewMessageRef {
     pub folder: String,
     pub uid: u32,
-    /// Found while the folder was newly tracked, a placeholder, or reset after a UIDVALIDITY change; such messages never notify.
+    /// The uid was already on the server when the folder was first tracked or reset; such messages never notify.
     pub initial: bool,
 }
 
@@ -71,6 +73,47 @@ pub struct RulesRun {
     /// NewMail notifications and per-folder or per-message errors that did not stop the run.
     pub events: Vec<Event>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Activity {
+    Connecting,
+    ListingFolders,
+    SyncingFolder {
+        folder: String,
+        index: usize,
+        of: usize,
+    },
+    FetchingHeaders {
+        folder: String,
+        done: usize,
+        total: usize,
+    },
+    FetchingBodies {
+        folder: String,
+        done: usize,
+        total: usize,
+    },
+    RunningRules {
+        folder: String,
+    },
+    RunningCommand {
+        what: String,
+    },
+    Idle {
+        since: i64,
+    },
+    Offline {
+        reason: String,
+        retry_at: i64,
+    },
+}
+
+/// Called between steps of a pass with what is happening; may run queued commands on the connection.
+/// Returns true when it used the connection, so the caller selects its folder again.
+pub type Checkpoint<'a> = dyn FnMut(&mut dyn MailOps, Activity) -> Result<bool, SyncError> + 'a;
+
+/// Envelopes are fetched this many messages at a time, each batch committed on its own.
+const CHUNK: usize = 500;
 
 pub fn now() -> i64 {
     SystemTime::now()
@@ -84,10 +127,19 @@ pub fn sync_folder(
     store: &Store,
     folder: &RemoteFolder,
 ) -> Result<Vec<NewMessageRef>, SyncError> {
+    sync_folder_with(ops, store, folder, &mut |_, _| Ok(false))
+}
+
+pub fn sync_folder_with(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &RemoteFolder,
+    checkpoint: &mut Checkpoint<'_>,
+) -> Result<Vec<NewMessageRef>, SyncError> {
     let info = ops.select(&folder.name)?;
     let stored = store.folder(&folder.name)?;
-    // Initial means newly tracked, a placeholder, or reset: everything fetched this pass was already on the server.
-    let (last_uid, initial) = match &stored {
+    // Newly tracked, a placeholder, or reset: everything listed now was already on the server.
+    let (last_uid, starts_tracking) = match &stored {
         Some(f) if f.uidvalidity == info.uidvalidity => (f.last_uid, false),
         // uidvalidity 0 marks a placeholder created by a rule move into a folder not synced yet.
         Some(f) if f.uidvalidity != 0 => {
@@ -102,7 +154,6 @@ pub fn sync_folder(
         _ => (0, true),
     };
 
-    // Network first, then one transaction, so an interrupted pass leaves the folder as it was.
     let updates = if last_uid > 0 {
         ops.fetch_flags(last_uid)?
     } else {
@@ -113,22 +164,21 @@ pub fn sync_folder(
         .into_iter()
         .filter(|&uid| uid > last_uid)
         .collect();
-    let envelopes: Vec<Envelope> = match (uids.first(), uids.last()) {
-        (Some(&first), Some(&last)) => ops.fetch_envelopes(first, last)?,
-        _ => Vec::new(),
+    let row = |last_uid| Folder {
+        name: folder.name.clone(),
+        uidvalidity: info.uidvalidity,
+        last_uid,
+        special_use: folder.special_use.clone(),
     };
-    let highest = envelopes.iter().map(|env| env.uid).fold(last_uid, u32::max);
 
     store.transaction(|| {
-        if initial && stored.is_some() {
+        if starts_tracking && stored.is_some() {
             store.reset_folder(&folder.name, info.uidvalidity)?;
         }
-        store.upsert_folder(&Folder {
-            name: folder.name.clone(),
-            uidvalidity: info.uidvalidity,
-            last_uid: highest,
-            special_use: folder.special_use.clone(),
-        })?;
+        store.upsert_folder(&row(last_uid))?;
+        if starts_tracking {
+            store.set_initial_uid_next(&folder.name, uids.last().map_or(0, |uid| uid + 1))?;
+        }
         let present: Vec<u32> = updates.iter().map(|u| u.uid).collect();
         for u in &updates {
             store.update_flags(&folder.name, u.uid, &u.flags.join(" "))?;
@@ -136,18 +186,50 @@ pub fn sync_folder(
         if last_uid > 0 {
             store.remove_missing(&folder.name, last_uid, &present)?;
         }
-        let mut new = Vec::new();
-        for env in envelopes {
-            let uid = env.uid;
-            store.insert_message(&to_message(&folder.name, env))?;
-            new.push(NewMessageRef {
-                folder: folder.name.clone(),
-                uid,
-                initial,
-            });
+        Ok::<_, SyncError>(())
+    })?;
+
+    let initial_uid_next = store.initial_uid_next(&folder.name)?;
+    let total = uids.len();
+    let mut done = 0;
+    let mut new = Vec::new();
+    for chunk in uids.chunks(CHUNK) {
+        let progress = Activity::FetchingHeaders {
+            folder: folder.name.clone(),
+            done,
+            total,
+        };
+        // A command ran on the connection and may have selected another folder.
+        if checkpoint(ops, progress)? && ops.select(&folder.name)?.uidvalidity != info.uidvalidity {
+            break;
         }
-        Ok(new)
-    })
+        let (first, last) = (chunk[0], chunk[chunk.len() - 1]);
+        let envelopes = ops.fetch_envelopes(first, last)?;
+        store.transaction(|| {
+            for env in envelopes {
+                let uid = env.uid;
+                store.insert_message(&to_message(&folder.name, env))?;
+                new.push(NewMessageRef {
+                    folder: folder.name.clone(),
+                    uid,
+                    initial: uid < initial_uid_next,
+                });
+            }
+            store.upsert_folder(&row(last))
+        })?;
+        done += chunk.len();
+    }
+    if total > 0 {
+        checkpoint(
+            ops,
+            Activity::FetchingHeaders {
+                folder: folder.name.clone(),
+                done,
+                total,
+            },
+        )?;
+    }
+    Ok(new)
 }
 
 fn to_message(folder: &str, env: Envelope) -> Message {
@@ -177,18 +259,35 @@ fn to_message(folder: &str, env: Envelope) -> Message {
     }
 }
 
-/// Syncs every listed folder. A folder that fails is skipped and reported in the second list; the others still sync.
 pub fn sync_all(
     ops: &mut dyn MailOps,
     store: &Store,
 ) -> Result<(Vec<NewMessageRef>, Vec<String>), SyncError> {
+    sync_all_with(ops, store, &mut |_, _| Ok(false))
+}
+
+/// Syncs every listed folder. A folder that fails is skipped and reported in the second list; the others still sync.
+pub fn sync_all_with(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    checkpoint: &mut Checkpoint<'_>,
+) -> Result<(Vec<NewMessageRef>, Vec<String>), SyncError> {
+    checkpoint(ops, Activity::ListingFolders)?;
     let mut folders = ops.list_folders()?;
     special_use_by_name(&mut folders);
+    let of = folders.len();
     let mut new = Vec::new();
     let mut errors = Vec::new();
-    for folder in folders {
-        match sync_folder(ops, store, &folder) {
+    for (index, folder) in folders.iter().enumerate() {
+        let syncing = Activity::SyncingFolder {
+            folder: folder.name.clone(),
+            index: index + 1,
+            of,
+        };
+        checkpoint(ops, syncing)?;
+        match sync_folder_with(ops, store, folder, checkpoint) {
             Ok(found) => new.extend(found),
+            Err(SyncError::Stopped) => return Err(SyncError::Stopped),
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
         }
     }
@@ -261,6 +360,33 @@ pub fn run_rules(
     mode: Mode,
     now: i64,
 ) -> Result<RulesRun, SyncError> {
+    run_rules_with(
+        ops,
+        store,
+        trash,
+        rules,
+        account,
+        identity,
+        new,
+        mode,
+        now,
+        &mut |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_rules_with(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    trash: &Trash,
+    rules: &[CompiledRule],
+    account: &AccountConfig,
+    identity: &Identity,
+    new: &[NewMessageRef],
+    mode: Mode,
+    now: i64,
+    report: &mut dyn FnMut(Activity),
+) -> Result<RulesRun, SyncError> {
     let ctx = Context {
         account: &account.name,
         identity,
@@ -312,7 +438,20 @@ pub fn run_rules(
             continue;
         }
         let needs_body = folder_needs_body(rules, &account.name, &folder);
-        for mut msg in store.messages_in_folder(&folder)? {
+        report(Activity::RunningRules {
+            folder: folder.clone(),
+        });
+        let messages = store.messages_in_folder(&folder)?;
+        let bodies_total = if needs_body {
+            messages
+                .iter()
+                .filter(|m| m.body_text.is_none() && fresh.contains(&(m.folder.as_str(), m.uid)))
+                .count()
+        } else {
+            0
+        };
+        let mut bodies_done = 0;
+        for mut msg in messages {
             let is_fresh = fresh.contains(&(msg.folder.as_str(), msg.uid));
             // Mail found by a first sync or resync already sat on the server; fetching it would download the whole folder.
             if needs_body && msg.body_text.is_none() && is_fresh {
@@ -320,6 +459,12 @@ pub fn run_rules(
                     Ok(raw) => msg.body_text = Some(body_text(&raw)),
                     Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
                 }
+                bodies_done += 1;
+                report(Activity::FetchingBodies {
+                    folder: folder.clone(),
+                    done: bodies_done,
+                    total: bodies_total,
+                });
             }
             let plan = evaluate(rules, &msg, &ctx);
             run.evaluated += 1;
@@ -1302,7 +1447,8 @@ mod tests {
             special_use: None,
         };
         assert!(sync_folder(&mut ops, &store, &inbox).is_err());
-        assert_eq!(store.folder("INBOX").unwrap(), None, "nothing written");
+        assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 0);
+        assert_eq!(store.message_count("INBOX").unwrap(), 0);
         ops.fail_fetch_after = None;
         let new = sync_folder(&mut ops, &store, &inbox).unwrap();
         assert!(new.iter().all(|n| n.initial), "{new:?}");
@@ -1319,6 +1465,188 @@ mod tests {
         )
         .unwrap();
         assert!(run.events.is_empty(), "{:?}", run.events);
+    }
+
+    fn inbox() -> RemoteFolder {
+        RemoteFolder {
+            name: "INBOX".into(),
+            special_use: None,
+        }
+    }
+
+    #[test]
+    fn sparse_uids_are_fetched_in_chunks_of_500_messages() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        for i in 1..=1200u32 {
+            ops.add_mail(
+                "INBOX",
+                i * 1000,
+                10 * H,
+                &headers("a@x", "old", &format!("o{i}@x")),
+                None,
+            );
+        }
+        let store = Store::open_in_memory().unwrap();
+        let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
+        assert_eq!(new.len(), 1200);
+        let fetches: Vec<&String> = ops
+            .calls
+            .iter()
+            .filter(|c| c.starts_with("fetch_envelopes"))
+            .collect();
+        assert_eq!(
+            fetches,
+            [
+                "fetch_envelopes INBOX 1000 500000",
+                "fetch_envelopes INBOX 501000 1000000",
+                "fetch_envelopes INBOX 1001000 1200000",
+            ]
+        );
+        assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 1_200_000);
+    }
+
+    #[test]
+    fn interrupted_chunked_first_sync_resumes_and_stays_silent() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        for uid in 1..=1200 {
+            ops.add_mail(
+                "INBOX",
+                uid,
+                10 * H,
+                &headers("a@x", "old", &format!("o{uid}@x")),
+                None,
+            );
+        }
+        let store = Store::open_in_memory().unwrap();
+        ops.fail_fetch_after = Some(1);
+        assert!(sync_folder(&mut ops, &store, &inbox()).is_err());
+        assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 500);
+        assert_eq!(store.message_count("INBOX").unwrap(), 500);
+        assert_eq!(store.initial_uid_next("INBOX").unwrap(), 1201);
+
+        ops.fail_fetch_after = None;
+        ops.add_mail("INBOX", 1201, 11 * H, &headers("b@x", "new", "n@x"), None);
+        let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
+        assert_eq!(new.len(), 701);
+        assert!(new.iter().filter(|n| n.uid <= 1200).all(|n| n.initial));
+        assert!(!new.iter().find(|n| n.uid == 1201).unwrap().initial);
+    }
+
+    #[test]
+    fn a_folder_that_starts_empty_notifies_its_first_mail() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let store = Store::open_in_memory().unwrap();
+        assert!(sync_folder(&mut ops, &store, &inbox()).unwrap().is_empty());
+        assert_eq!(store.initial_uid_next("INBOX").unwrap(), 0);
+        ops.add_mail("INBOX", 1, 10 * H, &headers("a@x", "first", "f@x"), None);
+        let new = sync_folder(&mut ops, &store, &inbox()).unwrap();
+        assert!(!new[0].initial);
+    }
+
+    #[test]
+    fn checkpoints_report_progress_in_order() {
+        let mut ops = ops_with_inbox();
+        let store = Store::open_in_memory().unwrap();
+        let mut seen = Vec::new();
+        sync_all_with(&mut ops, &store, &mut |_, activity| {
+            seen.push(activity);
+            Ok(false)
+        })
+        .unwrap();
+        let folder = |name: &str, index| Activity::SyncingFolder {
+            folder: name.into(),
+            index,
+            of: 2,
+        };
+        let headers = |done| Activity::FetchingHeaders {
+            folder: "INBOX".into(),
+            done,
+            total: 2,
+        };
+        assert_eq!(
+            seen,
+            [
+                Activity::ListingFolders,
+                folder("INBOX", 1),
+                headers(0),
+                headers(2),
+                folder("Trash", 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_that_used_the_connection_makes_the_chunk_loop_reselect() {
+        let mut ops = ops_with_inbox();
+        let store = Store::open_in_memory().unwrap();
+        sync_folder_with(&mut ops, &store, &inbox(), &mut |ops, activity| {
+            if matches!(activity, Activity::FetchingHeaders { done: 0, .. }) {
+                ops.select("Trash")?;
+                return Ok(true);
+            }
+            Ok(false)
+        })
+        .unwrap();
+        let tail: Vec<&String> = ops.calls.iter().rev().take(3).rev().collect();
+        assert_eq!(
+            tail,
+            ["select Trash", "select INBOX", "fetch_envelopes INBOX 1 2"]
+        );
+        assert_eq!(store.message_count("INBOX").unwrap(), 2);
+    }
+
+    #[test]
+    fn a_stopping_checkpoint_ends_the_pass() {
+        let mut ops = ops_with_inbox();
+        let store = Store::open_in_memory().unwrap();
+        let result = sync_all_with(&mut ops, &store, &mut |_, _| Err(SyncError::Stopped));
+        assert!(matches!(result, Err(SyncError::Stopped)));
+    }
+
+    #[test]
+    fn rules_report_running_and_body_progress() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        sync_all(&mut ops, &store).unwrap();
+        ops.add_mail(
+            "INBOX",
+            3,
+            12 * H,
+            &headers("bob@x", "code", "m3@x"),
+            Some("From: bob@x\r\n\r\nyour code 99"),
+        );
+        let new = sync_all(&mut ops, &store).unwrap().0;
+        let rules = rules_from(
+            "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
+            &store,
+            0,
+        );
+        let mut seen = Vec::new();
+        run_rules_with(
+            &mut ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            13 * H,
+            &mut |a| seen.push(a),
+        )
+        .unwrap();
+        assert!(seen.contains(&Activity::RunningRules {
+            folder: "INBOX".into()
+        }));
+        assert!(seen.contains(&Activity::FetchingBodies {
+            folder: "INBOX".into(),
+            done: 1,
+            total: 1
+        }));
     }
 
     #[test]
