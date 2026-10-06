@@ -1,9 +1,9 @@
 //! Direct actions on chosen messages: the CLI's mark, move, archive and delete. They run through the same `apply` as rules.
 use crate::mail_ops::{MailError, MailOps};
 use crate::rules::Action;
-use crate::rules::apply::{ApplyError, apply};
+use crate::rules::apply::{ApplyError, apply, ensure_raw};
 use crate::rules::engine::{Plan, PlannedAction};
-use crate::store::{Store, StoreError};
+use crate::store::{Message, Store, StoreError};
 use crate::trash::Trash;
 
 /// The rule name direct actions are logged under.
@@ -74,6 +74,34 @@ pub fn run(
         results.push((uid, result));
     }
     Ok(results)
+}
+
+/// Downloads and indexes every body `folder` lacks, calling `starting` with the count first. Returns how many arrived;
+/// a message that cannot be fetched is logged and skipped.
+pub fn fetch_bodies(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &str,
+    starting: impl FnOnce(usize),
+) -> Result<usize, ActionError> {
+    let missing: Vec<Message> = store
+        .messages_in_folder(folder)?
+        .into_iter()
+        .filter(|m| m.body_text.is_none())
+        .collect();
+    if missing.is_empty() {
+        return Ok(0);
+    }
+    select_synced(ops, store, folder)?;
+    starting(missing.len());
+    let mut fetched = 0;
+    for msg in &missing {
+        match ensure_raw(msg, ops, store) {
+            Ok(_) => fetched += 1,
+            Err(e) => log::warn!("{}/{}: body fetch failed: {e}", msg.folder, msg.uid),
+        }
+    }
+    Ok(fetched)
 }
 
 #[cfg(test)]
@@ -172,5 +200,21 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, ActionError::UnknownFolder(_)));
         assert!(ops.calls.is_empty());
+    }
+
+    #[test]
+    fn fetch_bodies_indexes_only_missing_bodies() {
+        let (mut ops, store, _trash, _dir) = setup();
+        let mut announced = None;
+        assert_eq!(
+            fetch_bodies(&mut ops, &store, "INBOX", |n| announced = Some(n)).unwrap(),
+            1
+        );
+        assert_eq!(announced, Some(1));
+        assert_eq!(store.search("body", None, 10).unwrap().len(), 1);
+        let again = fetch_bodies(&mut ops, &store, "INBOX", |_| {
+            panic!("nothing left to fetch")
+        });
+        assert_eq!(again.unwrap(), 0);
     }
 }

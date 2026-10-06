@@ -268,6 +268,36 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    /// FTS5 search, newest first. A query FTS5 cannot parse, such as a bare email address, is retried with every word quoted.
+    pub fn search(
+        &self,
+        query: &str,
+        folder: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Message>, StoreError> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        self.search_fts(query, folder, limit)
+            .or_else(|_| self.search_fts(&quote_words(query), folder, limit))
+    }
+
+    fn search_fts(
+        &self,
+        query: &str,
+        folder: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<Message>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages
+             WHERE id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?1)
+               AND (?2 IS NULL OR folder = ?2)
+             ORDER BY internaldate DESC, uid DESC LIMIT ?3"
+        ))?;
+        let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![query, folder, limit])?);
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     pub fn message(&self, folder: &str, uid: u32) -> Result<Option<Message>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND uid = ?2"
@@ -360,6 +390,15 @@ impl Store {
             |r| r.get(0),
         )?)
     }
+}
+
+/// Every whitespace-separated word as an FTS5 string, which FTS5 always parses.
+fn quote_words(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -607,5 +646,51 @@ mod tests {
         assert_eq!(s.unread_count("INBOX").unwrap(), 1);
         assert_eq!(s.message_count("INBOX").unwrap(), 2);
         assert_eq!(s.message_count("Other").unwrap(), 0);
+    }
+
+    #[test]
+    fn search_matches_words_newest_first_and_filters_by_folder() {
+        let s = store_with_inbox();
+        s.upsert_folder(&Folder {
+            name: "Archive".into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+        })
+        .unwrap();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        s.insert_message(&msg("INBOX", 2, 30)).unwrap();
+        s.insert_message(&msg("Archive", 3, 20)).unwrap();
+        let uids = |found: Vec<Message>| found.iter().map(|m| m.uid).collect::<Vec<_>>();
+        assert_eq!(uids(s.search("subject", None, 10).unwrap()), [2, 3, 1]);
+        assert_eq!(
+            uids(s.search("subject", Some("INBOX"), 10).unwrap()),
+            [2, 1]
+        );
+        assert_eq!(uids(s.search("subject", None, 1).unwrap()), [2]);
+        assert_eq!(
+            uids(s.search("from_addr:alice", None, 10).unwrap()),
+            [2, 3, 1]
+        );
+        assert!(s.search("pineapple", None, 10).unwrap().is_empty());
+        assert!(s.search("   ", None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_retries_unparsable_queries_as_quoted_words() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        assert_eq!(s.search("alice@x", None, 10).unwrap().len(), 1);
+        assert!(s.search("re: lunch", None, 10).unwrap().is_empty());
+        assert!(s.search("\"unbalanced", None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_covers_fetched_bodies() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        assert!(s.search("pineapple", None, 10).unwrap().is_empty());
+        s.set_raw("INBOX", 1, b"raw", "pineapple pie").unwrap();
+        assert_eq!(s.search("pineapple", None, 10).unwrap().len(), 1);
     }
 }

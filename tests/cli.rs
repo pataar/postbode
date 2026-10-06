@@ -333,3 +333,19 @@ fn show_json_carries_the_account() {
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(line["account"], "work");
 }
+
+#[test]
+fn search_finds_by_word_and_by_address() {
+    let (home, _store) = seeded_home(&[
+        message(42, "billing@example.com", "Your invoice"),
+        message(43, "friend@example.com", "Lunch?"),
+    ]);
+    for query in ["invoice", "billing@example.com"] {
+        let out = postbode(home.path(), &["search", query]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.lines().count() == 1 && stdout.contains("INBOX/42"),
+            "{query}: {stdout}"
+        );
+    }
+}

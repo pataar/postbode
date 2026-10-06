@@ -82,6 +82,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first
+    Search {
+        query: String,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        folder: Option<String>,
+        /// Fetch and index missing bodies first; slow on a large folder
+        #[arg(long)]
+        bodies: bool,
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one message
     Show {
         uid: u32,
@@ -255,6 +270,29 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
+        Command::Search {
+            query,
+            account,
+            folder,
+            bodies,
+            limit,
+            json,
+        } => {
+            for acc in select_accounts(&config, account.as_deref())? {
+                let store = open_store(&paths, &acc.name)?;
+                if bodies {
+                    fetch_missing_bodies(acc, &store, folder.as_deref())?;
+                }
+                for m in store.search(&query, folder.as_deref(), limit)? {
+                    if json {
+                        println!("{}", json_line(&acc.name, &m)?);
+                    } else {
+                        println!("{}", message_line(&acc.name, &m, 0));
+                    }
+                }
+            }
+            Ok(())
+        }
         Command::Show {
             uid,
             account,
@@ -392,6 +430,32 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
 }
 
 /// The full message, from the store or fetched once from the server.
+/// Fetches the bodies `search --bodies` needs; a folder that cannot be fetched is reported and skipped.
+fn fetch_missing_bodies(
+    account: &AccountConfig,
+    store: &Store,
+    folder: Option<&str>,
+) -> Result<()> {
+    let folders = match folder {
+        Some(folder) => vec![folder.to_string()],
+        None => store.folders()?.into_iter().map(|f| f.name).collect(),
+    };
+    let mut ops = sync::connect(account)?;
+    for folder in folders {
+        let name = clean(&folder, false);
+        let announce = |count| {
+            eprintln!(
+                "{}: fetching {count} bodies in {name}; this can take a while on a large folder",
+                account.name
+            )
+        };
+        if let Err(e) = postbode::actions::fetch_bodies(&mut ops, store, &folder, announce) {
+            eprintln!("{}: {name}: {}", account.name, clean(&e.to_string(), false));
+        }
+    }
+    Ok(())
+}
+
 fn message_raw(account: &AccountConfig, store: &Store, msg: &Message) -> Result<Vec<u8>> {
     if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
         return Ok(raw);
