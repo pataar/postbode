@@ -298,3 +298,124 @@ async fn limit_clamps_to_five_hundred() {
         500
     );
 }
+
+const RULES: &str = "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n";
+
+fn rule_file(fx: &Fixture) -> String {
+    std::fs::read_to_string(fx.paths.rules_file()).unwrap()
+}
+
+#[tokio::test]
+async fn rules_propose_stores_a_disabled_rule_attributed_to_the_host() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "rules:propose", &[]).await;
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let result = call(&client, "rules_propose", rule).await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    let file = crate::rules::load(&fx.paths.rules_file()).unwrap();
+    assert!(!file.rules[0].enabled);
+    assert_eq!(file.rules[0].proposed_by.as_deref(), Some("mcp:test-host"));
+}
+
+#[tokio::test]
+async fn a_bad_rule_returns_the_rules_check_error() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "read,rules:propose", &[]).await;
+    let bad = json!({ "name": "x", "match": { "from": { "regex": "(" } }, "actions": ["delete"] });
+    let text = error_text(&call(&client, "rules_propose", bad.clone()).await);
+    assert!(text.contains("rule 'x'"), "{text}");
+    let text = error_text(&call(&client, "rules_test", json!({ "rule": bad })).await);
+    assert!(text.contains("rule 'x'"), "{text}");
+    assert!(!fx.paths.rules_file().exists() || !rule_file(&fx).contains("name = \"x\""));
+}
+
+#[tokio::test]
+async fn rules_test_previews_subjects() {
+    let fx = fixture(&["work"]);
+    fx.add(
+        "work",
+        fixture_message("INBOX", 1, "Your code", "secret body"),
+    );
+    let client = connect(&fx, "read", &[]).await;
+    let rule = json!({ "name": "codes", "match": { "subject": { "contains": "code" } }, "actions": ["delete"] });
+    let preview = rows(&call(&client, "rules_test", json!({ "rule": rule })).await);
+    assert_eq!(preview.len(), 1);
+    assert_eq!(preview[0]["subject"], "Your code");
+    assert_eq!(preview[0]["rule"], "codes");
+    assert!(
+        !serde_json::to_string(&preview)
+            .unwrap()
+            .contains("secret body")
+    );
+}
+
+#[tokio::test]
+async fn rules_list_check_and_schema() {
+    let fx = fixture(&["work"]);
+    std::fs::write(fx.paths.rules_file(), RULES).unwrap();
+    let client = connect(&fx, "read", &[]).await;
+    assert_eq!(
+        rows(&call(&client, "rules_list", json!({})).await)[0]["name"],
+        "codes"
+    );
+    let check = call(&client, "rules_check", json!({})).await;
+    assert_eq!(check.structured_content.unwrap()["rules"], 1);
+    let schema = call(&client, "rules_schema", json!({})).await;
+    assert!(schema.structured_content.unwrap()["properties"]["rules"].is_object());
+}
+
+#[tokio::test]
+async fn rules_write_approves_rejects_and_toggles() {
+    let fx = fixture(&["work"]);
+    let propose = connect(&fx, "rules:propose", &[]).await;
+    for name in ["a", "b"] {
+        let rule = json!({ "name": name, "match": { "subject": { "contains": name } }, "actions": ["flag"] });
+        call(&propose, "rules_propose", rule).await;
+    }
+    let client = connect(&fx, "rules:write", &[]).await;
+    assert_ne!(
+        call(&client, "rules_approve", json!({ "name": "a" }))
+            .await
+            .is_error,
+        Some(true)
+    );
+    assert_ne!(
+        call(&client, "rules_reject", json!({ "name": "b" }))
+            .await
+            .is_error,
+        Some(true)
+    );
+    let disable = json!({ "name": "a", "enabled": false });
+    assert_ne!(
+        call(&client, "rules_set_enabled", disable).await.is_error,
+        Some(true)
+    );
+    let file = crate::rules::load(&fx.paths.rules_file()).unwrap();
+    assert_eq!(file.rules.len(), 1);
+    assert!(!file.rules[0].enabled);
+    assert!(
+        error_text(&call(&client, "rules_approve", json!({ "name": "nope" })).await)
+            .contains("nope")
+    );
+}
+
+#[tokio::test]
+async fn rules_list_hides_rules_of_hidden_accounts_and_approve_restarts_every_clock() {
+    let fx = fixture(&["home", "work"]);
+    let scoped = |name: &str, account: &str| {
+        format!(
+            "[[rules]]\nname = \"{name}\"\naccount = \"{account}\"\nenabled = false\nproposed_by = \"mcp\"\nmatch.subject = {{ contains = \"x\" }}\nactions = [\"flag\"]\n\n"
+        )
+    };
+    std::fs::write(
+        fx.paths.rules_file(),
+        scoped("for-home", "home") + &scoped("for-work", "work"),
+    )
+    .unwrap();
+    let client = connect(&fx, "read,rules:write", &["work"]).await;
+    let listed = rows(&call(&client, "rules_list", json!({})).await);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["name"], "for-work");
+    let approved = call(&client, "rules_approve", json!({ "name": "for-work" })).await;
+    assert_ne!(approved.is_error, Some(true), "{approved:?}");
+}

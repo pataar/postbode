@@ -23,7 +23,6 @@ use crate::message::clean;
 const LIST_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Clone, Copy)]
-#[expect(dead_code, reason = "the changing tools construct these")]
 enum Effect {
     /// Changes something but adds or moves rather than destroys; MCP treats an absent hint as destructive.
     Changes,
@@ -87,6 +86,32 @@ fn fifty() -> u32 {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct NoArgs {}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct NameArgs {
+    name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SetEnabledArgs {
+    name: String,
+    enabled: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RulesTestArgs {
+    /// One rule, an entry of `rules` in rules_schema; previewed as if enabled
+    rule: crate::rules::Rule,
+    /// Only this account; default every visible account
+    account: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct AccountArgs {
     /// Only this account; default every visible account
     account: Option<String>,
@@ -144,6 +169,54 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         ToolDef::new::<AccountArgs>("folders", Scope::Read, Effect::ReadOnly, help::FOLDERS),
         ToolDef::new::<ListArgs>("list", Scope::Read, Effect::ReadOnly, help::LIST),
         ToolDef::new::<LogArgs>("log", Scope::Read, Effect::ReadOnly, help::LOG),
+        ToolDef::new::<NameArgs>(
+            "rules_approve",
+            Scope::RulesWrite,
+            Effect::Destructive,
+            help::RULES_APPROVE,
+        ),
+        ToolDef::new::<NoArgs>(
+            "rules_check",
+            Scope::Read,
+            Effect::ReadOnly,
+            help::RULES_CHECK,
+        ),
+        ToolDef::new::<NoArgs>(
+            "rules_list",
+            Scope::Read,
+            Effect::ReadOnly,
+            help::RULES_LIST,
+        ),
+        ToolDef::new::<crate::rules::Rule>(
+            "rules_propose",
+            Scope::RulesPropose,
+            Effect::Changes,
+            help::RULES_PROPOSE,
+        ),
+        ToolDef::new::<NameArgs>(
+            "rules_reject",
+            Scope::RulesWrite,
+            Effect::Changes,
+            help::RULES_REJECT,
+        ),
+        ToolDef::new::<NoArgs>(
+            "rules_schema",
+            Scope::Read,
+            Effect::ReadOnly,
+            help::RULES_SCHEMA,
+        ),
+        ToolDef::new::<SetEnabledArgs>(
+            "rules_set_enabled",
+            Scope::RulesWrite,
+            Effect::Destructive,
+            help::RULES_SET_ENABLED,
+        ),
+        ToolDef::new::<RulesTestArgs>(
+            "rules_test",
+            Scope::Read,
+            Effect::ReadOnly,
+            help::RULES_TEST,
+        ),
         ToolDef::new::<SearchArgs>("search", Scope::Read, Effect::ReadOnly, search),
         ToolDef::new::<AccountArgs>(
             "trash_list",
@@ -162,7 +235,6 @@ fn dispatch(
     name: &str,
     arguments: Option<JsonObject>,
 ) -> Result<Value> {
-    let _ = client;
     match name {
         "folders" => {
             let a: AccountArgs = args(arguments)?;
@@ -175,6 +247,39 @@ fn dispatch(
         "log" => {
             let a: LogArgs = args(arguments)?;
             rows(backend.log(a.account.as_deref(), a.limit)?)
+        }
+        "rules_approve" => {
+            let a: NameArgs = args(arguments)?;
+            backend.approve(&a.name)
+        }
+        "rules_check" => {
+            let _: NoArgs = args(arguments)?;
+            backend.rules_check()
+        }
+        "rules_list" => {
+            let _: NoArgs = args(arguments)?;
+            rows(backend.rules_list()?)
+        }
+        "rules_propose" => {
+            let rule: crate::rules::Rule = args(arguments)?;
+            let by = client.map_or_else(|| "mcp".to_string(), |name| format!("mcp:{name}"));
+            backend.propose(rule, &by)
+        }
+        "rules_reject" => {
+            let a: NameArgs = args(arguments)?;
+            backend.reject(&a.name)
+        }
+        "rules_schema" => {
+            let _: NoArgs = args(arguments)?;
+            backend.rules_schema()
+        }
+        "rules_set_enabled" => {
+            let a: SetEnabledArgs = args(arguments)?;
+            backend.set_enabled(&a.name, a.enabled)
+        }
+        "rules_test" => {
+            let a: RulesTestArgs = args(arguments)?;
+            rows(backend.rules_test(a.rule, a.account.as_deref())?)
         }
         "search" => {
             let a: SearchArgs = args(arguments)?;

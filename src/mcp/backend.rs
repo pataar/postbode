@@ -2,16 +2,21 @@
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
+use crate::actions;
 use crate::config::{AccountConfig, Config};
 use crate::message;
 use crate::output;
 use crate::paths::Paths;
+use crate::rules::{self, Rule, RuleFile};
 use crate::store::{Message, Store};
+use crate::sync;
 use crate::trash::Trash;
 
 pub const MAX_LIMIT: u32 = 500;
 
 pub struct Backend {
+    /// Every configured account, visible or not: an approved rule's clock restarts in all of them.
+    all_accounts: Vec<String>,
     accounts: Vec<AccountConfig>,
     paths: Paths,
 }
@@ -26,6 +31,7 @@ impl Backend {
             bail!("no account named '{name}'");
         }
         Ok(Backend {
+            all_accounts: config.accounts.iter().map(|a| a.name.clone()).collect(),
             accounts: config
                 .accounts
                 .iter()
@@ -156,6 +162,74 @@ impl Backend {
             }
         }
         Ok(rows)
+    }
+
+    /// Rules scoped to a hidden account are left out; rules for every account stay.
+    pub fn rules_list(&self) -> Result<Vec<Value>> {
+        let file = rules::load(&self.paths.rules_file())?;
+        let visible = |rule: &Rule| {
+            rule.account
+                .as_deref()
+                .is_none_or(|a| self.accounts.iter().any(|acc| acc.name == a))
+        };
+        Ok(file
+            .rules
+            .iter()
+            .filter(|r| visible(r))
+            .map(output::rule)
+            .collect())
+    }
+
+    pub fn rules_check(&self) -> Result<Value> {
+        let count = rules::compile(&rules::load(&self.paths.rules_file())?)?.len();
+        Ok(json!({ "rules": count }))
+    }
+
+    pub fn rules_schema(&self) -> Result<Value> {
+        Ok(serde_json::from_str(&rules::schema())?)
+    }
+
+    /// Previews one rule as if enabled, on the cached mail of the visible accounts; rows never carry mail text.
+    pub fn rules_test(&self, mut rule: Rule, account: Option<&str>) -> Result<Vec<Value>> {
+        rule.enabled = true;
+        let compiled = rules::compile(&RuleFile { rules: vec![rule] })?;
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            let store = self.store(acc)?;
+            for p in actions::planned(&compiled, &store, acc, &acc.identity()?, sync::now())? {
+                rows.push(json!({
+                    "account": acc.name, "rule": p.rule, "folder": p.message.folder,
+                    "uid": p.message.uid, "action": p.action.label(), "subject": p.message.subject,
+                }));
+            }
+        }
+        Ok(rows)
+    }
+
+    pub fn propose(&self, rule: Rule, by: &str) -> Result<Value> {
+        let name = rule.name.clone();
+        rules::edit::propose(&self.paths.rules_file(), rule, by)?;
+        Ok(json!({ "proposed": name, "enabled": false, "proposed_by": by }))
+    }
+
+    /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.
+    pub fn approve(&self, name: &str) -> Result<Value> {
+        rules::edit::approve(&self.paths.rules_file(), name)?;
+        for account in &self.all_accounts {
+            self.paths.ensure_account(account)?;
+            Store::open(&self.paths.mail_db(account))?.restart_rule_clock(name, sync::now())?;
+        }
+        Ok(json!({ "rule": name, "enabled": true }))
+    }
+
+    pub fn reject(&self, name: &str) -> Result<Value> {
+        rules::edit::reject(&self.paths.rules_file(), name)?;
+        Ok(json!({ "rejected": name }))
+    }
+
+    pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<Value> {
+        rules::edit::set_enabled(&self.paths.rules_file(), name, enabled)?;
+        Ok(json!({ "rule": name, "enabled": enabled }))
     }
 }
 
