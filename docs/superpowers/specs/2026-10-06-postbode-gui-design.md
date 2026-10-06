@@ -52,7 +52,7 @@ pub enum StartState { Running, Locked { pid: Option<u32> }, Failed(String) }
 
 impl Engine {
     /// Takes each account's lock and spawns its sync thread; accounts whose lock is held are not started.
-    pub fn start(config: &Config, paths: &Paths) -> Result<(Engine, Receiver<Event>), EngineError>;
+    pub fn start(config: &Config, paths: &Paths) -> (Engine, Receiver<Event>);
     pub fn accounts(&self) -> &[(String, StartState)];
     /// Queues the command and wakes the account's IDLE; false when the account is not running.
     pub fn send(&self, account: &str, command: Command) -> bool;

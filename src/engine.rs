@@ -41,7 +41,7 @@ pub struct Engine {
 
 impl Engine {
     /// Takes each account's lock and spawns its sync thread; accounts whose lock is held are not started.
-    pub fn start(config: &Config, paths: &Paths) -> io::Result<(Engine, Receiver<Event>)> {
+    pub fn start(config: &Config, paths: &Paths) -> (Engine, Receiver<Event>) {
         let shutdown = Arc::new(AtomicBool::new(false));
         let (events, received) = mpsc::channel();
         let mut threads = HashMap::new();
@@ -97,7 +97,7 @@ impl Engine {
             engine.accounts.push((name, StartState::Running));
         }
         engine.route = Route::Threads(threads);
-        Ok((engine, received))
+        (engine, received)
     }
 
     pub fn accounts(&self) -> &[(String, StartState)] {
@@ -221,7 +221,7 @@ mod tests {
         let config = Config {
             accounts: vec![offline_account("work")],
         };
-        let (engine, _events) = Engine::start(&config, &paths).unwrap();
+        let (engine, _events) = Engine::start(&config, &paths);
         assert_eq!(
             engine.accounts(),
             [(
@@ -243,7 +243,7 @@ mod tests {
         let config = Config {
             accounts: vec![offline_account("work")],
         };
-        let (engine, events) = Engine::start(&config, &Paths::under(dir.path())).unwrap();
+        let (engine, events) = Engine::start(&config, &Paths::under(dir.path()));
         assert_eq!(
             engine.accounts(),
             [("work".to_string(), StartState::Running)]
@@ -273,7 +273,7 @@ mod tests {
         let config = Config {
             accounts: vec![offline_account("work")],
         };
-        let (engine, events) = Engine::start(&config, &paths).unwrap();
+        let (engine, events) = Engine::start(&config, &paths);
         let started = std::time::Instant::now();
         drop(engine);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));

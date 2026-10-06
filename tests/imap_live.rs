@@ -418,7 +418,7 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
     let config = Config {
         accounts: vec![account.clone()],
     };
-    let (engine, events) = Engine::start(&config, &Paths::under(home.path())).unwrap();
+    let (engine, events) = Engine::start(&config, &Paths::under(home.path()));
     let wait = |wanted: &dyn Fn(&Event) -> bool| {
         loop {
             let event = events

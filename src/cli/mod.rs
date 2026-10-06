@@ -719,7 +719,7 @@ fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
     compiled_rules(paths, None)?;
     // Ctrl-C ends the process through the default SIGINT handler; WAL and trash-before-delete leave nothing half done.
     // `engine` holds the account locks until `run` exits.
-    let (engine, events) = Engine::start(config, paths)?;
+    let (engine, events) = Engine::start(config, paths);
     let mut running = 0;
     for (name, state) in engine.accounts() {
         match state {
