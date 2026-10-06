@@ -478,9 +478,11 @@ fn mcp_archive_moves_the_message() {
     let backend = backend(home.path());
     backend.sync(None).unwrap();
     let report = backend
-        .act(None, "INBOX", &[1], Action::Archive, false)
+        .act(None, "INBOX", &[1], Action::Archive, false, "mcp:test-host")
         .unwrap();
     assert_eq!(report["done"], 1, "{report}");
+    let store = Store::open(&Paths::under(home.path()).mail_db(&account.name)).unwrap();
+    assert_eq!(store.log(1).unwrap()[0].rule_name, "mcp:test-host");
     let mut ops = connect(&account);
     ops.select("INBOX").unwrap();
     assert!(all_envelopes(&mut ops).is_empty());
@@ -499,7 +501,7 @@ fn mcp_delete_inside_trash_expunges_and_keeps_the_eml() {
     let backend = backend(home.path());
     backend.sync(None).unwrap();
     let report = backend
-        .act(None, "Trash", &[1], Action::Trash, false)
+        .act(None, "Trash", &[1], Action::Trash, false, "mcp")
         .unwrap();
     assert_eq!(report["done"], 1, "{report}");
     let backups = std::fs::read_dir(Paths::under(home.path()).trash_dir(&account.name))
@@ -524,7 +526,7 @@ async fn mcp_actions_run_from_a_blocking_pool_thread() {
             .unwrap();
         backend.sync(None).unwrap();
         backend
-            .act(None, "INBOX", &[1], Action::MarkRead, false)
+            .act(None, "INBOX", &[1], Action::MarkRead, false, "mcp")
             .unwrap()
     })
     .await

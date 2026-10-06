@@ -524,6 +524,7 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         &selection.folder,
         &selection.uids,
         &action,
+        postbode::actions::RULE_NAME,
         sync::now(),
     )?;
     let mut failed = 0;

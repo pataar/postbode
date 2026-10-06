@@ -1,4 +1,5 @@
-//! Direct actions on chosen messages: the CLI's mark, move, archive and delete. They run through the same `apply` as rules.
+//! Direct actions on chosen messages: mark, move, archive and delete, through the same `apply` as rules, plus the
+//! dry-run, rule preview and raw-message helpers the CLI, the window and the MCP server share.
 use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps};
 use crate::message::clean;
@@ -8,7 +9,7 @@ use crate::rules::{Action, CompiledRule};
 use crate::store::{Message, Store, StoreError};
 use crate::trash::Trash;
 
-/// The rule name direct actions are logged under.
+/// The rule name the CLI and the window log direct actions under.
 pub const RULE_NAME: &str = "cli";
 
 #[derive(Debug, thiserror::Error)]
@@ -45,7 +46,9 @@ pub fn select_synced(
     Ok(())
 }
 
-/// Runs `action` on each uid in `folder`. One result per uid, so a missing message does not stop the others.
+/// Runs `action` on each uid in `folder`, logged under `rule_name`. One result per uid, so a missing message does not
+/// stop the others.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -53,12 +56,13 @@ pub fn run(
     folder: &str,
     uids: &[u32],
     action: &Action,
+    rule_name: &str,
     now: i64,
 ) -> Result<Vec<UidResult>, ActionError> {
     select_synced(ops, store, folder)?;
     let plan = Plan {
         actions: vec![PlannedAction {
-            rule: RULE_NAME.to_string(),
+            rule: rule_name.to_string(),
             action: action.clone(),
         }],
         notify: false,
@@ -261,6 +265,7 @@ mod tests {
             "INBOX",
             &[5, 99],
             &Action::Flag,
+            "mcp:test-host",
             500,
         )
         .unwrap();
@@ -270,14 +275,24 @@ mod tests {
             (99, Err(ActionError::NotFound { .. }))
         ));
         assert_eq!(ops.mail["INBOX"][0].flags, ["\\Flagged"]);
-        assert_eq!(store.log(10).unwrap()[0].rule_name, "cli");
+        assert_eq!(store.log(10).unwrap()[0].rule_name, "mcp:test-host");
     }
 
     #[test]
     fn run_refuses_a_folder_whose_uidvalidity_changed() {
         let (mut ops, store, trash, _dir) = setup();
         ops.uidvalidity.insert("INBOX".into(), 2);
-        let err = run(&mut ops, &store, &trash, "INBOX", &[5], &Action::Trash, 500).unwrap_err();
+        let err = run(
+            &mut ops,
+            &store,
+            &trash,
+            "INBOX",
+            &[5],
+            &Action::Trash,
+            RULE_NAME,
+            500,
+        )
+        .unwrap_err();
         assert!(matches!(err, ActionError::FolderChanged(_)));
         assert_eq!(ops.mail["INBOX"].len(), 1);
         assert_eq!(ops.calls, ["select INBOX"]);
@@ -293,6 +308,7 @@ mod tests {
             "Receipts",
             &[5],
             &Action::Flag,
+            RULE_NAME,
             500,
         )
         .unwrap_err();

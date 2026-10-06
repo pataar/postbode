@@ -351,6 +351,7 @@ fn dispatch(
     name: &str,
     arguments: Option<JsonObject>,
 ) -> Result<Value> {
+    let by = client.map_or_else(|| "mcp".to_string(), |client| format!("mcp:{client}"));
     match name {
         "archive" => {
             let a: SelectionArgs = args(arguments)?;
@@ -360,6 +361,7 @@ fn dispatch(
                 &a.uids,
                 Action::Archive,
                 a.dry_run,
+                &by,
             )
         }
         "attachments" => {
@@ -374,6 +376,7 @@ fn dispatch(
                 &a.uids,
                 Action::Trash,
                 a.dry_run,
+                &by,
             )
         }
         "folders" => {
@@ -396,7 +399,14 @@ fn dispatch(
                 How::Unflag => Action::Unflag,
                 How::Unread => Action::MarkUnread,
             };
-            backend.act(a.account.as_deref(), &a.folder, &a.uids, action, a.dry_run)
+            backend.act(
+                a.account.as_deref(),
+                &a.folder,
+                &a.uids,
+                action,
+                a.dry_run,
+                &by,
+            )
         }
         "move" => {
             let a: MoveArgs = args(arguments)?;
@@ -409,6 +419,7 @@ fn dispatch(
                 &a.uids,
                 Action::Move(a.to),
                 a.dry_run,
+                &by,
             )
         }
         "rules_approve" => {
@@ -425,7 +436,6 @@ fn dispatch(
         }
         "rules_propose" => {
             let rule: crate::rules::Rule = args(arguments)?;
-            let by = client.map_or_else(|| "mcp".to_string(), |name| format!("mcp:{name}"));
             backend.propose(rule, &by)
         }
         "rules_reject" => {

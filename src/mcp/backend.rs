@@ -194,7 +194,8 @@ impl Backend {
         Ok(rows)
     }
 
-    /// A direct action on `uids` in `folder`; `dry_run` reads the local store only and opens no connection.
+    /// A direct action on `uids` in `folder`, logged as done `by` the agent; `dry_run` reads the local store only and
+    /// opens no connection.
     pub fn act(
         &self,
         account: Option<&str>,
@@ -202,6 +203,7 @@ impl Backend {
         uids: &[u32],
         action: Action,
         dry_run: bool,
+        by: &str,
     ) -> Result<Value> {
         if uids.is_empty() {
             bail!("uids must name at least one message");
@@ -224,7 +226,16 @@ impl Backend {
         }
         let mut ops = sync::connect(acc)?;
         let trash = Trash::new(self.paths.trash_dir(&acc.name));
-        let results = actions::run(&mut ops, &store, &trash, folder, uids, &action, sync::now())?;
+        let results = actions::run(
+            &mut ops,
+            &store,
+            &trash,
+            folder,
+            uids,
+            &action,
+            by,
+            sync::now(),
+        )?;
         let failed: Vec<Value> = results
             .iter()
             .filter_map(|(uid, result)| {
