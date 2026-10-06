@@ -89,6 +89,8 @@ mod recording {
         pub supports_move: bool,
         pub calls: Vec<String>,
         pub idle_outcomes: VecDeque<IdleOutcome>,
+        /// Makes every `fetch_new` fail, like a connection dropping mid-sync.
+        pub fail_fetch_new: bool,
         selected: String,
         next_uid: HashMap<String, u32>,
     }
@@ -103,6 +105,7 @@ mod recording {
                 supports_move: true,
                 calls: Vec::new(),
                 idle_outcomes: VecDeque::new(),
+                fail_fetch_new: false,
                 selected: String::new(),
                 next_uid: HashMap::new(),
             }
@@ -175,6 +178,9 @@ mod recording {
         fn fetch_new(&mut self, from_uid: u32) -> MailResult<Vec<Envelope>> {
             self.calls
                 .push(format!("fetch_new {} {from_uid}", self.selected));
+            if self.fail_fetch_new {
+                return Err(MailError::Io("fetch_new failed".into()));
+            }
             let list = self.mail.get(&self.selected).cloned().unwrap_or_default();
             let max = list.iter().map(|e| e.uid).max().unwrap_or(0);
             // Real servers answer `N:*` with the highest message when N exceeds it.

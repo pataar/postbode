@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
-use crate::mail_ops::{IdleOutcome, MailError, MailOps, RemoteFolder};
+use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder};
 use crate::message::{body_text, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply, ensure_raw};
@@ -83,91 +83,92 @@ pub fn sync_folder(
     folder: &RemoteFolder,
 ) -> Result<Vec<NewMessageRef>, SyncError> {
     let info = ops.select(&folder.name)?;
+    let stored = store.folder(&folder.name)?;
     // Initial means newly tracked, a placeholder, or reset: everything fetched this pass was already on the server.
-    let (mut local, initial) = match store.folder(&folder.name)? {
-        Some(f) if f.uidvalidity == info.uidvalidity => (f, false),
-        Some(f) => {
-            // uidvalidity 0 marks a placeholder created by a rule move into a folder not synced yet.
-            if f.uidvalidity != 0 {
-                log::info!(
-                    "{}: UIDVALIDITY changed {} -> {}, resyncing",
-                    folder.name,
-                    f.uidvalidity,
-                    info.uidvalidity
-                );
-            }
-            store.reset_folder(&folder.name, info.uidvalidity)?;
-            let reset = Folder {
-                uidvalidity: info.uidvalidity,
-                last_uid: 0,
-                ..f
-            };
-            (reset, true)
+    let (last_uid, initial) = match &stored {
+        Some(f) if f.uidvalidity == info.uidvalidity => (f.last_uid, false),
+        // uidvalidity 0 marks a placeholder created by a rule move into a folder not synced yet.
+        Some(f) if f.uidvalidity != 0 => {
+            log::info!(
+                "{}: UIDVALIDITY changed {} -> {}, resyncing",
+                folder.name,
+                f.uidvalidity,
+                info.uidvalidity
+            );
+            (0, true)
         }
-        None => {
-            let created = Folder {
-                name: folder.name.clone(),
-                uidvalidity: info.uidvalidity,
-                last_uid: 0,
-                special_use: folder.special_use.clone(),
-            };
-            (created, true)
-        }
+        _ => (0, true),
     };
-    local.special_use = folder.special_use.clone();
-    store.upsert_folder(&local)?;
 
-    if local.last_uid > 0 {
-        let updates = ops.fetch_flags(local.last_uid)?;
+    // Network first, then one transaction, so an interrupted pass leaves the folder as it was.
+    let updates = if last_uid > 0 {
+        ops.fetch_flags(last_uid)?
+    } else {
+        Vec::new()
+    };
+    let envelopes: Vec<Envelope> = ops
+        .fetch_new(last_uid + 1)?
+        .into_iter()
+        .filter(|env| env.uid > last_uid)
+        .collect();
+    let highest = envelopes.iter().map(|env| env.uid).fold(last_uid, u32::max);
+
+    store.transaction(|| {
+        if initial && stored.is_some() {
+            store.reset_folder(&folder.name, info.uidvalidity)?;
+        }
+        store.upsert_folder(&Folder {
+            name: folder.name.clone(),
+            uidvalidity: info.uidvalidity,
+            last_uid: highest,
+            special_use: folder.special_use.clone(),
+        })?;
         let present: Vec<u32> = updates.iter().map(|u| u.uid).collect();
         for u in &updates {
             store.update_flags(&folder.name, u.uid, &u.flags.join(" "))?;
         }
-        store.remove_missing(&folder.name, local.last_uid, &present)?;
-    }
-
-    let mut new = Vec::new();
-    let mut highest = local.last_uid;
-    for env in ops.fetch_new(local.last_uid + 1)? {
-        if env.uid <= local.last_uid {
-            continue;
+        if last_uid > 0 {
+            store.remove_missing(&folder.name, last_uid, &present)?;
         }
-        let parsed = parse_headers(&env.headers);
-        let message = Message {
-            folder: folder.name.clone(),
-            uid: env.uid,
-            thread_id: thread_id(&parsed, &folder.name, env.uid),
-            message_id: parsed.message_id,
-            from_addr: parsed.from,
-            to_addr: parsed.to,
-            cc_addr: parsed.cc,
-            delivered_to: parsed.delivered_to,
-            in_reply_to: parsed.in_reply_to,
-            refs: if parsed.references.is_empty() {
-                None
-            } else {
-                Some(parsed.references.join(" "))
-            },
-            subject: parsed.subject,
-            date: parsed.date,
-            internaldate: env.internaldate,
-            flags: env.flags.join(" "),
-            size: env.size,
-            headers: env.headers,
-            body_text: None,
-        };
-        store.insert_message(&message)?;
-        highest = highest.max(env.uid);
-        new.push(NewMessageRef {
-            folder: folder.name.clone(),
-            uid: env.uid,
-            initial,
-        });
+        let mut new = Vec::new();
+        for env in envelopes {
+            let uid = env.uid;
+            store.insert_message(&to_message(&folder.name, env))?;
+            new.push(NewMessageRef {
+                folder: folder.name.clone(),
+                uid,
+                initial,
+            });
+        }
+        Ok(new)
+    })
+}
+
+fn to_message(folder: &str, env: Envelope) -> Message {
+    let parsed = parse_headers(&env.headers);
+    Message {
+        folder: folder.to_string(),
+        uid: env.uid,
+        thread_id: thread_id(&parsed, folder, env.uid),
+        message_id: parsed.message_id,
+        from_addr: parsed.from,
+        to_addr: parsed.to,
+        cc_addr: parsed.cc,
+        delivered_to: parsed.delivered_to,
+        in_reply_to: parsed.in_reply_to,
+        refs: if parsed.references.is_empty() {
+            None
+        } else {
+            Some(parsed.references.join(" "))
+        },
+        subject: parsed.subject,
+        date: parsed.date,
+        internaldate: env.internaldate,
+        flags: env.flags.join(" "),
+        size: env.size,
+        headers: env.headers,
+        body_text: None,
     }
-    if highest != local.last_uid {
-        store.set_last_uid(&folder.name, highest)?;
-    }
-    Ok(new)
 }
 
 pub fn sync_all(ops: &mut dyn MailOps, store: &Store) -> Result<Vec<NewMessageRef>, SyncError> {
@@ -992,6 +993,48 @@ mod tests {
             "{:?}",
             run.events
         );
+    }
+
+    #[test]
+    fn interrupted_first_sync_stays_initial_on_retry() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        for uid in 1..=3 {
+            ops.add_mail(
+                "INBOX",
+                uid,
+                10 * H,
+                &headers("a@x", "old", &format!("o{uid}@x")),
+                None,
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        ops.fail_fetch_new = true;
+        let inbox = RemoteFolder {
+            name: "INBOX".into(),
+            special_use: None,
+        };
+        assert!(sync_folder(&mut ops, &store, &inbox).is_err());
+        assert_eq!(store.folder("INBOX").unwrap(), None, "nothing written");
+        ops.fail_fetch_new = false;
+        let new = sync_folder(&mut ops, &store, &inbox).unwrap();
+        assert!(new.iter().all(|n| n.initial), "{new:?}");
+        let run = run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &[],
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
+        assert!(run.events.is_empty(), "{:?}", run.events);
     }
 
     #[test]

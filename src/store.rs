@@ -126,6 +126,20 @@ impl Store {
         Ok(Store { conn })
     }
 
+    /// Runs `f` in one transaction; any error rolls back everything `f` wrote.
+    pub fn transaction<T, E: From<StoreError>>(
+        &self,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(StoreError::from)?;
+        let out = f()?;
+        tx.commit().map_err(StoreError::from)?;
+        Ok(out)
+    }
+
     pub fn folders(&self) -> Result<Vec<Folder>, StoreError> {
         let mut stmt = self.conn.prepare(
             "SELECT name, uidvalidity, last_uid, special_use FROM folders ORDER BY name",
@@ -160,14 +174,6 @@ impl Store {
         self.conn.execute(
             "UPDATE folders SET uidvalidity = ?2, last_uid = 0 WHERE name = ?1",
             params![name, uidvalidity],
-        )?;
-        Ok(())
-    }
-
-    pub fn set_last_uid(&self, name: &str, uid: u32) -> Result<(), StoreError> {
-        self.conn.execute(
-            "UPDATE folders SET last_uid = ?2 WHERE name = ?1",
-            params![name, uid],
         )?;
         Ok(())
     }
@@ -392,7 +398,13 @@ mod tests {
     fn folder_upsert_and_reset() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
-        s.set_last_uid("INBOX", 1).unwrap();
+        s.upsert_folder(&Folder {
+            name: "INBOX".into(),
+            uidvalidity: 1,
+            last_uid: 1,
+            special_use: None,
+        })
+        .unwrap();
         assert_eq!(s.folder("INBOX").unwrap().unwrap().last_uid, 1);
         s.reset_folder("INBOX", 2).unwrap();
         let f = s.folder("INBOX").unwrap().unwrap();
