@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use super::{Backend, Scope};
 use crate::help;
 use crate::message::clean;
+use crate::rules::Action;
 
 const BODY_LIMIT: usize = 100 * 1024;
 
@@ -172,6 +173,75 @@ struct SearchArgs {
     limit: u32,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+enum How {
+    Flag,
+    Read,
+    Unflag,
+    Unread,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SelectionArgs {
+    /// Message uids in `folder`, as `list` returns them
+    uids: Vec<u32>,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Report what would happen from the local store, without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MarkArgs {
+    how: How,
+    /// Message uids in `folder`, as `list` returns them
+    uids: Vec<u32>,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Report what would happen from the local store, without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MoveArgs {
+    /// The destination folder; created if needed
+    to: String,
+    /// Message uids in `folder`, as `list` returns them
+    uids: Vec<u32>,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
+    #[serde(default = "inbox")]
+    folder: String,
+    /// Report what would happen from the local store, without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RestoreArgs {
+    /// A file name as trash_list returns it
+    file: String,
+    /// Required when several accounts are visible
+    account: Option<String>,
+    /// Report what would happen without touching the server
+    #[serde(default)]
+    dry_run: bool,
+}
+
 /// Every tool, in any order; the scope filter and the alphabetical sort happen when listing. `bodies` is whether
 /// `read:bodies` is granted, which changes what `search` covers.
 fn catalog(bodies: bool) -> Vec<ToolDef> {
@@ -181,15 +251,24 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
         "Search subject and addresses for all the given words, newest first; bodies need the read:bodies scope".to_string()
     };
     vec![
+        ToolDef::new::<SelectionArgs>("archive", Scope::MailModify, Effect::Changes, help::ARCHIVE),
         ToolDef::new::<MessageArgs>(
             "attachments",
             Scope::ReadBodies,
             Effect::ReadOnly,
             help::ATTACHMENT_LIST,
         ),
+        ToolDef::new::<SelectionArgs>(
+            "delete",
+            Scope::MailModify,
+            Effect::Destructive,
+            help::DELETE,
+        ),
         ToolDef::new::<AccountArgs>("folders", Scope::Read, Effect::ReadOnly, help::FOLDERS),
         ToolDef::new::<ListArgs>("list", Scope::Read, Effect::ReadOnly, help::LIST),
         ToolDef::new::<LogArgs>("log", Scope::Read, Effect::ReadOnly, help::LOG),
+        ToolDef::new::<MarkArgs>("mark", Scope::MailModify, Effect::Changes, help::MARK),
+        ToolDef::new::<MoveArgs>("move", Scope::MailModify, Effect::Changes, help::MOVE),
         ToolDef::new::<NameArgs>(
             "rules_approve",
             Scope::RulesWrite,
@@ -248,11 +327,18 @@ fn catalog(bodies: bool) -> Vec<ToolDef> {
                 help::SHOW
             ),
         ),
+        ToolDef::new::<AccountArgs>("sync", Scope::Read, Effect::Changes, help::SYNC),
         ToolDef::new::<AccountArgs>(
             "trash_list",
             Scope::Read,
             Effect::ReadOnly,
             help::TRASH_LIST,
+        ),
+        ToolDef::new::<RestoreArgs>(
+            "trash_restore",
+            Scope::MailModify,
+            Effect::Changes,
+            help::TRASH_RESTORE,
         ),
     ]
 }
@@ -266,9 +352,29 @@ fn dispatch(
     arguments: Option<JsonObject>,
 ) -> Result<Value> {
     match name {
+        "archive" => {
+            let a: SelectionArgs = args(arguments)?;
+            backend.act(
+                a.account.as_deref(),
+                &a.folder,
+                &a.uids,
+                Action::Archive,
+                a.dry_run,
+            )
+        }
         "attachments" => {
             let a: MessageArgs = args(arguments)?;
             rows(backend.attachments(a.account.as_deref(), &a.folder, a.uid)?)
+        }
+        "delete" => {
+            let a: SelectionArgs = args(arguments)?;
+            backend.act(
+                a.account.as_deref(),
+                &a.folder,
+                &a.uids,
+                Action::Trash,
+                a.dry_run,
+            )
         }
         "folders" => {
             let a: AccountArgs = args(arguments)?;
@@ -281,6 +387,29 @@ fn dispatch(
         "log" => {
             let a: LogArgs = args(arguments)?;
             rows(backend.log(a.account.as_deref(), a.limit)?)
+        }
+        "mark" => {
+            let a: MarkArgs = args(arguments)?;
+            let action = match a.how {
+                How::Flag => Action::Flag,
+                How::Read => Action::MarkRead,
+                How::Unflag => Action::Unflag,
+                How::Unread => Action::MarkUnread,
+            };
+            backend.act(a.account.as_deref(), &a.folder, &a.uids, action, a.dry_run)
+        }
+        "move" => {
+            let a: MoveArgs = args(arguments)?;
+            if a.to.trim().is_empty() {
+                bail!("to must name a folder");
+            }
+            backend.act(
+                a.account.as_deref(),
+                &a.folder,
+                &a.uids,
+                Action::Move(a.to),
+                a.dry_run,
+            )
         }
         "rules_approve" => {
             let a: NameArgs = args(arguments)?;
@@ -331,9 +460,17 @@ fn dispatch(
             let (body, truncated) = wrap_body(&body);
             Ok(json!({ "message": row, "body": body, "truncated": truncated }))
         }
+        "sync" => {
+            let a: AccountArgs = args(arguments)?;
+            rows(backend.sync(a.account.as_deref())?)
+        }
         "trash_list" => {
             let a: AccountArgs = args(arguments)?;
             rows(backend.trash_list(a.account.as_deref())?)
+        }
+        "trash_restore" => {
+            let a: RestoreArgs = args(arguments)?;
+            backend.trash_restore(a.account.as_deref(), &a.file, a.dry_run)
         }
         _ => bail!("unknown tool {name}"),
     }

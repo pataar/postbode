@@ -4,12 +4,13 @@ use serde_json::{Value, json};
 
 use crate::actions;
 use crate::config::{AccountConfig, Config};
+use crate::engine::lock_account;
 use crate::message;
 use crate::output;
 use crate::paths::Paths;
-use crate::rules::{self, Rule, RuleFile};
+use crate::rules::{self, Action, Rule, RuleFile};
 use crate::store::{Message, Store};
-use crate::sync;
+use crate::sync::{self, Event};
 use crate::trash::Trash;
 
 pub const MAX_LIMIT: u32 = 500;
@@ -189,6 +190,116 @@ impl Backend {
                 let file = e.path.file_name().map(|n| n.to_string_lossy().into_owned());
                 rows.push(json!({ "account": acc.name, "saved_at": e.saved_at, "folder": e.folder, "uid": e.uid, "subject": subject, "file": file }));
             }
+        }
+        Ok(rows)
+    }
+
+    /// A direct action on `uids` in `folder`; `dry_run` reads the local store only and opens no connection.
+    pub fn act(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        uids: &[u32],
+        action: Action,
+        dry_run: bool,
+    ) -> Result<Value> {
+        if uids.is_empty() {
+            bail!("uids must name at least one message");
+        }
+        let acc = self.single(account)?;
+        let store = self.store(acc)?;
+        if dry_run {
+            let (mut would, mut missing) = (Vec::new(), Vec::new());
+            for &uid in uids {
+                match store.message(folder, uid)? {
+                    Some(m) => would.push(json!({
+                        "uid": uid, "effect": actions::planned_effect(&store, &m, &action)?, "subject": m.subject,
+                    })),
+                    None => missing.push(uid),
+                }
+            }
+            return Ok(
+                json!({ "account": acc.name, "folder": folder, "dry_run": true, "would": would, "missing": missing }),
+            );
+        }
+        let mut ops = sync::connect(acc)?;
+        let trash = Trash::new(self.paths.trash_dir(&acc.name));
+        let results = actions::run(&mut ops, &store, &trash, folder, uids, &action, sync::now())?;
+        let failed: Vec<Value> = results
+            .iter()
+            .filter_map(|(uid, result)| {
+                result
+                    .as_ref()
+                    .err()
+                    .map(|e| json!({ "uid": uid, "error": e.to_string() }))
+            })
+            .collect();
+        let label = match action {
+            Action::Trash => Action::Delete.label(),
+            _ => action.label(),
+        };
+        Ok(
+            json!({ "account": acc.name, "folder": folder, "action": label, "done": results.len() - failed.len(), "failed": failed }),
+        )
+    }
+
+    /// Restores a backup named as `trash_list` prints it; paths are refused, so nothing outside the trash directory is read.
+    pub fn trash_restore(&self, account: Option<&str>, file: &str, dry_run: bool) -> Result<Value> {
+        let bare = std::path::Path::new(file)
+            .file_name()
+            .is_some_and(|name| name == file);
+        let Some((_, folder, _)) = Trash::parse_name(file).filter(|_| bare) else {
+            bail!("file must be a name as trash_list returns it");
+        };
+        let acc = self.single(account)?;
+        let path = self.paths.trash_dir(&acc.name).join(file);
+        if !path.is_file() {
+            bail!("no trash file {file}; see trash_list");
+        }
+        if dry_run {
+            return Ok(
+                json!({ "account": acc.name, "file": file, "dry_run": true, "would": format!("restore to {folder}") }),
+            );
+        }
+        let mut ops = sync::connect(acc)?;
+        let restored = Trash::new(self.paths.trash_dir(&acc.name)).restore(&mut ops, &path)?;
+        Ok(json!({ "account": acc.name, "restored_to": restored }))
+    }
+
+    /// One sync with rules per visible account; an account whose lock another process holds is reported, not synced.
+    pub fn sync(&self, account: Option<&str>) -> Result<Vec<Value>> {
+        let mut rows = Vec::new();
+        for acc in self.select(account)? {
+            let _lock = match lock_account(&self.paths, &acc.name)? {
+                Ok(file) => file,
+                Err(pid) => {
+                    rows.push(
+                        json!({ "account": acc.name, "synced_by": "another Postbode process", "pid": pid }),
+                    );
+                    continue;
+                }
+            };
+            let (events, received) = std::sync::mpsc::channel();
+            let outcome = sync::run_once(acc, &self.paths, &events);
+            drop(events);
+            let (mut new_messages, mut actions_run, mut errors) = (0, 0, Vec::new());
+            for event in received {
+                match event {
+                    Event::Synced {
+                        new_messages: n,
+                        actions: a,
+                        ..
+                    } => (new_messages, actions_run) = (n, a),
+                    Event::Error { message, .. } => errors.push(message),
+                    _ => {}
+                }
+            }
+            if let Err(e) = outcome {
+                errors.push(e.to_string());
+            }
+            rows.push(
+                json!({ "account": acc.name, "new_messages": new_messages, "actions": actions_run, "errors": errors }),
+            );
         }
         Ok(rows)
     }

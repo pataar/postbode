@@ -606,3 +606,186 @@ fn wrap_body_cuts_inside_a_multibyte_character_without_panicking() {
         .unwrap();
     assert_eq!(inner.len(), 100 * 1024 - 1);
 }
+
+#[tokio::test]
+async fn tools_list_per_scope_set_is_exact_and_alphabetical() {
+    let fx = fixture(&["work"]);
+    let cases: [(&str, &[&str]); 4] = [
+        (
+            "read,rules:propose",
+            &[
+                "folders",
+                "list",
+                "log",
+                "rules_check",
+                "rules_list",
+                "rules_propose",
+                "rules_schema",
+                "rules_test",
+                "search",
+                "sync",
+                "trash_list",
+            ],
+        ),
+        ("read:bodies", &["attachments", "show"]),
+        (
+            "rules:write",
+            &["rules_approve", "rules_reject", "rules_set_enabled"],
+        ),
+        (
+            "mail:modify",
+            &["archive", "delete", "mark", "move", "trash_restore"],
+        ),
+    ];
+    for (scopes, expected) in cases {
+        let client = connect(&fx, scopes, &[]).await;
+        let names: Vec<String> = client
+            .list_all_tools()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert_eq!(names, expected, "{scopes}");
+    }
+}
+
+#[tokio::test]
+async fn annotations_mark_reads_and_destructive_tools() {
+    let fx = fixture(&["work"]);
+    let client = connect(
+        &fx,
+        "read,read:bodies,rules:propose,rules:write,mail:modify",
+        &[],
+    )
+    .await;
+    for tool in client.list_all_tools().await.unwrap() {
+        let hints = tool.annotations.clone().unwrap();
+        let name = tool.name.as_ref();
+        let destructive = ["delete", "rules_approve", "rules_set_enabled"].contains(&name);
+        let changes = [
+            "archive",
+            "mark",
+            "move",
+            "rules_propose",
+            "rules_reject",
+            "sync",
+            "trash_restore",
+        ]
+        .contains(&name);
+        match (destructive, changes) {
+            (true, _) => assert_eq!(
+                (hints.read_only_hint, hints.destructive_hint),
+                (Some(false), Some(true)),
+                "{name}"
+            ),
+            (_, true) => assert_eq!(
+                (hints.read_only_hint, hints.destructive_hint),
+                (Some(false), Some(false)),
+                "{name}"
+            ),
+            _ => assert_eq!(hints.read_only_hint, Some(true), "{name}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn dry_run_reports_from_the_store_without_connecting() {
+    let fx = fixture(&["work"]);
+    fx.add("work", fixture_message("INBOX", 1, "Old news", "x"));
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let report = call(
+        &client,
+        "delete",
+        json!({ "uids": [1, 9], "dry_run": true }),
+    )
+    .await;
+    let report = report.structured_content.unwrap();
+    assert_eq!(
+        report["would"][0]["effect"],
+        "would delete (expunge, .eml backup kept)"
+    );
+    assert_eq!(report["missing"], json!([9]));
+    // Without dry_run the fixture's port 1 refuses: proof the dry run never connected.
+    assert_eq!(
+        call(&client, "archive", json!({ "uids": [1] }))
+            .await
+            .is_error,
+        Some(true)
+    );
+}
+
+#[tokio::test]
+async fn trash_restore_refuses_paths() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "mail:modify", &[]).await;
+    for file in [
+        "../config/config.toml",
+        "/etc/passwd",
+        "..",
+        "sub/1-INBOX-1.eml",
+    ] {
+        let text = error_text(
+            &call(
+                &client,
+                "trash_restore",
+                json!({ "file": file, "dry_run": true }),
+            )
+            .await,
+        );
+        assert!(text.contains("trash_list"), "{file}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn trash_list_names_backups_and_restore_takes_the_name() {
+    let fx = fixture(&["work"]);
+    let raw = b"Subject: Kept for later\r\n\r\nbody";
+    crate::trash::Trash::new(fx.paths.trash_dir("work"))
+        .save("Lists/News", 7, raw, 1_790_000_000)
+        .unwrap();
+    let read = connect(&fx, "read", &[]).await;
+    let listed = rows(&call(&read, "trash_list", json!({})).await);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["file"], "1790000000-Lists%2FNews-7.eml");
+    assert_eq!(listed[0]["folder"], "Lists/News");
+    assert_eq!(listed[0]["uid"], 7);
+    assert_eq!(listed[0]["subject"], "Kept for later");
+
+    let modify = connect(&fx, "mail:modify", &[]).await;
+    let report = call(
+        &modify,
+        "trash_restore",
+        json!({ "file": listed[0]["file"], "dry_run": true }),
+    )
+    .await;
+    assert_eq!(
+        report.structured_content.unwrap()["would"],
+        "restore to Lists/News"
+    );
+}
+
+#[tokio::test]
+async fn sync_reports_the_holder_of_a_held_lock() {
+    let fx = fixture(&["work"]);
+    let _held = crate::engine::lock_account(&fx.paths, "work")
+        .unwrap()
+        .unwrap();
+    let client = connect(&fx, "read", &[]).await;
+    let report = rows(&call(&client, "sync", json!({})).await);
+    assert_eq!(
+        report,
+        vec![
+            json!({ "account": "work", "synced_by": "another Postbode process", "pid": std::process::id() })
+        ]
+    );
+}
+
+#[tokio::test]
+async fn move_needs_a_folder_name() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "mail:modify", &[]).await;
+    assert!(
+        error_text(&call(&client, "move", json!({ "uids": [1], "to": " " })).await).contains("to")
+    );
+}

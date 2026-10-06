@@ -154,7 +154,7 @@ impl Drop for Engine {
 }
 
 /// The held lock file, or the pid written by the process holding it.
-fn lock_account(paths: &Paths, name: &str) -> io::Result<Result<File, Option<u32>>> {
+pub fn lock_account(paths: &Paths, name: &str) -> io::Result<Result<File, Option<u32>>> {
     paths.ensure_account(name)?;
     let mut file = OpenOptions::new()
         .read(true)

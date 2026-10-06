@@ -458,3 +458,76 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
     assert!(matches!(done, Event::ActionDone { results, .. } if results == [(1, Ok(1))]));
     engine.stop();
 }
+
+#[cfg(feature = "mcp")]
+fn backend(home: &Path) -> postbode::mcp::Backend {
+    let paths = Paths::under(home);
+    let config = Config::load(&paths.config_file()).unwrap();
+    postbode::mcp::Backend::new(&config, &paths, &[]).unwrap()
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_archive_moves_the_message() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "mcp-archive");
+    let home = home_with(&account, "");
+    connect(&account)
+        .append("INBOX", &mail("to archive"), &[])
+        .unwrap();
+    let backend = backend(home.path());
+    backend.sync(None).unwrap();
+    let report = backend
+        .act(None, "INBOX", &[1], Action::Archive, false)
+        .unwrap();
+    assert_eq!(report["done"], 1, "{report}");
+    let mut ops = connect(&account);
+    ops.select("INBOX").unwrap();
+    assert!(all_envelopes(&mut ops).is_empty());
+    ops.select("Archive").unwrap();
+    assert_eq!(all_envelopes(&mut ops).len(), 1);
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_delete_inside_trash_expunges_and_keeps_the_eml() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT_WITHOUT_MOVE, "mcp-delete");
+    let home = home_with(&account, "");
+    let mut ops = connect(&account);
+    ops.append("Trash", &mail("already trashed"), &[]).unwrap();
+    let backend = backend(home.path());
+    backend.sync(None).unwrap();
+    let report = backend
+        .act(None, "Trash", &[1], Action::Trash, false)
+        .unwrap();
+    assert_eq!(report["done"], 1, "{report}");
+    let backups = std::fs::read_dir(Paths::under(home.path()).trash_dir(&account.name))
+        .unwrap()
+        .count();
+    assert_eq!(backups, 1);
+    ops.select("Trash").unwrap();
+    assert!(all_envelopes(&mut ops).is_empty());
+}
+
+/// The server runs tools on a blocking-pool thread, where ImapOps' own runtime must still start.
+#[cfg(feature = "mcp")]
+#[tokio::test]
+async fn mcp_actions_run_from_a_blocking_pool_thread() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "mcp-pool");
+    let home = home_with(&account, "");
+    let backend = backend(home.path());
+    let report = tokio::task::spawn_blocking(move || {
+        connect(&account)
+            .append("INBOX", &mail("from the pool"), &[])
+            .unwrap();
+        backend.sync(None).unwrap();
+        backend
+            .act(None, "INBOX", &[1], Action::MarkRead, false)
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert_eq!(report["done"], 1, "{report}");
+}
