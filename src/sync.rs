@@ -171,12 +171,20 @@ fn to_message(folder: &str, env: Envelope) -> Message {
     }
 }
 
-pub fn sync_all(ops: &mut dyn MailOps, store: &Store) -> Result<Vec<NewMessageRef>, SyncError> {
+/// Syncs every listed folder. A folder that fails is skipped and reported in the second list; the others still sync.
+pub fn sync_all(
+    ops: &mut dyn MailOps,
+    store: &Store,
+) -> Result<(Vec<NewMessageRef>, Vec<String>), SyncError> {
     let mut new = Vec::new();
+    let mut errors = Vec::new();
     for folder in ops.list_folders()? {
-        new.extend(sync_folder(ops, store, &folder)?);
+        match sync_folder(ops, store, &folder) {
+            Ok(found) => new.extend(found),
+            Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
+        }
     }
-    Ok(new)
+    Ok((new, errors))
 }
 
 pub fn load_rules_for(
@@ -246,7 +254,7 @@ pub fn run_rules(
         let info = match ops.select(&folder) {
             Ok(info) => info,
             Err(e) => {
-                run.events.push(rule_error(
+                run.events.push(account_error(
                     account,
                     format!("{folder}: {e}; skipping its rules"),
                 ));
@@ -257,7 +265,7 @@ pub fn run_rules(
         if info.uidvalidity != stored.uidvalidity {
             // uidvalidity 0 is a placeholder from a rule move; the next full sync adopts the server value.
             if stored.uidvalidity != 0 {
-                run.events.push(rule_error(
+                run.events.push(account_error(
                     account,
                     format!(
                         "{folder}: folder changed on server; resync needed, skipping its rules"
@@ -281,7 +289,7 @@ pub fn run_rules(
             run.evaluated += 1;
             if !plan.actions.is_empty() {
                 if let Err(e) = apply(&plan, &msg, ops, store, trash, now) {
-                    run.events.push(rule_error(
+                    run.events.push(account_error(
                         account,
                         format!("{}/{}: {e}", msg.folder, msg.uid),
                     ));
@@ -308,7 +316,7 @@ pub fn run_rules(
     Ok(run)
 }
 
-fn rule_error(account: &AccountConfig, message: String) -> Event {
+fn account_error(account: &AccountConfig, message: String) -> Event {
     log::warn!("{}: {message}", account.name);
     Event::Error {
         account: account.name.clone(),
@@ -328,7 +336,10 @@ pub fn run_once(
     let trash = Trash::new(paths.trash_dir(&account.name));
     let identity = account.identity()?;
     let rules = load_rules_for(&store, &paths.rules_file(), now())?;
-    let new = sync_all(&mut ops, &store)?;
+    let (new, sync_errors) = sync_all(&mut ops, &store)?;
+    for message in sync_errors {
+        let _ = events.send(account_error(account, message));
+    }
     let run = run_rules(
         &mut ops,
         &store,
@@ -435,7 +446,11 @@ fn run_session(
 
     while !shutdown.load(Ordering::Relaxed) {
         let new = if full {
-            sync_all(ops.as_mut(), &store)?
+            let (new, sync_errors) = sync_all(ops.as_mut(), &store)?;
+            for message in sync_errors {
+                let _ = events.send(account_error(account, message));
+            }
+            new
         } else {
             let inbox = RemoteFolder {
                 name: "INBOX".into(),
@@ -545,7 +560,7 @@ mod tests {
     fn first_sync_inserts_folders_and_messages() {
         let mut ops = ops_with_inbox();
         let store = Store::open_in_memory().unwrap();
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         assert_eq!(new.len(), 2);
         assert!(new.iter().all(|n| n.initial));
         let inbox = store.folder("INBOX").unwrap().unwrap();
@@ -573,7 +588,7 @@ mod tests {
         let trash = Trash::new(dir.path().to_path_buf());
         let acc = account();
         let identity = acc.identity().unwrap();
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
             &store,
@@ -601,9 +616,9 @@ mod tests {
         let trash = Trash::new(dir.path().to_path_buf());
         let acc = account();
         let identity = acc.identity().unwrap();
-        assert!(sync_all(&mut ops, &store).unwrap().is_empty());
+        assert!(sync_all(&mut ops, &store).unwrap().0.is_empty());
         ops.add_mail("INBOX", 1, 12 * H, &headers("bob@x", "first", "f1@x"), None);
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
             &store,
@@ -631,7 +646,7 @@ mod tests {
         ops.expunge(2).unwrap();
         ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
         ops.calls.clear();
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         assert_eq!(
             new,
             vec![NewMessageRef {
@@ -650,7 +665,7 @@ mod tests {
         let mut ops = ops_with_inbox();
         let store = Store::open_in_memory().unwrap();
         sync_all(&mut ops, &store).unwrap();
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         assert!(
             new.is_empty(),
             "server answered 3:* with uid 2, which must not count as new"
@@ -663,7 +678,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         sync_all(&mut ops, &store).unwrap();
         ops.uidvalidity.insert("INBOX".into(), 9);
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         assert_eq!(store.folder("INBOX").unwrap().unwrap().uidvalidity, 9);
         assert_eq!(new.len(), 2);
         assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 2);
@@ -723,7 +738,7 @@ mod tests {
             &headers("alice@x", "hello", "m1@x"),
             None,
         );
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
             &store,
@@ -753,7 +768,7 @@ mod tests {
         let identity = acc.identity().unwrap();
         sync_all(&mut ops, &store).unwrap();
         ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
-        let second = sync_all(&mut ops, &store).unwrap();
+        let second = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
             &store,
@@ -772,7 +787,7 @@ mod tests {
             "mail arriving after the first sync notifies"
         );
         ops.uidvalidity.insert("INBOX".into(), 9);
-        let resync = sync_all(&mut ops, &store).unwrap();
+        let resync = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
             &store,
@@ -799,7 +814,7 @@ mod tests {
         let identity = acc.identity().unwrap();
         let toml = "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n";
         let rules = rules_from(toml, &store, 0);
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
             &store,
@@ -922,7 +937,7 @@ mod tests {
             &store,
             0,
         );
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
             &store,
@@ -973,7 +988,7 @@ mod tests {
             &store,
             0,
         );
-        let new = sync_all(&mut ops, &store).unwrap();
+        let new = sync_all(&mut ops, &store).unwrap().0;
         let run = run_rules(
             &mut ops,
             &store,
@@ -993,6 +1008,39 @@ mod tests {
             "{:?}",
             run.events
         );
+    }
+
+    #[test]
+    fn failing_folder_is_reported_and_others_still_sync() {
+        let mut ops = ops_with_inbox();
+        ops.folders.insert(
+            0,
+            RemoteFolder {
+                name: "Bogus".into(),
+                special_use: None,
+            },
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_loop_with(
+            account(),
+            paths.clone(),
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| panic!("the session must not fail"),
+        );
+        let store = Store::open(&paths.mail_db("work")).unwrap();
+        assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 2);
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Error { message, .. } if message.contains("Bogus"))),
+            "{events:?}"
+        );
+        assert!(events.iter().any(|e| matches!(e, Event::Synced { .. })));
     }
 
     #[test]
