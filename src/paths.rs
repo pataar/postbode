@@ -152,4 +152,15 @@ mod tests {
         check_mode(&p.account_dir("work"));
         check_mode(&p.trash_dir("work"));
     }
+
+    #[test]
+    fn ensure_account_is_idempotent_across_accounts() {
+        let root = tempfile::tempdir().unwrap();
+        let p = Paths::under(root.path());
+        p.ensure_account("work").unwrap();
+        p.ensure_account("work").unwrap();
+        p.ensure_account("personal").unwrap();
+        assert!(p.trash_dir("work").is_dir());
+        assert!(p.trash_dir("personal").is_dir());
+    }
 }
