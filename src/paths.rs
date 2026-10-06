@@ -90,7 +90,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = fs::File::create(&tmp)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    fs::rename(&tmp, path)
+    fs::rename(&tmp, path)?;
+    // The rename lives in the directory entry; without this a crash can bring back the old file or none.
+    #[cfg(unix)]
+    fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 #[cfg(test)]
