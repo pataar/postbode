@@ -976,7 +976,7 @@ fn run_session(
             IdleOutcome::Interrupted if shutdown.load(Ordering::Acquire) => return Ok(()),
             // Woken for queued commands: run them, then wait again.
             IdleOutcome::Interrupted => {
-                wake.store(false, Ordering::Relaxed);
+                wake.swap(false, Ordering::AcqRel);
                 (full, false)
             }
         };
