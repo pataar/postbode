@@ -13,7 +13,7 @@ use postbode::mail_ops::MailOps;
 use postbode::paths::Paths;
 use postbode::rules::CompiledRule;
 use postbode::rules::engine::{Context, Mode, evaluate};
-use postbode::store::Store;
+use postbode::store::{Message, Store};
 use postbode::sync::{self, Event};
 use postbode::trash::Trash;
 
@@ -200,16 +200,9 @@ pub fn run() -> Result<()> {
                 let store = open_store(&paths, &acc.name)?;
                 for m in store.messages(&folder, limit)? {
                     if json {
-                        println!("{}", serde_json::to_string(&m)?);
+                        println!("{}", json_line(&acc.name, &m)?);
                     } else {
-                        let date = format_time(m.internaldate);
-                        let flag = if m.is_seen() { " " } else { "*" };
-                        println!(
-                            "{flag} {:>6}  {date}  {:<30}  {}",
-                            m.uid,
-                            truncate(&clean(m.from_addr.as_deref().unwrap_or(""), false), 30),
-                            clean(m.subject.as_deref().unwrap_or(""), false)
-                        );
+                        println!("{}", message_line(&acc.name, &m, 0));
                     }
                 }
             }
@@ -268,13 +261,14 @@ pub fn run() -> Result<()> {
                 let store = open_store(&paths, &acc.name)?;
                 for e in store.log(limit)? {
                     if json {
-                        println!("{}", serde_json::to_string(&e)?);
+                        println!("{}", json_line(&acc.name, &e)?);
                     } else {
-                        let at = format_time(e.at);
                         println!(
-                            "{at}  {:<20} {:<12} {}/{}  {}",
-                            e.rule_name,
-                            e.action,
+                            "{}  {}  {:<20} {:<12} {}/{}  {}",
+                            acc.name,
+                            format_time(e.at),
+                            clean(&e.rule_name, false),
+                            clean(&e.action, false),
                             clean(&e.folder, false),
                             e.uid,
                             clean(e.subject.as_deref().unwrap_or(""), false)
@@ -324,6 +318,28 @@ fn format_time(timestamp: i64) -> String {
         .unwrap_or_default()
 }
 
+/// `account  * INBOX/42  date  from  subject`; `*` marks unread, `depth` indents the subject in thread views.
+fn message_line(account: &str, m: &Message, depth: usize) -> String {
+    format!(
+        "{account}  {} {:<14}  {}  {:<30}  {}{}",
+        if m.is_seen() { " " } else { "*" },
+        clean(&format!("{}/{}", m.folder, m.uid), false),
+        format_time(m.internaldate),
+        truncate(&clean(m.from_addr.as_deref().unwrap_or(""), false), 30),
+        "  ".repeat(depth),
+        clean(m.subject.as_deref().unwrap_or(""), false)
+    )
+}
+
+/// The row as one JSON line carrying its account, the shape the MCP tools will return.
+fn json_line(account: &str, row: &impl serde::Serialize) -> Result<String> {
+    let mut value = serde_json::to_value(row)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("account".into(), account.into());
+    }
+    Ok(value.to_string())
+}
+
 fn truncate(s: &str, width: usize) -> String {
     let mut out: String = s.chars().take(width).collect();
     if s.chars().count() > width {
@@ -335,7 +351,7 @@ fn truncate(s: &str, width: usize) -> String {
 
 /// Server-supplied text with control characters removed, so a header cannot drive the terminal. `keep_layout` keeps
 /// newlines and tabs, for message bodies.
-fn clean(text: &str, keep_layout: bool) -> String {
+pub(crate) fn clean(text: &str, keep_layout: bool) -> String {
     text.chars()
         .filter(|c| !c.is_control() || (keep_layout && matches!(c, '\n' | '\t')))
         .collect()
@@ -545,11 +561,17 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         TrashCommand::List { account } => {
             for acc in select_accounts(config, account.as_deref())? {
                 for e in Trash::new(paths.trash_dir(&acc.name)).list()? {
-                    let at = format_time(e.saved_at);
+                    let subject = std::fs::read(&e.path)
+                        .ok()
+                        .and_then(|raw| postbode::message::parse_headers(&raw).subject)
+                        .unwrap_or_default();
                     println!(
-                        "{at}  {}/{}  {}",
+                        "{}  {}  {}/{}  {}  {}",
+                        acc.name,
+                        format_time(e.saved_at),
                         clean(&e.folder, false),
                         e.uid,
+                        clean(&subject, false),
                         clean(&e.path.display().to_string(), false)
                     );
                 }

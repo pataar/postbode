@@ -139,6 +139,104 @@ fn rules_test_previews_fresh_rule() {
 
 const ONE_ACCOUNT: &str = "[[accounts]]\nname = \"work\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n";
 
+use postbode::paths::Paths;
+use postbode::store::{Folder, LogEntry, Message, Store};
+
+fn message(uid: u32, from: &str, subject: &str) -> Message {
+    Message {
+        folder: "INBOX".into(),
+        uid,
+        message_id: Some(format!("m{uid}@example.com")),
+        from_addr: Some(from.into()),
+        to_addr: Some("me@example.com".into()),
+        cc_addr: None,
+        delivered_to: None,
+        in_reply_to: None,
+        refs: None,
+        thread_id: format!("m{uid}@example.com"),
+        subject: Some(subject.into()),
+        date: Some(1_000 + uid as i64),
+        internaldate: 1_000 + uid as i64,
+        flags: String::new(),
+        size: None,
+        headers: Vec::new(),
+        body_text: None,
+    }
+}
+
+/// A POSTBODE_HOME with account "work" whose INBOX holds `messages`; its server is unreachable, so connecting fails.
+fn seeded_home(messages: &[Message]) -> (tempfile::TempDir, Store) {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    paths.ensure_account("work").unwrap();
+    std::fs::write(paths.config_file(), ONE_ACCOUNT).unwrap();
+    let store = Store::open(&paths.mail_db("work")).unwrap();
+    store
+        .upsert_folder(&Folder {
+            name: "INBOX".into(),
+            uidvalidity: 1,
+            last_uid: messages.iter().map(|m| m.uid).max().unwrap_or(0),
+            special_use: None,
+        })
+        .unwrap();
+    for m in messages {
+        store.insert_message(m).unwrap();
+    }
+    (home, store)
+}
+
+#[test]
+fn list_and_log_show_the_account() {
+    let (home, store) = seeded_home(&[message(42, "billing@example.com", "Your invoice")]);
+    store
+        .log_action(&LogEntry {
+            id: 0,
+            at: 1_000,
+            rule_name: "r".into(),
+            folder: "INBOX".into(),
+            uid: 42,
+            message_id: None,
+            subject: Some("Your invoice".into()),
+            action: "flag".into(),
+            trash_file: None,
+        })
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&postbode(home.path(), &["list"]).stdout).to_string();
+    assert!(
+        stdout.starts_with("work  ")
+            && stdout.contains("INBOX/42")
+            && stdout.contains("Your invoice"),
+        "{stdout}"
+    );
+    let stdout = String::from_utf8_lossy(&postbode(home.path(), &["log"]).stdout).to_string();
+    assert!(stdout.starts_with("work  "), "{stdout}");
+    for args in [&["list", "--json"][..], &["log", "--json"][..]] {
+        let out = postbode(home.path(), args);
+        let first = out.stdout.split(|b| *b == b'\n').next().unwrap();
+        let line: serde_json::Value = serde_json::from_slice(first).unwrap();
+        assert_eq!(line["account"], "work", "{args:?}");
+    }
+}
+
+#[test]
+fn trash_list_shows_subjects() {
+    let (home, _store) = seeded_home(&[]);
+    postbode::trash::Trash::new(Paths::under(home.path()).trash_dir("work"))
+        .save(
+            "INBOX",
+            7,
+            b"Subject: Your code is 123456\r\n\r\nbody",
+            1_000,
+        )
+        .unwrap();
+    let stdout =
+        String::from_utf8_lossy(&postbode(home.path(), &["trash", "list"]).stdout).to_string();
+    assert!(
+        stdout.contains("INBOX/7") && stdout.contains("Your code is 123456"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn rules_test_with_unknown_name_fails() {
     let home = tempfile::tempdir().unwrap();
