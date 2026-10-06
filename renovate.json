@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":maintainLockFilesMonthly",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "minimumReleaseAge": "3 days",
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["major"],
+      "draftPR": true
+    },
+    {
+      "description": "rust-toolchain.toml and .mise.toml move together",
+      "matchDepNames": ["rust"],
+      "groupName": "Rust toolchain"
+    }
+  ]
+}
