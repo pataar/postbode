@@ -31,7 +31,7 @@ Out of scope, recorded in §11: compose and send, HTML rendering, unified inbox,
 | Thread spawning | `postbode::engine`, shared by `run` and `gui` | Each front end spawns its own threads |
 | Concurrent processes | Per-account lock file; a second process gets that account read-only | Allow, and run rules twice |
 | First sync | `UID SEARCH`, then envelopes 500 messages at a time, one transaction each, resumable | One fetch per folder; 500-UID ranges (sparse UIDs) |
-| Mark read | After 1 s visible in the body panel | On selection; never automatically |
+| Mark read | 1 s after the user opens a message, text on screen | On selection; never automatically |
 | Theme | System by default; `[ui] theme` in `config.toml`, switchable in the app | Fixed dark; eframe's own persistence file |
 | GUI tests | `egui_kittest` (headless, AccessKit queries) | Hand-rolled `Context::run_ui` harness |
 
@@ -211,7 +211,7 @@ Actions apply to the multi-selection when there is one, else to the current row.
 
 **Body panel.** From, To, Cc, Date, Subject, then the selectable text from `body_text` (HTML-only mail shows its extracted text). Links are found by scanning the text for `http://`, `https://` and `mailto:`; only those three schemes are clickable and passed to `ctx.open_url`. Attachments listed by name and size, each with **Save**, writing through `message::save_attachment` into the Downloads dir from `directories::UserDirs` (home if none), never overwriting, and showing the path written. If the body is not stored: "Loading…" and a `FetchBody`; when the account is offline, "Not downloaded; loads when work reconnects."
 
-**Read state.** A message is marked read after it has been visible in the body panel for 1 s, measured with egui's input time so tests can drive it.
+**Read state.** A message is marked read after the user opens it (by moving to it, clicking it, or landing on it after an archive or delete) and its text has been on screen for 1 s, measured with egui's input time so tests can drive it. A message shown passively (at startup, after a folder switch, or while typing a search) is not marked.
 
 ## 7. Activity and progress
 
