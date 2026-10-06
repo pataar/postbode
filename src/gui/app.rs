@@ -1023,13 +1023,21 @@ impl App {
             if !path.exists() {
                 crate::paths::write_atomic(&path, b"")?;
             }
-            let opener = if cfg!(target_os = "macos") {
-                "open"
+            // `open -t` uses the default text editor, so a missing `.toml` association still opens one.
+            let (opener, flags): (&str, &[&str]) = if cfg!(target_os = "macos") {
+                ("open", &["-t"])
             } else {
-                "xdg-open"
+                ("xdg-open", &[])
             };
-            let mut child = std::process::Command::new(opener).arg(&path).spawn()?;
-            std::thread::spawn(move || child.wait());
+            let mut child = std::process::Command::new(opener)
+                .args(flags)
+                .arg(&path)
+                .spawn()?;
+            std::thread::spawn(move || match child.wait() {
+                Ok(status) if !status.success() => log::warn!("{opener} rules.toml: {status}"),
+                Ok(_) => {}
+                Err(e) => log::warn!("{opener} rules.toml: {e}"),
+            });
             Ok(())
         })();
         if let Err(e) = opened {
