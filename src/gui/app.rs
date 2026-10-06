@@ -53,6 +53,7 @@ pub(crate) struct HistoryLine {
 
 pub(crate) struct Account {
     pub activity: Option<Activity>,
+    pub data_version: Option<i64>,
     pub error: Option<String>,
     pub folders: Vec<FolderRow>,
     pub name: String,
@@ -197,6 +198,7 @@ impl App {
                     .map_err(|e| format!("could not open the store: {e}"));
                 let mut account = Account {
                     activity: None,
+                    data_version: store.as_ref().ok().and_then(|s| s.data_version().ok()),
                     error: None,
                     folders: Vec::new(),
                     name: name.clone(),
@@ -996,7 +998,7 @@ impl App {
         false
     }
 
-    /// Notices edits to rules.toml and config.toml made outside the app.
+    /// Notices edits to rules.toml and config.toml, and store writes by other processes such as `postbode mcp`.
     fn poll_files(&mut self, now: f64) {
         if now - self.last_poll < POLL {
             return;
@@ -1007,6 +1009,18 @@ impl App {
         }
         if mtime(&self.paths.config_file()) != self.config_mtime {
             self.config_changed = true;
+        }
+        for account in &mut self.accounts {
+            let version = account
+                .store
+                .as_ref()
+                .ok()
+                .and_then(|s| s.data_version().ok());
+            if version != account.data_version {
+                account.data_version = version;
+                account.reload_folders();
+                self.view_dirty = true;
+            }
         }
     }
 
@@ -1543,5 +1557,20 @@ mod tests {
             Vec::new()
         };
         assert_eq!(wires.sent(), expected);
+    }
+
+    #[test]
+    fn another_processes_write_reloads_the_view_within_the_poll() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "First"));
+        let (mut harness, _wires) = fx.harness();
+        harness.run();
+        fx.add("work", message("INBOX", 2, "From the agent"));
+        harness.run();
+        assert!(harness.query_by_label_contains("From the agent").is_none());
+        harness.input_mut().time = Some(5.0);
+        harness.step();
+        harness.run();
+        assert!(harness.query_by_label_contains("From the agent").is_some());
     }
 }
