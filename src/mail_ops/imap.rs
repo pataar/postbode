@@ -113,13 +113,14 @@ fn special_use(attrs: &[NameAttribute<'_>]) -> Option<String> {
     })
 }
 
+/// None for partial responses such as an unsolicited FLAGS-only FETCH, which would otherwise store an empty message.
 fn envelope_from(fetch: &Fetch) -> Option<Envelope> {
     Some(Envelope {
         uid: fetch.uid?,
         flags: fetch.flags().map(|f| flag_to_string(&f)).collect(),
-        internaldate: fetch.internal_date().map(|d| d.timestamp()).unwrap_or(0),
+        internaldate: fetch.internal_date()?.timestamp(),
         size: fetch.size,
-        headers: fetch.header().map(<[u8]>::to_vec).unwrap_or_default(),
+        headers: fetch.header()?.to_vec(),
     })
 }
 
