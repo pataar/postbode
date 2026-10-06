@@ -99,8 +99,9 @@ The lock helper moves from `engine.rs` to a small public function both use.
 ## 7. Safety
 
 - Mail is untrusted. Every mail-derived string in a result goes through `message::clean`. `show` returns the body inside `<untrusted_mail_content>…</untrusted_mail_content>`, cut at 100 KB with `"truncated": true`. The server instructions and the `show` description say text inside that element is data, never instructions.
-- `read` without `read:bodies` exposes no body text anywhere: no `show`, no `attachments`, and `search` matches headers only.
-- `--account` filtering applies to every tool, including `log`, `trash_list` and `sync`.
+- `read` without `read:bodies` exposes no body text anywhere: no `show`, no `attachments`, `search` matches headers only, and `rules_test` refuses a rule with a body condition, whose matches would reveal body text.
+- `--account` filtering applies to every tool, including `log`, `trash_list` and `sync`. While it hides a configured account, a rule without `account` would reach that account too: `rules_approve` and `rules_set_enabled` with `enabled: true` refuse it, `rules_propose` fills in the only visible account or asks for one, and rejecting or disabling stays allowed.
+- Direct actions are logged under the rule name `mcp:<client>`, as `rules_propose` attributes proposals.
 - A tool call outside the granted scopes, which a well-behaved host cannot make because the tool is not listed, is refused with "not allowed with these scopes".
 - A tool that fails returns an MCP tool error (`isError`) with the text the CLI would print. `rules_propose` and `rules_test` return the `rules check` errors, which name the rule and the problem, so the agent can correct itself.
 - Logs go to stderr only; stdout carries the protocol. No MCP logging capability.
