@@ -10,7 +10,7 @@
 | Right / Left | expand or collapse a thread |
 | `x` | add the row to the selection, or take it out |
 | `e` | archive |
-| `#`, Delete | delete: move to Trash; from Trash, or with no Trash folder, delete for good after saving an `.eml` backup |
+| `#`, Delete (Backspace on macOS) | delete: move to Trash; from Trash, or with no Trash folder, delete for good after saving an `.eml` backup |
 | `m` | move: type to filter the folders, Enter |
 | `u` | mark read or unread |
 | `s` | flag or unflag |

@@ -196,7 +196,7 @@ pub(crate) const KEYS: [(&str, &str); 13] = [
     ("x", "add the row to the selection, or take it out"),
     ("e", "archive"),
     (
-        "# or Delete",
+        "#, Delete (Backspace on macOS)",
         "delete (to the Trash folder; from Trash or with no Trash folder, saved as .eml and deleted for good)",
     ),
     ("m", "move to a folder"),

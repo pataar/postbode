@@ -643,7 +643,12 @@ impl App {
                     if typed(input, "e") {
                         actions.push(UiAction::Act(Action::Archive));
                     }
-                    if typed(input, "#") || input.consume_key(none, egui::Key::Delete) {
+                    let delete = typed(input, "#")
+                        || input.consume_key(none, egui::Key::Delete)
+                        // macOS keyboards label Backspace "delete".
+                        || (cfg!(target_os = "macos")
+                            && input.consume_key(none, egui::Key::Backspace));
+                    if delete {
                         actions.push(UiAction::Act(Action::Trash));
                     }
                     if typed(input, "m") {
@@ -1515,5 +1520,20 @@ mod tests {
                 ("work".to_string(), Command::SyncNow)
             ]
         );
+    }
+
+    #[test]
+    fn backspace_deletes_on_macos_only() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut harness, wires) = fx.harness();
+        harness.key_press(egui::Key::Backspace);
+        harness.run();
+        let expected = if cfg!(target_os = "macos") {
+            vec![apply(&[1], Action::Trash)]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(wires.sent(), expected);
     }
 }
