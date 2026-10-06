@@ -343,12 +343,13 @@ fn rows(rows: Vec<Value>) -> Result<Value> {
     Ok(json!({ "rows": rows }))
 }
 
-/// The body inside the untrusted wrapper, cut at 100 KB; anything that looks like a wrapper tag is defused.
+/// The body inside the untrusted wrapper, cut at 100 KB; every spelling of the wrapper's name is renamed, so no tag can open or close it.
+/// ponytail: look-alike letters inside the name are a different string; the tool description's "never instructions" covers them.
 pub(super) fn wrap_body(text: &str) -> (String, bool) {
-    static TAG: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"(?i)<(/?)untrusted_mail_content>?").expect("a valid regex"));
-    let text = TAG
-        .replace_all(&clean(text, true), "[${1}untrusted_mail_content]")
+    static NAME: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)untrusted_mail_content").expect("a valid regex"));
+    let text = NAME
+        .replace_all(&clean(text, true), "untrusted-mail-content")
         .into_owned();
     let mut end = text.len().min(BODY_LIMIT);
     while !text.is_char_boundary(end) {
@@ -368,6 +369,7 @@ fn cleaned(value: Value) -> Value {
     clean_value(value, false)
 }
 
+/// Layout (newlines, tabs) is kept below any key named `body`.
 fn clean_value(value: Value, keep_layout: bool) -> Value {
     match value {
         Value::String(s) => Value::String(clean(&s, keep_layout)),
