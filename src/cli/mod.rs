@@ -895,7 +895,7 @@ fn print_planned_actions(
                     clean(&a.rule, false),
                     clean(&msg.folder, false),
                     msg.uid,
-                    a.action.label(),
+                    clean(&a.action.label(), false),
                     clean(msg.subject.as_deref().unwrap_or(""), false)
                 );
             }

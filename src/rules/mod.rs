@@ -328,6 +328,24 @@ fn compile_rule(
     {
         return Err(invalid("move folder must not be empty"));
     }
+    let strings = [
+        ("name", Some(&rule.name)),
+        ("account", rule.account.as_ref()),
+        ("folder", rule.folder.as_ref()),
+    ]
+    .into_iter()
+    .filter_map(|(field, value)| Some((field, value?)))
+    .chain(rule.actions.iter().filter_map(|action| match action {
+        Action::Move(folder) => Some(("move folder", folder)),
+        _ => None,
+    }));
+    for (field, value) in strings {
+        if value.chars().any(char::is_control) {
+            return Err(invalid(&format!(
+                "{field} must not contain control characters"
+            )));
+        }
+    }
     let text = |field: &str, t: &Option<TextMatch>| -> Result<Option<Matcher>, RulesError> {
         t.as_ref()
             .map(|t| Matcher::build(&rule.name, field, &t.contains, &t.equals, &t.regex))
@@ -562,6 +580,22 @@ actions = [{ move = "Shopping" }, "notify"]
                 ),
                 "{text}"
             );
+        }
+    }
+
+    #[test]
+    fn rejects_control_characters_in_agent_strings() {
+        let cases = [
+            "[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [{ move = \"Codes\\u001b[2J\" }]\n",
+            "[[rules]]\nname = \"x\\u001b]0;pwned\"\nmatch.seen = true\nactions = [\"flag\"]\n",
+        ];
+        for text in cases {
+            match parse(text).and_then(|f| compile(&f)) {
+                Err(RulesError::Invalid { reason, .. }) => {
+                    assert!(reason.contains("control characters"), "{reason}")
+                }
+                other => panic!("expected Invalid for {text}, got {other:?}"),
+            }
         }
     }
 
