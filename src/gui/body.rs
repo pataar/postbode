@@ -665,4 +665,19 @@ mod tests {
         assert!(wires.sent().is_empty());
         assert!(harness.state().body.is_none());
     }
+
+    #[test]
+    fn clicking_the_message_already_shown_opens_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", unread(1, "new"));
+        let (mut harness, wires) = fx.harness();
+        at(&mut harness, 2.0);
+        assert!(wires.sent().is_empty());
+        harness.input_mut().time = Some(10.0);
+        harness.get_by_label_contains("Sender 1 — new").click();
+        harness.step();
+        at(&mut harness, 10.5);
+        at(&mut harness, 11.1);
+        assert_eq!(wires.sent(), [read(1)]);
+    }
 }

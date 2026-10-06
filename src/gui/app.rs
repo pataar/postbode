@@ -525,6 +525,7 @@ impl App {
                 self.list.cursor = index;
                 self.focus = Focus::List;
                 self.pending_arm = true;
+                self.arm_shown_body(index);
             }
             UiAction::SelectView(view) => self.select_view(view),
             UiAction::SetRuleEnabled(name, enabled) => {
@@ -747,6 +748,20 @@ impl App {
             }
         }
         self.rebuild_rows();
+    }
+
+    /// A click on the row already shown opens it; `shown_at` stays, so a message long on screen is read at once.
+    fn arm_shown_body(&mut self, index: usize) {
+        let Some(key) = self.list.rows.get(index).map(Row::key) else {
+            return;
+        };
+        let account = self.view_account();
+        if let Some(body) = &mut self.body
+            && Some(body.account) == account
+            && body.key == key
+        {
+            body.armed = true;
+        }
     }
 
     /// Loads the cursor's message when the cursor moved to another one; nothing while a search query is typed.
