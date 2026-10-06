@@ -77,6 +77,15 @@ pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_in(path, bytes, true)
+}
+
+/// For a folder another app owns: an existing parent keeps its mode, a missing one is created private.
+pub fn write_atomic_keeping_dir_mode(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_atomic_in(path, bytes, false)
+}
+
+fn write_atomic_in(path: &Path, bytes: &[u8], private_dir: bool) -> io::Result<()> {
     // A symlink (say into a dotfiles repo) is written through, not replaced; a dangling one fails in canonicalize.
     if fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         return write_file_atomic(&fs::canonicalize(path)?, bytes);
@@ -84,7 +93,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent"))?;
-    create_private_dir(dir)?;
+    if private_dir || !dir.exists() {
+        create_private_dir(dir)?;
+    }
     write_file_atomic(path, bytes)
 }
 

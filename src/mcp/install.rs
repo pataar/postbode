@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
 use super::parse_scopes;
-use crate::paths::write_atomic;
+use crate::paths::write_atomic_keeping_dir_mode;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
@@ -140,7 +140,7 @@ pub fn edit_claude_desktop(
         if old.as_deref().is_some_and(|old| old != own_output) {
             std::fs::copy(path, path.with_extension("json.bak"))?;
         }
-        write_atomic(path, text.as_bytes())?;
+        write_atomic_keeping_dir_mode(path, text.as_bytes())?;
     }
     Ok(Some(text))
 }
@@ -394,6 +394,26 @@ mod tests {
         assert_eq!(
             std::fs::metadata(bak).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_config_folder_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Claude");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        edit_claude_desktop(
+            &folder.join("claude_desktop_config.json"),
+            Some(&entry()),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777,
+            0o755
         );
     }
 
