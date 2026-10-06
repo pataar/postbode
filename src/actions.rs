@@ -1,8 +1,10 @@
 //! Direct actions on chosen messages: the CLI's mark, move, archive and delete. They run through the same `apply` as rules.
+use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps};
-use crate::rules::Action;
-use crate::rules::apply::{ApplyError, apply, ensure_raw};
-use crate::rules::engine::{Plan, PlannedAction};
+use crate::message::clean;
+use crate::rules::apply::{ApplyError, apply, ensure_raw, trash_destination};
+use crate::rules::engine::{Context, Mode, Plan, PlannedAction, evaluate};
+use crate::rules::{Action, CompiledRule};
 use crate::store::{Message, Store, StoreError};
 use crate::trash::Trash;
 
@@ -122,6 +124,70 @@ pub fn fetch_body(
     Ok(())
 }
 
+/// What a dry run would do to `msg`; a user delete names its outcome, because an expunge cannot be undone on the server.
+pub fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<String, StoreError> {
+    if *action != Action::Trash {
+        return Ok(format!("would {}", clean(&action.label(), false)));
+    }
+    let effect = match trash_destination(store, msg)? {
+        Some(trash) => format!("would move to {}", clean(&trash, false)),
+        None => "would delete (expunge, .eml backup kept)".to_string(),
+    };
+    Ok(effect)
+}
+
+/// One action a rule would take on a cached message.
+#[derive(Debug, Clone)]
+pub struct Planned {
+    pub rule: String,
+    pub message: Message,
+    pub action: Action,
+}
+
+/// What `rules` would do to every message cached in `store`, evaluated as `rules apply-existing` would.
+pub fn planned(
+    rules: &[CompiledRule],
+    store: &Store,
+    account: &AccountConfig,
+    identity: &Identity,
+    now: i64,
+) -> Result<Vec<Planned>, StoreError> {
+    let ctx = Context {
+        account: &account.name,
+        identity,
+        now,
+        mode: Mode::ApplyExisting,
+        notify_default: false,
+    };
+    let mut planned = Vec::new();
+    for folder in store.folders()? {
+        for message in store.messages_in_folder(&folder.name)? {
+            for PlannedAction { rule, action } in evaluate(rules, &message, &ctx).actions {
+                planned.push(Planned {
+                    rule,
+                    message: message.clone(),
+                    action,
+                });
+            }
+        }
+    }
+    Ok(planned)
+}
+
+/// The full message, from the store or fetched once from the server.
+pub fn message_raw(
+    account: &AccountConfig,
+    store: &Store,
+    msg: &Message,
+) -> anyhow::Result<Vec<u8>> {
+    if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
+        return Ok(raw);
+    }
+    let mut ops = crate::sync::connect(account)?;
+    select_synced(&mut ops, store, &msg.folder)?;
+    Ok(ensure_raw(msg, &mut ops, store)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +235,20 @@ mod tests {
             })
             .unwrap();
         (ops, store, Trash::new(dir.path().join("trash")), dir)
+    }
+
+    #[test]
+    fn planned_effect_names_a_delete_without_trash() {
+        let (_ops, store, _trash, _dir) = setup();
+        let msg = store.message("INBOX", 5).unwrap().unwrap();
+        assert_eq!(
+            planned_effect(&store, &msg, &Action::Trash).unwrap(),
+            "would delete (expunge, .eml backup kept)"
+        );
+        assert_eq!(
+            planned_effect(&store, &msg, &Action::Archive).unwrap(),
+            "would archive"
+        );
     }
 
     #[test]
