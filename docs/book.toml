@@ -1,10 +1,12 @@
 [book]
 title = "Postbode"
+description = "A fast, simple mail client with automatic mailbox rules"
 authors = ["pataar"]
 language = "en"
 src = "src"
 
 [output.html]
+git-repository-url = "https://github.com/pataar/postbode"
 additional-css = ["theme/postbode.css"]
 default-theme = "light"
 preferred-dark-theme = "coal"
