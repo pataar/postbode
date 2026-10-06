@@ -6,6 +6,11 @@ rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 description = "A fast, simple mail client with automatic mailbox rules"
 repository = "https://github.com/pataar/postbode"
+homepage = "https://github.com/pataar/postbode"
+keywords = ["cli", "email", "imap", "mail", "rules"]
+categories = ["command-line-utilities", "email"]
+# Only what the build needs; keeps the test CA key, design docs and CI config out of the published crate.
+include = ["/Cargo.lock", "/LICENSE-*", "/README.md", "/docs/src/agent-guide.md", "/migrations/**", "/src/**"]
 
 [dependencies]
 anyhow = "1"                                         # error context in the binary and sync loop
@@ -60,3 +65,6 @@ opt-level = 2
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[profile.dist]
+inherits = "release"

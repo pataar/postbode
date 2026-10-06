@@ -40,3 +40,14 @@ Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as
 
 ## Build speed
 `mise install` brings kache, cargo-nextest and actionlint. Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
+
+## Releasing
+Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand.
+
+One-time setup, by the repo owner:
+1. `pataar/homebrew-tap` already exists (it also holds `gast`); dist adds `Formula/postbode.rb` beside the other formulas.
+2. Add repo secret `HOMEBREW_TAP_TOKEN` to `pataar/postbode`: a fine-grained token with Contents read/write on `pataar/homebrew-tap` (the token gast uses for its tap works too).
+3. Add repo secret `RELEASE_PLZ_TOKEN`: a fine-grained token with Contents and Pull requests read/write on `pataar/postbode`.
+4. Publish 0.1.0 by hand (crates.io requires the first publish with a token): `cargo publish`, then `git tag v0.1.0 && git push origin v0.1.0` to run the first dist release.
+5. On crates.io, add a trusted publisher for `postbode`: repository `pataar/postbode`, workflow `release-plz.yml`.
+6. Install the Mend Renovate GitHub App on the repo.

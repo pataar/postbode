@@ -332,7 +332,9 @@ Two tools, both driven by conventional commits and tags, no hand-written release
 
 **release-plz** runs on every push to `main`. It keeps a release PR open that bumps `Cargo.toml`, updates `CHANGELOG.md` from conventional commits, and when merged, tags `vX.Y.Z` and publishes to crates.io. Publishing uses crates.io trusted publishing (OIDC from GitHub Actions), so no API token is stored. `cargo install postbode` and `mise use cargo:postbode` work from that moment.
 
-**cargo-dist** runs on the tag. It builds release binaries for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, attaches them with checksums to a GitHub release, and pushes a formula to `pataar/homebrew-tap`. The `.deb` and `.rpm` outputs are left off until the GUI phase. `dist.toml` is the only config.
+release-plz does not create the GitHub release (`git_release_enable = false`); dist does, from the tag. release-plz pushes with a `RELEASE_PLZ_TOKEN` fine-grained token, because tags and PRs created with the default `GITHUB_TOKEN` start no other workflows. The package `include` list keeps tests, the test CA and the design docs out of the published crate.
+
+**cargo-dist** runs on the tag. It builds release binaries for `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`, attaches them with checksums to a GitHub release, and pushes a formula to `pataar/homebrew-tap`. The `.deb` and `.rpm` outputs are left off until the GUI phase. `dist-workspace.toml` is the only config, and `dist generate` writes the workflow from it.
 
 What each channel needs:
 
@@ -340,9 +342,11 @@ What each channel needs:
 |---|---|---|
 | crates.io | `cargo install postbode` | Trusted publisher configured once on crates.io for `pataar/postbode` |
 | mise | `mise use ubi:pataar/postbode` or `cargo:postbode` | Nothing; `ubi` reads GitHub release assets, `cargo` reads crates.io. An aqua-registry PR comes later once releases are stable, which makes plain `mise use postbode` work |
-| Homebrew | `brew install pataar/tap/postbode` | Empty `pataar/homebrew-tap` repo and a `HOMEBREW_TAP_TOKEN` fine-grained secret with contents write on that repo. homebrew-core is a later submission when the project has users |
+| Homebrew | `brew install pataar/tap/postbode` | The existing `pataar/homebrew-tap` repo (shared with gast) and a `HOMEBREW_TAP_TOKEN` fine-grained secret with contents write on that repo. homebrew-core is a later submission when the project has users |
 
-Human steps, one time: create the tap repo, add the token secret, register the trusted publisher on crates.io after the first manual `cargo publish`, which crates.io requires.
+Human steps, one time: add the `HOMEBREW_TAP_TOKEN` and `RELEASE_PLZ_TOKEN` secrets, publish 0.1.0 by hand with `cargo publish` (crates.io requires the first publish with a token), push the first tag `v0.1.0` by hand to run the first dist release, then register the trusted publisher on crates.io. `pataar/homebrew-tap` already exists and is shared with gast, so there is no tap repo to create.
+
+Release binaries are not code-signed yet. On macOS every new binary asks again for Keychain access. Developer ID signing is a later decision.
 
 **Renovate** via the Mend Renovate GitHub App, installed on the repo by the owner. Local `renovate.json`: `config:recommended`, `:semanticCommits` with type `chore`, lockfile maintenance monthly, `minimumReleaseAge` 3 days, majors as draft PRs, OSV vulnerability alerts, GitHub Actions digests pinned, `rust-toolchain.toml` and `.mise.toml` managed so Rust bumps arrive as PRs too. Dependabot is not enabled; two bots on one repo fight.
 

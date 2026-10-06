@@ -1,0 +1,4 @@
+[workspace]
+# dist creates the GitHub release from the tag release-plz pushes.
+git_release_enable = false
+git_tag_name = "v{{ version }}"
