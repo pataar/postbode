@@ -197,7 +197,7 @@ pub(crate) const KEYS: [(&str, &str); 13] = [
     ("e", "archive"),
     (
         "# or Delete",
-        "delete (to the Trash folder; from Trash, saved as .eml first)",
+        "delete (to the Trash folder; from Trash or with no Trash folder, saved as .eml and deleted for good)",
     ),
     ("m", "move to a folder"),
     ("u", "mark read or unread"),
