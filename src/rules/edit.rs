@@ -26,19 +26,34 @@ pub fn propose(path: &Path, mut rule: Rule, by: &str) -> Result<(), RulesError> 
     save(path, &text)
 }
 
+/// Turns a rule on or off, keeping the file's comments and layout.
+pub fn set_enabled(path: &Path, name: &str, enabled: bool) -> Result<(), RulesError> {
+    edit(path, name, |rules, index| {
+        write_enabled(
+            rules.get_mut(index).expect("index comes from position()"),
+            enabled,
+        );
+        Ok(None)
+    })
+}
+
 pub fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
     edit(path, name, |rules, index| {
         let table = rules.get_mut(index).expect("index comes from position()");
         if !is_disabled(table) {
             return Err(invalid(name, "is already enabled"));
         }
-        let mut enabled = Value::from(true);
-        if let Some(old) = table["enabled"].as_value() {
-            *enabled.decor_mut() = old.decor().clone();
-        }
-        table["enabled"] = Item::Value(enabled);
+        write_enabled(table, true);
         Ok(None)
     })
+}
+
+fn write_enabled(table: &mut toml_edit::Table, enabled: bool) {
+    let mut value = Value::from(enabled);
+    if let Some(old) = table.get("enabled").and_then(|item| item.as_value()) {
+        *value.decor_mut() = old.decor().clone();
+    }
+    table["enabled"] = Item::Value(value);
 }
 
 pub fn reject(path: &Path, name: &str) -> Result<(), RulesError> {
@@ -314,5 +329,30 @@ mod tests {
         drop(lock(&path).unwrap());
         let mode = std::fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn set_enabled_toggles_one_rule_and_keeps_the_rest() {
+        const TWO_RULES: &str = "# keep me\n[[rules]]\nname = \"a\"   # inline\nmatch.seen = true\nactions = [\"flag\"]\n\n[[rules]]\nname = \"b\"\nenabled = false # off for now\nmatch.seen = true\nactions = [\"flag\"]\n";
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(&path, TWO_RULES).unwrap();
+        let b_section =
+            |text: &str| text[text.find("[[rules]]\nname = \"b\"").unwrap()..].to_string();
+
+        set_enabled(&path, "a", false).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# keep me\n[[rules]]\nname = \"a\"   # inline\n"),
+            "{text}"
+        );
+        assert!(text.contains("enabled = false"));
+        assert_eq!(b_section(&text), b_section(TWO_RULES));
+
+        set_enabled(&path, "b", true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("enabled = true # off for now"), "{text}");
+        assert!(set_enabled(&path, "missing", true).is_err());
     }
 }
