@@ -12,7 +12,7 @@ postbode account add                # asks for host, user and password, then tes
 postbode sync                       # first sync of every folder
 postbode list                       # newest mail in INBOX
 postbode gui                        # the mail window
-postbode mcp install claude-desktop # let Claude read and triage your mail
+postbode mcp install claude-desktop # let Claude read your inbox and propose rules
 ```
 
 Add rules to `rules.toml` next to `config.toml`, in `~/.config/postbode/` on Linux or `~/Library/Application Support/postbode/` on macOS:

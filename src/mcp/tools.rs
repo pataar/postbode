@@ -200,6 +200,7 @@ struct SelectionArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MarkArgs {
+    /// read, unread, flag or unflag
     how: How,
     /// Message uids in `folder`, as `list` returns them
     uids: Vec<u32>,
