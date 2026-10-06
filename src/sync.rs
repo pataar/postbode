@@ -685,6 +685,25 @@ pub fn connect(account: &AccountConfig) -> Result<ImapOps, SyncError> {
     Ok(ImapOps::connect(account, &secret)?)
 }
 
+/// Syncs INBOX alone, draining queued commands first like a full pass does before each folder.
+fn sync_inbox_with(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    checkpoint: &mut Checkpoint<'_>,
+) -> Result<Vec<NewMessageRef>, SyncError> {
+    let inbox = RemoteFolder {
+        name: "INBOX".into(),
+        special_use: None,
+    };
+    let syncing = Activity::SyncingFolder {
+        folder: inbox.name.clone(),
+        index: 1,
+        of: 1,
+    };
+    checkpoint(ops, syncing)?;
+    sync_folder_with(ops, store, &inbox, checkpoint)
+}
+
 /// What one account's passes share: its store, trash, identity and the last good rules.
 struct AccountSync<'a> {
     account: &'a AccountConfig,
@@ -729,28 +748,39 @@ impl<'a> AccountSync<'a> {
             activity,
         };
         let mut pending_full = false;
+        // After a command hits a lost connection nothing else may touch it this pass.
+        let mut lost = None;
         let mut checkpoint = |ops: &mut dyn MailOps, step: Activity| {
+            if lost.is_some() {
+                return Err(SyncError::Stopped);
+            }
             let _ = events.send(activity(step));
             if shutdown.load(Ordering::Relaxed) {
                 return Err(SyncError::Stopped);
             }
-            let run = run_commands(ops, store, trash, account, commands, events)?;
-            pending_full |= run.wants_full_pass;
-            Ok(run.used_connection)
-        };
-        let new = if full {
-            let (new, sync_errors) = sync_all_with(ops, store, &mut checkpoint)?;
-            for message in sync_errors {
-                let _ = events.send(account_error(account, message));
+            match run_commands(ops, store, trash, account, commands, events) {
+                Ok(run) => {
+                    pending_full |= run.wants_full_pass;
+                    Ok(run.used_connection)
+                }
+                Err(e) => {
+                    lost = Some(e);
+                    Err(SyncError::Stopped)
+                }
             }
-            new
-        } else {
-            let inbox = RemoteFolder {
-                name: "INBOX".into(),
-                special_use: None,
-            };
-            sync_folder_with(ops, store, &inbox, &mut checkpoint)?
         };
+        let synced = if full {
+            sync_all_with(ops, store, &mut checkpoint)
+        } else {
+            sync_inbox_with(ops, store, &mut checkpoint).map(|new| (new, Vec::new()))
+        };
+        if let Some(e) = lost {
+            return Err(e);
+        }
+        let (new, sync_errors) = synced?;
+        for message in sync_errors {
+            let _ = events.send(account_error(account, message));
+        }
         self.pending_full |= pending_full;
         let previous = std::mem::take(&mut self.rules);
         self.rules = reload_rules(&self.store, &self.rules_path, now(), previous);
@@ -2195,6 +2225,152 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    /// Queues commands and a connection failure when the pass selects its first folder, i.e. before a chunk checkpoint.
+    struct QueuesCommandsOnList {
+        inner: RecordingOps,
+        commands: std::sync::mpsc::Sender<Command>,
+        queued: Vec<Command>,
+    }
+
+    impl MailOps for QueuesCommandsOnList {
+        fn list_folders(&mut self) -> crate::mail_ops::MailResult<Vec<RemoteFolder>> {
+            self.inner.list_folders()
+        }
+        fn select(
+            &mut self,
+            folder: &str,
+        ) -> crate::mail_ops::MailResult<crate::mail_ops::SelectInfo> {
+            if !self.queued.is_empty() {
+                self.inner.fail_next = Some(MailError::Io("reset".into()));
+            }
+            for command in self.queued.drain(..) {
+                self.commands.send(command).unwrap();
+            }
+            self.inner.select(folder)
+        }
+        fn search_uids(&mut self, from_uid: u32) -> crate::mail_ops::MailResult<Vec<u32>> {
+            self.inner.search_uids(from_uid)
+        }
+        fn fetch_envelopes(
+            &mut self,
+            first: u32,
+            last: u32,
+        ) -> crate::mail_ops::MailResult<Vec<Envelope>> {
+            self.inner.fetch_envelopes(first, last)
+        }
+        fn fetch_flags(
+            &mut self,
+            upto_uid: u32,
+        ) -> crate::mail_ops::MailResult<Vec<crate::mail_ops::FlagUpdate>> {
+            self.inner.fetch_flags(upto_uid)
+        }
+        fn fetch_raw(&mut self, uid: u32) -> crate::mail_ops::MailResult<Option<Vec<u8>>> {
+            self.inner.fetch_raw(uid)
+        }
+        fn add_flags(&mut self, uid: u32, flags: &[&str]) -> crate::mail_ops::MailResult<()> {
+            self.inner.add_flags(uid, flags)
+        }
+        fn remove_flags(&mut self, uid: u32, flags: &[&str]) -> crate::mail_ops::MailResult<()> {
+            self.inner.remove_flags(uid, flags)
+        }
+        fn expunge(&mut self, uid: u32) -> crate::mail_ops::MailResult<()> {
+            self.inner.expunge(uid)
+        }
+        fn move_message(&mut self, uid: u32, to: &str) -> crate::mail_ops::MailResult<Option<u32>> {
+            self.inner.move_message(uid, to)
+        }
+        fn create_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
+            self.inner.create_folder(name)
+        }
+        fn append(
+            &mut self,
+            folder: &str,
+            raw: &[u8],
+            flags: &[&str],
+        ) -> crate::mail_ops::MailResult<()> {
+            self.inner.append(folder, raw, flags)
+        }
+        fn idle(
+            &mut self,
+            timeout: Duration,
+            interrupt: &AtomicBool,
+        ) -> crate::mail_ops::MailResult<IdleOutcome> {
+            self.inner.idle(timeout, interrupt)
+        }
+    }
+
+    fn mark_read(uid: u32) -> Command {
+        Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![uid],
+            action: Action::MarkRead,
+        }
+    }
+
+    #[test]
+    fn a_lost_connection_at_a_chunk_checkpoint_ends_the_pass_and_keeps_later_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let acct = account();
+        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut inner = ops_with_inbox();
+        sync_all(&mut inner, &state.store).unwrap();
+        inner.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        let mut ops = QueuesCommandsOnList {
+            inner,
+            commands: commands_tx,
+            queued: vec![mark_read(1), mark_read(2)],
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = state.pass(&mut ops, true, &tx, &commands, &AtomicBool::new(false));
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("reset"), "{error}");
+        let events: Vec<Event> = rx.try_iter().collect();
+        let done = events
+            .iter()
+            .filter(|e| matches!(e, Event::ActionDone { .. }))
+            .count();
+        assert_eq!(done, 1, "{events:?}");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::Error { .. } | Event::Synced { .. })),
+            "{events:?}"
+        );
+        assert_eq!(commands.try_recv().unwrap(), mark_read(2));
+    }
+
+    #[test]
+    fn an_inbox_only_pass_runs_queued_commands_before_syncing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let acct = account();
+        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut ops = ops_with_inbox();
+        sync_all(&mut ops, &state.store).unwrap();
+        ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(mark_read(1)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state
+            .pass(&mut ops, false, &tx, &commands, &AtomicBool::new(false))
+            .unwrap();
+        let events: Vec<Event> = rx.try_iter().collect();
+        let position = |wanted: fn(&Event) -> bool| events.iter().position(wanted).unwrap();
+        let command_done = position(|e| matches!(e, Event::ActionDone { .. }));
+        let first_fetch = position(|e| {
+            matches!(
+                e,
+                Event::Activity {
+                    activity: Activity::FetchingHeaders { .. },
+                    ..
+                }
+            )
+        });
+        assert!(command_done < first_fetch, "{events:?}");
     }
 
     fn synced() -> (RecordingOps, Store, tempfile::TempDir) {
