@@ -7,6 +7,7 @@
     ":semanticCommitTypeAll(chore)",
     "helpers:pinGitHubActionDigests"
   ],
+  "ignorePaths": [".github/workflows/release.yml"],
   "minimumReleaseAge": "3 days",
   "osvVulnerabilityAlerts": true,
   "packageRules": [
@@ -17,6 +18,7 @@
     {
       "description": "rust-toolchain.toml and .mise.toml move together",
       "matchDepNames": ["rust"],
+      "matchManagers": ["mise", "rust-toolchain"],
       "groupName": "Rust toolchain"
     }
   ]
