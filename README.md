@@ -14,11 +14,11 @@ A fast, simple IMAP mail client for powerusers and developers, with rules that k
 
 ```sh
 cargo install --git https://github.com/pataar/postbode
-postbode account add      # asks for host, user and password, then tests the login
-postbode sync             # first sync of every folder
-postbode list             # newest mail in INBOX
-postbode gui              # the mail window
-postbode mcp install claude-desktop   # let Claude read and triage your mail
+postbode account add                # asks for host, user and password, then tests the login
+postbode sync                       # first sync of every folder
+postbode list                       # newest mail in INBOX
+postbode gui                        # the mail window
+postbode mcp install claude-desktop # let Claude read and triage your mail
 ```
 
 Add rules to `rules.toml` next to `config.toml`, in `~/.config/postbode/` on Linux or `~/Library/Application Support/postbode/` on macOS:

@@ -16,7 +16,7 @@ For Claude Code:
 postbode mcp install claude-code
 ```
 
-The Claude Desktop install edits `claude_desktop_config.json` and keeps every other server in it. The file is rewritten pretty-printed with sorted keys, and the original is saved next to it as `claude_desktop_config.json.bak`. Later runs do not overwrite that backup. The Claude Code install runs `claude mcp remove` and then `claude mcp add --scope user`, so a re-run replaces the old entry.
+The Claude Desktop install edits `claude_desktop_config.json` and keeps every other server in it. The file is rewritten pretty-printed with sorted keys, and the original is saved next to it as `claude_desktop_config.json.bak`. Re-running the install does not replace that backup unless you changed the file in between. The Claude Code install runs `claude mcp remove` and then `claude mcp add --scope user`, so a re-run replaces the old entry. With `--dry-run`, or when `claude` is not on your `PATH`, it prints those commands instead of running them.
 
 For any other host, `postbode mcp install json` prints a snippet for its config:
 
@@ -42,9 +42,9 @@ Options for `postbode mcp install`:
 - `--scopes` sets the scopes. Run the install again with other scopes to change them.
 - `--account NAME` limits the server to one account. Repeat it for more.
 - `--remove` takes the entry out again.
-- `--dry-run` shows the postbode entry and writes nothing.
+- `--dry-run` shows only the postbode entry, or for Claude Code the `claude` commands, and writes nothing.
 
-The scopes hint goes to stderr, so the output of `install json` stays pure JSON.
+The install also prints a hint with the granted scopes and how to widen them. It goes to stderr, so the output of `install json` stays pure JSON.
 
 ## Scopes
 
@@ -58,7 +58,7 @@ The scopes hint goes to stderr, so the output of `install json` stays pure JSON.
 
 The default is `read,rules:propose`. Three example grants:
 
-- Read-only: `--scopes read`.
+- Read-only: `--scopes read`. `sync` is in this scope and still runs your approved rules.
 - Rule author: the default. The agent proposes, you approve in the window or with `postbode rules approve`.
 - Inbox assistant: `--scopes read,read:bodies,rules:propose,mail:modify`.
 
@@ -66,7 +66,7 @@ The default is `read,rules:propose`. Three example grants:
 
 ## Tools
 
-The names follow the CLI commands. A tool that lists things returns the CLI's `--json` rows wrapped in `{"rows": [...]}`, each with an `account`. Message rows carry no body text.
+The names follow the CLI commands. A tool that lists things returns the CLI's `--json` rows wrapped in `{"rows": [...]}`. Rows carry an `account`; in `rules_list` that is the rule's own scope, and `null` means every account. Message rows carry no body text. `show` returns `{"message": ..., "body": ..., "truncated": ...}`.
 
 `read`:
 
@@ -84,7 +84,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 `read:bodies`:
 
 - `attachments` lists attachment names, types and sizes. It does not save them.
-- `show` returns the headers and the body. With this scope, `search` also covers stored bodies, in FTS5 syntax. It never fetches bodies from the server.
+- `show` returns the headers and the body. With this scope, `search` also covers stored bodies, in FTS5 syntax. `search` and `dry_run` never connect to the server. `show` and `attachments` fetch a message you have not stored yet, once.
 
 `rules:propose`:
 
@@ -105,8 +105,8 @@ With more than one visible account, every tool that acts on one message needs `a
 
 ## Safety
 
-- Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. Any spelling of that tag name inside a body is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. A body is cut at 100 KB and marked `"truncated": true`. Every mail-derived string loses its control characters.
-- The host asks you before tools that change things. `delete`, `rules_approve` and `rules_set_enabled` are marked destructive, because they can delete mail. The other changing tools are marked as changing, but not destructive.
+- Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. Any spelling of that tag name inside a body is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. A body is cut at 100 KB and marked `"truncated": true`. Every mail-derived string loses its control characters; a body keeps its newlines and tabs. The tag rewrite ignores letter case, but it does not catch look-alike letters.
+- A host that honours tool annotations asks you before tools that change things. `delete`, `rules_approve` and `rules_set_enabled` are marked destructive, because they can delete mail. The other changing tools are marked as changing, but not destructive.
 - The `mail:modify` tools take `dry_run`. It reports what would happen from the local store and opens no connection.
 - `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one.
 - Without `read:bodies`, no tool returns body text, and `search` covers subject and addresses only, as plain words. Search operators have no effect there.
@@ -114,7 +114,7 @@ With more than one visible account, every tool that acts on one message needs `a
 
 ## With the mail window open
 
-The MCP server reads the same local store as the mail window. Actions open their own short connection to the server. The window picks up the changes within about two seconds, so an archived message disappears from the list.
+The MCP server reads the same local store as the mail window. Tools that need the server open their own short connection: actions, `show` and `attachments` for a message not yet fetched, and `sync`. The window picks up the changes within about two seconds, so an archived message disappears from the list.
 
 `sync` skips an account that the window or `postbode run` already syncs, and says so in its result, so rules never run twice.
 
