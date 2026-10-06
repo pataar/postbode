@@ -58,7 +58,7 @@ pub enum Event {
 pub struct NewMessageRef {
     pub folder: String,
     pub uid: u32,
-    /// Found by the folder's first sync or a UIDVALIDITY resync; such messages never notify.
+    /// Found while the folder was newly tracked, a placeholder, or reset after a UIDVALIDITY change; such messages never notify.
     pub initial: bool,
 }
 
@@ -83,8 +83,9 @@ pub fn sync_folder(
     folder: &RemoteFolder,
 ) -> Result<Vec<NewMessageRef>, SyncError> {
     let info = ops.select(&folder.name)?;
-    let mut local = match store.folder(&folder.name)? {
-        Some(f) if f.uidvalidity == info.uidvalidity => f,
+    // Initial means newly tracked, a placeholder, or reset: everything fetched this pass was already on the server.
+    let (mut local, initial) = match store.folder(&folder.name)? {
+        Some(f) if f.uidvalidity == info.uidvalidity => (f, false),
         Some(f) => {
             // uidvalidity 0 marks a placeholder created by a rule move into a folder not synced yet.
             if f.uidvalidity != 0 {
@@ -96,18 +97,22 @@ pub fn sync_folder(
                 );
             }
             store.reset_folder(&folder.name, info.uidvalidity)?;
-            Folder {
+            let reset = Folder {
                 uidvalidity: info.uidvalidity,
                 last_uid: 0,
                 ..f
-            }
+            };
+            (reset, true)
         }
-        None => Folder {
-            name: folder.name.clone(),
-            uidvalidity: info.uidvalidity,
-            last_uid: 0,
-            special_use: folder.special_use.clone(),
-        },
+        None => {
+            let created = Folder {
+                name: folder.name.clone(),
+                uidvalidity: info.uidvalidity,
+                last_uid: 0,
+                special_use: folder.special_use.clone(),
+            };
+            (created, true)
+        }
     };
     local.special_use = folder.special_use.clone();
     store.upsert_folder(&local)?;
@@ -121,7 +126,6 @@ pub fn sync_folder(
         store.remove_missing(&folder.name, local.last_uid, &present)?;
     }
 
-    let initial = local.last_uid == 0;
     let mut new = Vec::new();
     let mut highest = local.last_uid;
     for env in ops.fetch_new(local.last_uid + 1)? {
@@ -570,6 +574,33 @@ mod tests {
             run.events.is_empty(),
             "mail already in a folder on its first sync never notifies"
         );
+    }
+
+    #[test]
+    fn first_mail_into_empty_tracked_folder_notifies() {
+        let mut ops = RecordingOps::new().with_folder("INBOX", None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        assert!(sync_all(&mut ops, &store).unwrap().is_empty());
+        ops.add_mail("INBOX", 1, 12 * H, &headers("bob@x", "first", "f1@x"), None);
+        let new = sync_all(&mut ops, &store).unwrap();
+        let run = run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &[],
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
+        assert_eq!(run.events.len(), 1, "{:?}", run.events);
+        assert!(matches!(&run.events[0], Event::NewMail { uid: 1, .. }));
     }
 
     #[test]
