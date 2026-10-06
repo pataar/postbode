@@ -81,6 +81,9 @@ enum Command {
         limit: u32,
         #[arg(long)]
         json: bool,
+        /// Group by conversation, the most recently active thread first
+        #[arg(long)]
+        threads: bool,
     },
     /// Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first
     Search {
@@ -257,9 +260,26 @@ pub fn run() -> Result<()> {
             folder,
             limit,
             json,
+            threads,
         } => {
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = open_store(&paths, &acc.name)?;
+                if threads {
+                    for thread in store.threads(&folder, limit)? {
+                        let base = thread.iter().map(Message::thread_depth).min().unwrap_or(0);
+                        for m in &thread {
+                            let depth = (m.thread_depth() - base).min(4);
+                            if json {
+                                let mut value = serde_json::to_value(m)?;
+                                value["depth"] = depth.into();
+                                println!("{}", json_line(&acc.name, &value)?);
+                            } else {
+                                println!("{}", message_line(&acc.name, m, depth));
+                            }
+                        }
+                    }
+                    continue;
+                }
                 for m in store.messages(&folder, limit)? {
                     if json {
                         println!("{}", json_line(&acc.name, &m)?);

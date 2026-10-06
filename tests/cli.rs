@@ -349,3 +349,20 @@ fn search_finds_by_word_and_by_address() {
         );
     }
 }
+
+#[test]
+fn list_threads_indents_replies_under_their_thread() {
+    let root = message(1, "alice@example.com", "Plans");
+    let mut reply = message(2, "bob@example.com", "Re: Plans");
+    reply.thread_id = root.thread_id.clone();
+    reply.in_reply_to = root.message_id.clone();
+    let (home, _store) = seeded_home(&[root, reply]);
+    let out = postbode(home.path(), &["list", "--threads"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert!(
+        lines[0].ends_with("  Plans") && lines[1].ends_with("    Re: Plans"),
+        "{stdout}"
+    );
+}

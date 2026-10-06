@@ -54,6 +54,15 @@ impl Message {
     pub fn is_seen(&self) -> bool {
         self.flags.split(' ').any(|f| f == "\\Seen")
     }
+
+    /// How deep in its thread the message sits, judged from its own reply headers.
+    pub fn thread_depth(&self) -> usize {
+        let refs = self
+            .refs
+            .as_deref()
+            .map_or(0, |r| r.split_whitespace().count());
+        refs.max(usize::from(self.in_reply_to.is_some()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -258,6 +267,27 @@ impl Store {
         ))?;
         let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder, limit])?);
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Threads in `folder`, the most recently active first; each thread's messages oldest first.
+    pub fn threads(&self, folder: &str, limit: u32) -> Result<Vec<Vec<Message>>, StoreError> {
+        let ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT thread_id FROM messages WHERE folder = ?1 GROUP BY thread_id
+                 ORDER BY MAX(internaldate) DESC, MAX(uid) DESC LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![folder, limit], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 AND thread_id = ?2 ORDER BY internaldate, uid"
+        ))?;
+        ids.iter()
+            .map(|id| {
+                let rows = serde_rusqlite::from_rows::<Message>(stmt.query(params![folder, id])?);
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+            .collect()
     }
 
     pub fn messages_in_folder(&self, folder: &str) -> Result<Vec<Message>, StoreError> {
@@ -469,6 +499,37 @@ mod tests {
         let f = s.folder("INBOX").unwrap().unwrap();
         assert_eq!((f.uidvalidity, f.last_uid), (2, 0));
         assert!(s.messages_in_folder("INBOX").unwrap().is_empty());
+    }
+
+    #[test]
+    fn threads_group_by_thread_most_recent_activity_first() {
+        let s = store_with_inbox();
+        let mut root = msg("INBOX", 1, 10);
+        root.thread_id = "root@x".into();
+        let mut reply = msg("INBOX", 3, 30);
+        reply.thread_id = "root@x".into();
+        let other = msg("INBOX", 2, 20);
+        for m in [&root, &reply, &other] {
+            s.insert_message(m).unwrap();
+        }
+        let uids: Vec<Vec<u32>> = s
+            .threads("INBOX", 10)
+            .unwrap()
+            .iter()
+            .map(|thread| thread.iter().map(|m| m.uid).collect())
+            .collect();
+        assert_eq!(uids, [vec![1, 3], vec![2]]);
+        assert_eq!(s.threads("INBOX", 1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn thread_depth_follows_reply_headers() {
+        let mut m = msg("INBOX", 1, 10);
+        assert_eq!(m.thread_depth(), 0);
+        m.in_reply_to = Some("a@x".into());
+        assert_eq!(m.thread_depth(), 1);
+        m.refs = Some("a@x b@x".into());
+        assert_eq!(m.thread_depth(), 2);
     }
 
     #[test]
