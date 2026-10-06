@@ -1,6 +1,6 @@
 # Mail window
 
-`postbode gui` opens a window with three columns: your accounts and folders, the threads in the chosen folder, and the selected message as text. It runs the same sync and rules as `postbode run`, so use one or the other. If another Postbode process already syncs an account, the window shows that account read-only and says which process holds it.
+`postbode gui` opens a window with three columns: your accounts and folders, the threads in the chosen folder, and the selected message as text. It runs the same sync and rules as `postbode run`, so use one or the other. If another Postbode process already syncs an account, the window shows that account read-only and says that another Postbode process holds it.
 
 ## Keys
 
@@ -10,7 +10,7 @@
 | Right / Left | expand or collapse a thread |
 | `x` | add the row to the selection, or take it out |
 | `e` | archive |
-| `#`, Delete | delete (to Trash, with an `.eml` backup) |
+| `#`, Delete | delete: move to Trash; from Trash, or with no Trash folder, delete for good after saving an `.eml` backup |
 | `m` | move: type to filter the folders, Enter |
 | `u` | mark read or unread |
 | `s` | flag or unflag |
@@ -28,7 +28,7 @@ One line per account says what its sync is doing: connecting, which folder, how 
 
 ## Rules, Activity and Trash
 
-**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Trash** lists the `.eml` backups of deleted mail, with Restore.
+**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Trash** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
 
 Changes to `config.toml` need a restart; the window says so.
 

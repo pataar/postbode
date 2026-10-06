@@ -195,7 +195,10 @@ pub(crate) const KEYS: [(&str, &str); 13] = [
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
     ("e", "archive"),
-    ("# or Delete", "delete (to Trash, with an .eml backup)"),
+    (
+        "# or Delete",
+        "delete (to the Trash folder; from Trash, saved as .eml first)",
+    ),
     ("m", "move to a folder"),
     ("u", "mark read or unread"),
     ("s", "flag or unflag"),
