@@ -55,21 +55,30 @@ impl Paths {
     pub fn ensure_account(&self, name: &str) -> io::Result<()> {
         create_private_dir(&self.config_dir)?;
         create_private_dir(&self.cache_dir)?;
+        create_private_dir(&self.account_dir(name))?;
         create_private_dir(&self.trash_dir(name))
     }
 }
 
 fn create_private_dir(dir: &Path) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
+        use std::fs::DirBuilder;
+        use std::os::unix::fs::DirBuilderExt;
+        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(dir)?;
     }
     Ok(())
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent"))?;
@@ -78,7 +87,9 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         ".{}.tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
     ));
-    fs::write(&tmp, bytes)?;
+    let mut file = fs::File::create(&tmp)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
     fs::rename(&tmp, path)
 }
 
@@ -120,5 +131,25 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"two");
         let leftovers: Vec<_> = fs::read_dir(root.path()).unwrap().collect();
         assert_eq!(leftovers.len(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_account_dirs_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let p = Paths::under(root.path());
+        p.ensure_account("work").unwrap();
+
+        let check_mode = |dir: &Path| {
+            let mode = fs::metadata(dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "directory {:?} is not 0700", dir);
+        };
+
+        check_mode(&p.state_dir);
+        check_mode(&p.state_dir.join("accounts"));
+        check_mode(&p.account_dir("work"));
+        check_mode(&p.trash_dir("work"));
     }
 }
