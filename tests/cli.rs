@@ -366,3 +366,61 @@ fn list_threads_indents_replies_under_their_thread() {
         "{stdout}"
     );
 }
+
+const WITH_ATTACHMENTS: &[u8] = b"From: a@example.com\r\n\
+Subject: files\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"b\"\r\n\
+\r\n\
+--b\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+see attached\r\n\
+--b\r\n\
+Content-Type: text/plain\r\n\
+Content-Disposition: attachment; filename=\"../../evil.txt\"\r\n\
+\r\n\
+not evil\r\n\
+--b\r\n\
+Content-Type: application/pdf\r\n\
+Content-Disposition: attachment\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+JVBERi0=\r\n\
+--b--\r\n";
+
+#[test]
+fn attachments_list_and_save_from_the_cached_message() {
+    let (home, store) = seeded_home(&[message(42, "a@example.com", "files")]);
+    store
+        .set_raw("INBOX", 42, WITH_ATTACHMENTS, "see attached")
+        .unwrap();
+    let out = postbode(home.path(), &["attachment", "list", "42"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines[0].starts_with("1  text/plain  ") && lines[0].ends_with("  ../../evil.txt"),
+        "{stdout}"
+    );
+    assert_eq!(lines[1], "2  application/pdf  5  -");
+    let target = tempfile::tempdir().unwrap();
+    let dir = target.path().to_str().unwrap();
+    let out = postbode(
+        home.path(),
+        &["attachment", "save", "42", "1", "--dir", dir],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(target.path().join("evil.txt").exists());
+    assert!(
+        !postbode(
+            home.path(),
+            &["attachment", "save", "42", "1", "--dir", dir]
+        )
+        .status
+        .success()
+    );
+}

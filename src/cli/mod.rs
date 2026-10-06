@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
@@ -58,6 +58,11 @@ enum Command {
     Sync {
         #[arg(long)]
         account: Option<String>,
+    },
+    /// List or save a message's attachments
+    Attachment {
+        #[command(subcommand)]
+        command: AttachmentCommand,
     },
     /// Inspect and test rules.toml
     Rules {
@@ -159,6 +164,31 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum AttachmentCommand {
+    /// Index, type, size and name of each attachment
+    List {
+        uid: u32,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save attachment N, as numbered by `attachment list`, into --dir
+    Save {
+        uid: u32,
+        n: usize,
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum RulesCommand {
     /// Validate rules.toml
     Check,
@@ -236,6 +266,7 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
+        Command::Attachment { command } => cmd_attachment(command, &config, &paths),
         Command::Rules { command } => cmd_rules(command, &config, &paths),
         Command::Folders { account, json } => {
             for acc in select_accounts(&config, account.as_deref())? {
@@ -483,6 +514,52 @@ fn message_raw(account: &AccountConfig, store: &Store, msg: &Message) -> Result<
     let mut ops = sync::connect(account)?;
     postbode::actions::select_synced(&mut ops, store, &msg.folder)?;
     Ok(postbode::rules::apply::ensure_raw(msg, &mut ops, store)?)
+}
+
+fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) -> Result<()> {
+    let (uid, account, folder) = match &command {
+        AttachmentCommand::List {
+            uid,
+            account,
+            folder,
+            ..
+        }
+        | AttachmentCommand::Save {
+            uid,
+            account,
+            folder,
+            ..
+        } => (*uid, account.as_deref(), folder.as_str()),
+    };
+    let acc = single_account(config, account)?;
+    let store = open_store(paths, &acc.name)?;
+    let msg = store
+        .message(folder, uid)?
+        .with_context(|| format!("no message {}/{uid}", clean(folder, false)))?;
+    let raw = message_raw(acc, &store, &msg)?;
+    match command {
+        AttachmentCommand::List { json, .. } => {
+            for a in postbode::message::attachments(&raw) {
+                if json {
+                    println!("{}", json_line(&acc.name, &a)?);
+                } else {
+                    println!(
+                        "{}  {}  {}  {}",
+                        a.index,
+                        clean(&a.content_type, false),
+                        a.size,
+                        clean(a.name.as_deref().unwrap_or("-"), false)
+                    );
+                }
+            }
+        }
+        AttachmentCommand::Save { n, dir, .. } => {
+            let path = postbode::message::save_attachment(&raw, n, &dir)
+                .with_context(|| format!("saving attachment {n}"))?;
+            println!("{}", clean(&path.display().to_string(), false));
+        }
+    }
+    Ok(())
 }
 
 fn select_accounts<'a>(config: &'a Config, name: Option<&str>) -> Result<Vec<&'a AccountConfig>> {

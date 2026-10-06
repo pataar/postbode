@@ -1,4 +1,7 @@
-use mail_parser::{Address, HeaderValue, MessageParser};
+use std::io::{self, Write as _};
+use std::path::{Path, PathBuf};
+
+use mail_parser::{Address, HeaderValue, MessageParser, MimeHeaders};
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Parsed {
@@ -96,6 +99,70 @@ fn text_list(value: &HeaderValue<'_>) -> Vec<String> {
         _ => vec![],
     }
 }
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Attachment {
+    /// 1-based, as `attachment save` takes it.
+    pub index: usize,
+    pub name: Option<String>,
+    pub content_type: String,
+    pub size: usize,
+}
+
+pub fn attachments(raw: &[u8]) -> Vec<Attachment> {
+    let Some(msg) = MessageParser::default().parse(raw) else {
+        return Vec::new();
+    };
+    msg.attachments()
+        .enumerate()
+        .map(|(i, part)| Attachment {
+            index: i + 1,
+            name: part.attachment_name().map(str::to_string),
+            content_type: part
+                .content_type()
+                .map(|ct| match ct.subtype() {
+                    Some(sub) => format!("{}/{sub}", ct.ctype()),
+                    None => ct.ctype().to_string(),
+                })
+                .unwrap_or_else(|| "application/octet-stream".into()),
+            size: part.contents().len(),
+        })
+        .collect()
+}
+
+/// Writes attachment `index` (1-based) into `dir` under its own file name, stripped of any path; never overwrites.
+pub fn save_attachment(raw: &[u8], index: usize, dir: &Path) -> io::Result<PathBuf> {
+    let msg = MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| io::Error::other("the message could not be parsed"))?;
+    let part = index
+        .checked_sub(1)
+        .and_then(|i| msg.attachment(u32::try_from(i).ok()?))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no attachment {index}")))?;
+    let path = dir.join(safe_file_name(part.attachment_name(), index));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    file.write_all(part.contents())?;
+    Ok(path)
+}
+
+/// The sender picks the name: keep only its last path segment, without control characters.
+fn safe_file_name(name: Option<&str>, index: usize) -> String {
+    let base: String = name
+        .unwrap_or("")
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
+    match base.trim() {
+        "" | "." | ".." => format!("attachment-{index}"),
+        _ => base,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +247,72 @@ List-Id: Dev <dev.lists.example.com>\r\n\
             vec!["bob@example.com", "carol@example.com"]
         );
         assert!(bare_addresses("").is_empty());
+    }
+
+    const WITH_ATTACHMENTS: &[u8] = b"From: a@example.com\r\n\
+Subject: files\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"b\"\r\n\
+\r\n\
+--b\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+see attached\r\n\
+--b\r\n\
+Content-Type: text/plain\r\n\
+Content-Disposition: attachment; filename=\"../../evil.txt\"\r\n\
+\r\n\
+not evil\r\n\
+--b\r\n\
+Content-Type: application/pdf\r\n\
+Content-Disposition: attachment\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+JVBERi0=\r\n\
+--b--\r\n";
+
+    #[test]
+    fn attachments_are_listed_and_saved_inside_the_directory() {
+        let found = attachments(WITH_ATTACHMENTS);
+        let summary: Vec<_> = found
+            .iter()
+            .map(|a| (a.index, a.name.as_deref(), a.content_type.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (1, Some("../../evil.txt"), "text/plain"),
+                (2, None, "application/pdf")
+            ]
+        );
+        assert_eq!(found[1].size, 5);
+        let dir = tempfile::tempdir().unwrap();
+        let saved = save_attachment(WITH_ATTACHMENTS, 1, dir.path()).unwrap();
+        assert_eq!(saved, dir.path().join("evil.txt"));
+        assert_eq!(
+            std::fs::read_to_string(&saved).unwrap().trim_end(),
+            "not evil"
+        );
+        let again = save_attachment(WITH_ATTACHMENTS, 1, dir.path()).unwrap_err();
+        assert_eq!(again.kind(), std::io::ErrorKind::AlreadyExists);
+        let pdf = save_attachment(WITH_ATTACHMENTS, 2, dir.path()).unwrap();
+        assert_eq!(pdf, dir.path().join("attachment-2"));
+        assert_eq!(std::fs::read(pdf).unwrap(), b"%PDF-");
+        for missing in [0, 3] {
+            let err = save_attachment(WITH_ATTACHMENTS, missing, dir.path()).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        }
+    }
+
+    #[test]
+    fn unsafe_attachment_names_become_plain_file_names() {
+        assert_eq!(safe_file_name(Some("../../.ssh/config"), 1), "config");
+        assert_eq!(
+            safe_file_name(Some("C:\\Users\\x\\evil.exe"), 1),
+            "evil.exe"
+        );
+        assert_eq!(safe_file_name(Some(".."), 3), "attachment-3");
+        assert_eq!(safe_file_name(Some("a\u{1b}b.txt"), 1), "ab.txt");
+        assert_eq!(safe_file_name(None, 2), "attachment-2");
     }
 }
