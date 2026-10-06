@@ -82,12 +82,17 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other("path has no parent"))?;
-    fs::create_dir_all(dir)?;
+    create_private_dir(dir)?;
     let tmp = dir.join(format!(
         ".{}.tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
     ));
     let mut file = fs::File::create(&tmp)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
     file.write_all(bytes)?;
     file.sync_all()?;
     fs::rename(&tmp, path)?;
@@ -135,6 +140,19 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"two");
         let leftovers: Vec<_> = fs::read_dir(root.path()).unwrap().collect();
         assert_eq!(leftovers.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_creates_private_dir_and_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config").join("config.toml");
+        write_atomic(&path, b"x").unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
     }
 
     #[test]
