@@ -19,6 +19,8 @@ pub enum ConfigError {
 pub struct Config {
     #[serde(default)]
     pub accounts: Vec<AccountConfig>,
+    #[serde(default, skip_serializing_if = "UiConfig::is_default")]
+    pub ui: UiConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +52,38 @@ pub struct AccountConfig {
 pub enum PasswordSource {
     Keyring { keyring: bool },
     Command { command: String },
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub theme: Theme,
+}
+
+impl UiConfig {
+    fn is_default(&self) -> bool {
+        *self == UiConfig::default()
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Dark,
+    Light,
+    #[default]
+    System,
+}
+
+impl Theme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Theme::Dark => "dark",
+            Theme::Light => "light",
+            Theme::System => "system",
+        }
+    }
 }
 
 fn default_port() -> u16 {
@@ -124,6 +158,26 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// Sets `[ui] theme`, keeping the rest of the file's text and comments.
+pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| ConfigError::Parse(e.to_string()))?;
+    let ui = doc
+        .entry("ui")
+        .or_insert_with(toml_edit::table)
+        .as_table_like_mut()
+        .ok_or_else(|| ConfigError::Invalid("`ui` must be a table".into()))?;
+    ui.insert("theme", toml_edit::value(theme.as_str()));
+    write_atomic(path, doc.to_string().as_bytes())?;
+    Ok(())
 }
 
 impl AccountConfig {
@@ -270,5 +324,48 @@ notify = false
         cfg.save(&path).unwrap();
         let again = Config::load(&path).unwrap();
         assert_eq!(again.accounts.len(), 2);
+    }
+
+    #[test]
+    fn ui_theme_defaults_to_system() {
+        assert_eq!(Config::parse(SAMPLE).unwrap().ui.theme, Theme::System);
+    }
+
+    #[test]
+    fn ui_theme_parses_and_rejects_unknown_values() {
+        let dark = format!("{SAMPLE}\n[ui]\ntheme = \"dark\"\n");
+        assert_eq!(Config::parse(&dark).unwrap().ui.theme, Theme::Dark);
+        let blue = format!("{SAMPLE}\n[ui]\ntheme = \"blue\"\n");
+        assert!(matches!(Config::parse(&blue), Err(ConfigError::Parse(_))));
+        let typo = format!("{SAMPLE}\n[ui]\ntheme_ = \"dark\"\n");
+        assert!(matches!(Config::parse(&typo), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn save_theme_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let text = format!("# my accounts\n{SAMPLE}");
+        std::fs::write(&path, &text).unwrap();
+        save_theme(&path, Theme::Dark).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.starts_with(&text), "{saved}");
+        assert!(saved.contains("[ui]\ntheme = \"dark\""), "{saved}");
+        save_theme(&path, Theme::Light).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("theme = \"light\"") && !saved.contains("dark"),
+            "{saved}"
+        );
+        let cfg = Config::load(&path).unwrap();
+        assert_eq!((cfg.ui.theme, cfg.accounts.len()), (Theme::Light, 2));
+    }
+
+    #[test]
+    fn save_round_trip_leaves_out_a_default_ui_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        Config::parse(SAMPLE).unwrap().save(&path).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("[ui]"));
     }
 }

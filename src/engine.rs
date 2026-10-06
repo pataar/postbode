@@ -220,6 +220,7 @@ mod tests {
         let held = lock_account(&paths, "work").unwrap().unwrap();
         let config = Config {
             accounts: vec![offline_account("work")],
+            ..Default::default()
         };
         let (engine, _events) = Engine::start(&config, &paths);
         assert_eq!(
@@ -242,6 +243,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = Config {
             accounts: vec![offline_account("work")],
+            ..Default::default()
         };
         let (engine, events) = Engine::start(&config, &Paths::under(dir.path()));
         assert_eq!(
@@ -272,6 +274,7 @@ mod tests {
         let paths = Paths::under(dir.path());
         let config = Config {
             accounts: vec![offline_account("work")],
+            ..Default::default()
         };
         let (engine, events) = Engine::start(&config, &paths);
         let started = std::time::Instant::now();

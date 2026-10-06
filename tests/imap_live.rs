@@ -205,6 +205,7 @@ fn home_with(account: &AccountConfig, rules: &str) -> tempfile::TempDir {
     let paths = Paths::under(home.path());
     Config {
         accounts: vec![account.clone()],
+        ..Default::default()
     }
     .save(&paths.config_file())
     .unwrap();
@@ -417,6 +418,7 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
     let home = tempfile::tempdir().unwrap();
     let config = Config {
         accounts: vec![account.clone()],
+        ..Default::default()
     };
     let (engine, events) = Engine::start(&config, &Paths::under(home.path()));
     let wait = |wanted: &dyn Fn(&Event) -> bool| {
