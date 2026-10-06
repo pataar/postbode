@@ -56,7 +56,6 @@ impl Backend {
     }
 
     /// One account: the named one, or the only visible one.
-    #[expect(dead_code, reason = "the single-message tools use it")]
     fn single(&self, name: Option<&str>) -> Result<&AccountConfig> {
         match (name, self.accounts.as_slice()) {
             (Some(_), _) => Ok(self.select(name)?[0]),
@@ -68,6 +67,20 @@ impl Backend {
     fn store(&self, account: &AccountConfig) -> Result<Store> {
         self.paths.ensure_account(&account.name)?;
         Ok(Store::open(&self.paths.mail_db(&account.name))?)
+    }
+
+    fn message(
+        &self,
+        account: Option<&str>,
+        folder: &str,
+        uid: u32,
+    ) -> Result<(&AccountConfig, Store, Message)> {
+        let acc = self.single(account)?;
+        let store = self.store(acc)?;
+        let msg = store
+            .message(folder, uid)?
+            .with_context(|| format!("no message {folder}/{uid}"))?;
+        Ok((acc, store, msg))
     }
 
     pub fn folders(&self, account: Option<&str>) -> Result<Vec<Value>> {
@@ -137,6 +150,22 @@ impl Backend {
             }
         }
         Ok(rows)
+    }
+
+    /// The message row and its plain body text, fetched once if not stored yet.
+    pub fn show(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<(Value, String)> {
+        let (acc, store, msg) = self.message(account, folder, uid)?;
+        let raw = actions::message_raw(acc, &store, &msg)?;
+        Ok((message_row(&acc.name, &msg)?, message::body_text(&raw)))
+    }
+
+    pub fn attachments(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<Vec<Value>> {
+        let (acc, store, msg) = self.message(account, folder, uid)?;
+        let raw = actions::message_raw(acc, &store, &msg)?;
+        message::attachments(&raw)
+            .iter()
+            .map(|a| Ok(output::with_account(&acc.name, a)?))
+            .collect()
     }
 
     pub fn log(&self, account: Option<&str>, limit: u32) -> Result<Vec<Value>> {
