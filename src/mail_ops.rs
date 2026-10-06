@@ -64,7 +64,8 @@ pub trait MailOps {
     /// Moves the message; returns the new uid when the server reports it.
     fn move_message(&mut self, uid: u32, to: &str) -> MailResult<Option<u32>>;
     fn create_folder(&mut self, name: &str) -> MailResult<()>;
-    fn append(&mut self, folder: &str, raw: &[u8]) -> MailResult<()>;
+    /// Appends a message carrying `flags`, e.g. a keyword.
+    fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()>;
     /// Waits for new mail in the selected folder, the timeout, or `interrupt` becoming true.
     fn idle(&mut self, timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome>;
 }
@@ -291,7 +292,7 @@ mod recording {
             Ok(())
         }
 
-        fn append(&mut self, folder: &str, raw: &[u8]) -> MailResult<()> {
+        fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
             self.calls
                 .push(format!("append {folder} {} bytes", raw.len()));
             let Some(list) = self.mail.get_mut(folder) else {
@@ -305,7 +306,7 @@ mod recording {
                 .unwrap_or(raw.len());
             list.push(Envelope {
                 uid,
-                flags: vec![],
+                flags: flags.iter().map(|f| f.to_string()).collect(),
                 internaldate: 0,
                 size: Some(raw.len() as u32),
                 headers: raw[..end].to_vec(),
@@ -374,11 +375,12 @@ mod tests {
     fn fake_append_keeps_bytes_and_rejects_unknown_folder() {
         let mut ops = RecordingOps::new().with_folder("Backup", None);
         let raw = b"Subject: a\r\n\r\n\xFFbody";
-        ops.append("Backup", raw).unwrap();
+        ops.append("Backup", raw, &["$PostbodeRestored"]).unwrap();
         assert_eq!(ops.raw[&("Backup".into(), 1)], raw);
         assert_eq!(ops.mail["Backup"][0].headers, b"Subject: a\r\n\r\n");
+        assert_eq!(ops.mail["Backup"][0].flags, ["$PostbodeRestored"]);
         assert!(matches!(
-            ops.append("Nope", raw),
+            ops.append("Nope", raw, &[]),
             Err(MailError::Protocol(_))
         ));
     }

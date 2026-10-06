@@ -3,6 +3,9 @@ use crate::message::{bare_addresses, header_value};
 use crate::rules::{Action, CompiledRule};
 use crate::store::Message;
 
+/// Set by `trash restore`; rules never act on, or notify about, mail carrying it.
+pub const RESTORED_KEYWORD: &str = "$PostbodeRestored";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
@@ -44,6 +47,13 @@ pub fn folder_needs_body(rules: &[CompiledRule], account: &str, folder: &str) ->
 }
 
 pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
+    if msg
+        .flags
+        .split(' ')
+        .any(|flag| flag.eq_ignore_ascii_case(RESTORED_KEYWORD))
+    {
+        return Plan::default();
+    }
     let mut plan = Plan::default();
     let mut explicit_notify: Option<bool> = None;
     for rule in rules {
@@ -232,6 +242,19 @@ match.older_than = "1h"
 match.seen = true
 actions = ["delete"]
 "#;
+
+    #[test]
+    fn restored_mail_is_left_alone() {
+        let id = identity();
+        let rules = rules(
+            "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+            0,
+        );
+        let mut m = msg("noreply@x.com", "me@example.com", "your code", 100, true);
+        assert!(!evaluate(&rules, &m, &ctx(&id, 200)).actions.is_empty());
+        m.flags = format!("\\Seen {RESTORED_KEYWORD}");
+        assert_eq!(evaluate(&rules, &m, &ctx(&id, 200)), Plan::default());
+    }
 
     #[test]
     fn sign_in_code_deleted_only_when_old_and_seen() {

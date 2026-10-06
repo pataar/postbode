@@ -274,9 +274,15 @@ impl MailOps for ImapOps {
         rt.block_on(async { session.create(name).await.map_err(proto) })
     }
 
-    fn append(&mut self, folder: &str, raw: &[u8]) -> MailResult<()> {
+    fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
+        let flags = (!flags.is_empty()).then(|| format!("({})", flags.join(" ")));
         let (rt, session) = self.parts()?;
-        rt.block_on(async { session.append(folder, None, None, raw).await.map_err(proto) })
+        rt.block_on(async {
+            session
+                .append(folder, flags.as_deref(), None, raw)
+                .await
+                .map_err(proto)
+        })
     }
 
     fn idle(&mut self, timeout: Duration, interrupt: &AtomicBool) -> MailResult<IdleOutcome> {

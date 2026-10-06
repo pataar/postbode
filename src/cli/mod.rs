@@ -589,14 +589,11 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
             let (_, folder, _) = Trash::parse_name(name).context("not a postbode trash file")?;
             let raw = std::fs::read(path)?;
             let mut ops = sync::connect(acc)?;
-            ops.append(&folder, &raw)?;
+            ops.append(&folder, &raw, &[postbode::rules::engine::RESTORED_KEYWORD])?;
             std::fs::remove_file(path)?;
             println!(
-                "restored to {}; run `postbode sync` to see it",
+                "restored to {}; rules leave restored mail alone. Run `postbode sync` to see it",
                 clean(&folder, false)
-            );
-            eprintln!(
-                "note: if a rule still matches this message it will be deleted again on the next sync; disable or fix that rule first"
             );
             Ok(())
         }
