@@ -21,6 +21,8 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - Platform coverage reported honestly: say "compiled on" vs "ran on"
 - Every new dependency has a one-line reason in `Cargo.toml`
 - Do not broaden a task into adjacent features
+- After changing CLI flags or rule types, run `POSTBODE_BLESS=1 cargo test` to regenerate `docs/src/cli.md` and `docs/src/rules.schema.json`, and commit them
+- Prose lives in `docs/src/`; `README.md` contains `docs/src/index.md` verbatim
 
 ## Privacy
 - Never read message bodies from a user's store, and never log bodies or secrets
