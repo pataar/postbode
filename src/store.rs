@@ -122,6 +122,8 @@ impl Store {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // The CLI writes (direct actions, body fetches) while `postbode run` may hold the write lock.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Store::migrations().to_latest(&mut conn)?;
         Ok(Store { conn })
     }

@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod config;
 pub mod credentials;
 pub mod mail_ops;

@@ -100,6 +100,13 @@ pub enum Action {
     Archive,
     Notify,
     Silent,
+    #[serde(skip)]
+    MarkUnread,
+    #[serde(skip)]
+    Unflag,
+    /// A user delete: to the Trash folder, or deleted with a backup when there is none or the message is already in it.
+    #[serde(skip)]
+    Trash,
     #[serde(rename = "move")]
     Move(String),
 }
@@ -113,6 +120,9 @@ impl Action {
             Action::Archive => "archive".into(),
             Action::Notify => "notify".into(),
             Action::Silent => "silent".into(),
+            Action::MarkUnread => "mark_unread".into(),
+            Action::Unflag => "unflag".into(),
+            Action::Trash => "trash".into(),
             Action::Move(folder) => format!("move:{folder}"),
         }
     }
@@ -486,6 +496,15 @@ actions = [{ move = "Shopping" }, "notify"]
                 ),
                 "{text}"
             );
+        }
+    }
+
+    #[test]
+    fn cli_only_actions_are_not_rule_actions() {
+        for action in ["mark_unread", "trash", "unflag"] {
+            let text =
+                format!("[[rules]]\nname = \"x\"\nmatch.seen = true\nactions = [\"{action}\"]\n");
+            assert!(parse(&text).is_err(), "{action}");
         }
     }
 }

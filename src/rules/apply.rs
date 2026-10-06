@@ -39,8 +39,8 @@ pub fn ensure_raw(
     Ok(raw)
 }
 
-/// A delete wins over everything else in the plan. Otherwise flag actions run first, then only the first move or archive.
-/// Returns how many actions ran; a flag the message already has is skipped without a log row.
+/// A delete or user delete wins over everything else in the plan. Otherwise flag actions run first, then only the first
+/// move or archive. Returns how many actions ran; a flag already in the wanted state is skipped without a log row.
 pub fn apply(
     plan: &Plan,
     msg: &Message,
@@ -52,25 +52,33 @@ pub fn apply(
     if let Some(planned) = plan
         .actions
         .iter()
-        .find(|planned| planned.action == Action::Delete)
+        .find(|planned| matches!(planned.action, Action::Delete | Action::Trash))
     {
-        delete(planned, msg, ops, store, trash, now)?;
+        match trash_target(planned, msg, store)? {
+            Some(folder) => {
+                store.log_action(&log_entry(planned, msg, now))?;
+                move_to(msg, &folder, ops, store)?;
+            }
+            None => delete(planned, msg, ops, store, trash, now)?,
+        }
         return Ok(1);
     }
     let first_move = first_move(plan, msg, store)?;
     let mut current = msg.clone();
     let mut executed = 0;
     for planned in &plan.actions {
-        let flag = match planned.action {
-            Action::MarkRead => "\\Seen",
-            Action::Flag => "\\Flagged",
+        let (flag, wanted) = match planned.action {
+            Action::Flag => ("\\Flagged", true),
+            Action::MarkRead => ("\\Seen", true),
+            Action::MarkUnread => ("\\Seen", false),
+            Action::Unflag => ("\\Flagged", false),
             _ => continue,
         };
-        if current.flags.split(' ').any(|f| f == flag) {
+        if has_flag(&current, flag) == wanted {
             continue;
         }
         store.log_action(&log_entry(planned, msg, now))?;
-        set_flag(&mut current, flag, ops, store)?;
+        set_flag(&mut current, flag, wanted, ops, store)?;
         executed += 1;
     }
     if let Some((planned, target)) = first_move {
@@ -135,27 +143,57 @@ fn delete(
     Ok(())
 }
 
-fn archive_folder(store: &Store) -> Result<String, ApplyError> {
-    store
-        .folders()?
-        .into_iter()
-        .find(|folder| folder.special_use.as_deref() == Some("Archive"))
-        .map(|folder| folder.name)
-        .ok_or(ApplyError::NoArchiveFolder)
+fn has_flag(msg: &Message, flag: &str) -> bool {
+    msg.flags.split(' ').any(|f| f == flag)
 }
 
 fn set_flag(
     current: &mut Message,
     flag: &str,
+    wanted: bool,
     ops: &mut dyn MailOps,
     store: &Store,
 ) -> Result<(), ApplyError> {
-    ops.add_flags(current.uid, &[flag])?;
-    let mut flags: Vec<&str> = current.flags.split(' ').filter(|f| !f.is_empty()).collect();
-    flags.push(flag);
+    if wanted {
+        ops.add_flags(current.uid, &[flag])?;
+    } else {
+        ops.remove_flags(current.uid, &[flag])?;
+    }
+    let mut flags: Vec<&str> = current
+        .flags
+        .split(' ')
+        .filter(|f| !f.is_empty() && *f != flag)
+        .collect();
+    if wanted {
+        flags.push(flag);
+    }
     current.flags = flags.join(" ");
     store.update_flags(&current.folder, current.uid, &current.flags)?;
     Ok(())
+}
+
+fn special_folder(store: &Store, role: &str) -> Result<Option<String>, StoreError> {
+    Ok(store
+        .folders()?
+        .into_iter()
+        .find(|folder| folder.special_use.as_deref() == Some(role))
+        .map(|folder| folder.name))
+}
+
+fn archive_folder(store: &Store) -> Result<String, ApplyError> {
+    special_folder(store, "Archive")?.ok_or(ApplyError::NoArchiveFolder)
+}
+
+/// Where a user delete moves the message: the Trash folder, unless there is none or the message already sits in it.
+fn trash_target(
+    planned: &PlannedAction,
+    msg: &Message,
+    store: &Store,
+) -> Result<Option<String>, ApplyError> {
+    if planned.action != Action::Trash {
+        return Ok(None);
+    }
+    Ok(special_folder(store, "Trash")?.filter(|folder| *folder != msg.folder))
 }
 
 /// When the server does not report the new uid, the local row is dropped and the next sync of the target folder re-adds it.
@@ -538,5 +576,109 @@ mod tests {
         let m = store.message("INBOX", 5).unwrap().unwrap();
         assert_eq!(m.flags, "\\Flagged \\Seen");
         assert_eq!(store.log(10).unwrap().len(), 2);
+    }
+
+    fn with_trash_folder(ops: RecordingOps, store: &Store) -> RecordingOps {
+        store
+            .upsert_folder(&Folder {
+                name: "Trash".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: Some("Trash".into()),
+            })
+            .unwrap();
+        ops.with_folder("Trash", Some("Trash"))
+    }
+
+    #[test]
+    fn mark_unread_and_unflag_remove_flags_once() {
+        let (mut ops, store, trash, _dir, mut msg) = setup();
+        ops.add_flags(5, &["\\Seen", "\\Flagged"]).unwrap();
+        store.update_flags("INBOX", 5, "\\Seen \\Flagged").unwrap();
+        msg.flags = "\\Seen \\Flagged".into();
+        let unset = plan(vec![Action::MarkUnread, Action::Unflag]);
+        assert_eq!(
+            apply(&unset, &msg, &mut ops, &store, &trash, 500).unwrap(),
+            2
+        );
+        assert!(ops.mail["INBOX"][0].flags.is_empty());
+        let stored = store.message("INBOX", 5).unwrap().unwrap();
+        assert_eq!(stored.flags, "");
+        assert_eq!(
+            apply(&unset, &stored, &mut ops, &store, &trash, 500).unwrap(),
+            0
+        );
+        let actions: Vec<String> = store
+            .log(10)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.action)
+            .collect();
+        assert_eq!(actions, ["unflag", "mark_unread"]);
+    }
+
+    #[test]
+    fn user_delete_moves_to_the_trash_folder() {
+        let (ops, store, trash, _dir, msg) = setup();
+        let mut ops = with_trash_folder(ops, &store);
+        assert_eq!(
+            apply(
+                &plan(vec![Action::Trash]),
+                &msg,
+                &mut ops,
+                &store,
+                &trash,
+                500
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(ops.mail["Trash"].len(), 1);
+        assert!(ops.mail["INBOX"].is_empty());
+        assert!(!ops.calls.iter().any(|c| c.starts_with("expunge")));
+        assert!(trash.list().unwrap().is_empty());
+        assert_eq!(store.log(10).unwrap()[0].action, "trash");
+    }
+
+    #[test]
+    fn user_delete_without_trash_folder_expunges_with_backup() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        apply(
+            &plan(vec![Action::Trash]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(ops.mail["INBOX"].is_empty());
+        assert_eq!(trash.list().unwrap().len(), 1);
+        assert!(store.log(10).unwrap()[0].trash_file.is_some());
+    }
+
+    #[test]
+    fn user_delete_inside_the_trash_folder_expunges_with_backup() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        store
+            .upsert_folder(&Folder {
+                name: "INBOX".into(),
+                uidvalidity: 1,
+                last_uid: 5,
+                special_use: Some("Trash".into()),
+            })
+            .unwrap();
+        apply(
+            &plan(vec![Action::Trash]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(!ops.calls.iter().any(|c| c.starts_with("move")));
+        assert!(ops.mail["INBOX"].is_empty());
+        assert_eq!(trash.list().unwrap().len(), 1);
     }
 }

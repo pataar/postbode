@@ -3,6 +3,7 @@
 Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it before changing behaviour.
 
 ## Module map
+- `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
 - `paths` platform dirs, atomic writes
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
