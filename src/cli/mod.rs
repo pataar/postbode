@@ -176,7 +176,7 @@ pub fn run() -> Result<()> {
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = open_store(&paths, &acc.name)?;
                 for f in store.folders()? {
-                    let total = store.messages_in_folder(&f.name)?.len();
+                    let total = store.message_count(&f.name)?;
                     let unread = store.unread_count(&f.name)?;
                     if json {
                         println!(

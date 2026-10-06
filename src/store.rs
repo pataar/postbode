@@ -333,6 +333,14 @@ impl Store {
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
+    pub fn message_count(&self, folder: &str) -> Result<u32, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE folder = ?1",
+            params![folder],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn unread_count(&self, folder: &str) -> Result<u32, StoreError> {
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM messages WHERE folder = ?1 AND instr(flags, '\\Seen') = 0",
@@ -579,11 +587,13 @@ mod tests {
     }
 
     #[test]
-    fn unread_count_counts_unseen() {
+    fn unread_and_message_counts() {
         let s = store_with_inbox();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
         s.insert_message(&msg("INBOX", 2, 20)).unwrap();
         s.update_flags("INBOX", 2, "\\Seen").unwrap();
         assert_eq!(s.unread_count("INBOX").unwrap(), 1);
+        assert_eq!(s.message_count("INBOX").unwrap(), 2);
+        assert_eq!(s.message_count("Other").unwrap(), 0);
     }
 }
