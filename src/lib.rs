@@ -5,3 +5,4 @@ pub mod message;
 pub mod paths;
 pub mod rules;
 pub mod store;
+pub mod trash;
