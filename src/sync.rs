@@ -319,7 +319,6 @@ pub fn run_rules(
                         continue;
                     }
                 }
-                ops.select(&folder)?;
             }
             if new_ref.is_some_and(|n| !n.initial)
                 && plan.notify
@@ -1059,6 +1058,42 @@ mod tests {
             matches!(&run.events[0], Event::Error { message, .. } if message.contains("Gone")),
             "{:?}",
             run.events
+        );
+    }
+
+    #[test]
+    fn rules_run_selects_each_folder_once() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let rules = rules_from(
+            "[[rules]]\nname = \"all\"\nmatch.seen = false\nactions = [\"flag\"]\n",
+            &store,
+            0,
+        );
+        let new = sync_all(&mut ops, &store).unwrap().0;
+        ops.calls.clear();
+        let run = run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
+        assert_eq!(run.actions, 2);
+        assert_eq!(
+            ops.calls.iter().filter(|c| c.starts_with("select")).count(),
+            1,
+            "{:?}",
+            ops.calls
         );
     }
 
