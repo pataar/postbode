@@ -49,7 +49,7 @@ pub(crate) const LATTE: Palette = Palette {
     highlight: hex(0xfe640b),
     hover: hex(0xccd0da),
     muted: hex(0x8c8fa1),
-    on_accent: hex(0xeff1f5),
+    on_accent: hex(0x11111b),
     panel: hex(0xe6e9ef),
     secondary: hex(0x6c6f85),
     success: hex(0x40a02b),
@@ -111,6 +111,16 @@ pub(crate) fn palette(ui: &egui::Ui) -> &'static Palette {
     }
 }
 
+/// Runs `add` with the focus ring of a text field in the accent: egui draws it with `selection.stroke`, which stays
+/// `on_accent` for the text of selected rows.
+pub(crate) fn text_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope(|ui| {
+        ui.visuals_mut().selection.stroke = Stroke::new(1.0, palette(ui).accent);
+        add(ui)
+    })
+    .inner
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui::{self, Color32};
@@ -124,6 +134,7 @@ mod tests {
         assert_eq!(MOCHA.background, Color32::from_rgb(0x1e, 0x1e, 0x2e));
         assert_eq!(MOCHA.highlight, Color32::from_rgb(0xfa, 0xb3, 0x87));
         assert_eq!(LATTE.accent, Color32::from_rgb(0x17, 0x92, 0x99));
+        assert_eq!(LATTE.on_accent, Color32::from_rgb(0x11, 0x11, 0x1b));
         assert_eq!(LATTE.text, Color32::from_rgb(0x4c, 0x4f, 0x69));
     }
 
@@ -149,5 +160,18 @@ mod tests {
             (dark.window_shadow, dark.popup_shadow),
             (egui::Shadow::NONE, egui::Shadow::NONE)
         );
+    }
+
+    #[test]
+    fn text_fields_get_an_accent_focus_ring_without_changing_selection_text() {
+        for (dark, palette) in [(true, &MOCHA), (false, &LATTE)] {
+            let mut harness = egui_kittest::Harness::new_ui(move |ui| {
+                *ui.visuals_mut() = palette.visuals(dark);
+                let inside = text_field(ui, |ui| ui.visuals().selection.stroke.color);
+                assert_eq!(inside, palette.accent);
+                assert_eq!(ui.visuals().selection.stroke.color, palette.on_accent);
+            });
+            harness.run();
+        }
     }
 }

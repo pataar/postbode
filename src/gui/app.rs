@@ -1099,13 +1099,13 @@ impl App {
     }
 }
 
-/// A printable shortcut, matched on the typed text so it follows the keyboard layout.
 /// The central panel on the base colour; side panels and the status bar keep the darker panel colour.
 pub(crate) fn central_panel(ui: &egui::Ui) -> egui::CentralPanel {
     egui::CentralPanel::default()
         .frame(egui::Frame::central_panel(ui.style()).fill(ui.visuals().window_fill))
 }
 
+/// A printable shortcut, matched on the typed text so it follows the keyboard layout.
 pub(crate) fn typed(input: &egui::InputState, text: &str) -> bool {
     input
         .events

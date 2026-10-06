@@ -286,11 +286,13 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let now = Local::now();
     if let Some(query) = &app.search {
         let mut text = query.clone();
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut text)
-                .hint_text("Search this account")
-                .desired_width(f32::INFINITY),
-        );
+        let response = theme::text_field(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut text)
+                    .hint_text("Search this account")
+                    .desired_width(f32::INFINITY),
+            )
+        });
         if app.focus_search {
             response.request_focus();
             actions.push(UiAction::SearchFocused);
@@ -357,7 +359,9 @@ pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> 
         .resizable(false)
         .show(ctx, |ui| {
             let mut text = filter.clone();
-            let response = ui.add(egui::TextEdit::singleline(&mut text).hint_text("Folder"));
+            let response = theme::text_field(ui, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut text).hint_text("Folder"))
+            });
             response.request_focus();
             if response.changed() {
                 actions.push(UiAction::MoveFilter(text));
