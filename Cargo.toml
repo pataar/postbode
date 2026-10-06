@@ -8,7 +8,7 @@ description = "A fast, simple mail client with automatic mailbox rules"
 documentation = "https://postbode.pataar.nl/"
 repository = "https://github.com/pataar/postbode"
 homepage = "https://postbode.pataar.nl/"
-keywords = ["cli", "email", "imap", "mail", "rules"]
+keywords = ["automation", "email", "email-client", "imap", "mail-filter"]
 categories = ["command-line-utilities", "email"]
 # Only what the build needs; keeps the test CA key, design docs and CI config out of the published crate.
 include = ["/CHANGELOG.md", "/Cargo.lock", "/LICENSE-*", "/README.md", "/docs/src/agent-guide.md", "/migrations/**", "/src/**"]
@@ -55,6 +55,9 @@ zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypt
 [dev-dependencies]
 clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
 tempfile = "3"                                       # temp dirs for store and paths tests
+
+[lints.rust]
+unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way
 
 [features]
 testing = []                                         # exposes RecordingOps to integration tests
