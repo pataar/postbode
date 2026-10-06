@@ -1,6 +1,7 @@
 //! The mail window: folders, threads and the message body over the local store, with the account threads running in
 //! this process.
 mod app;
+mod body;
 mod folders;
 mod list;
 mod status;

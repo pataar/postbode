@@ -87,6 +87,8 @@ impl Fixture {
         let (events, received) = mpsc::channel();
         let mut app = App::new(&config, self.paths.clone(), engine, received);
         app.notifier = |_, _| {};
+        app.downloads = self.paths.cache_dir.join("downloads");
+        std::fs::create_dir_all(&app.downloads).unwrap();
         let harness = Harness::builder()
             .with_size(egui::vec2(1280.0, 800.0))
             .with_step_dt(0.01)

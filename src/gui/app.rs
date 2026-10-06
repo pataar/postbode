@@ -1,5 +1,6 @@
 //! App state, the frame loop, and the only code that changes state: `handle` for events, `apply` for UI actions.
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
@@ -7,18 +8,33 @@ use eframe::egui;
 
 use crate::config::{self, Config, Theme};
 use crate::engine::{Engine, StartState};
-use crate::message::clean;
+use crate::message::{self, Attachment, clean};
 use crate::paths::Paths;
 use crate::rules::Action;
-use crate::store::{Store, StoreError};
+use crate::store::{Message, Store, StoreError};
 use crate::sync::{self, Activity, Command, Event};
 
+use super::body;
 use super::folders;
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
 use super::status;
 
 /// Lines kept for the history window.
 const HISTORY: usize = 50;
+
+/// How long a message stays on screen before it is marked read.
+const READ_DELAY: f64 = 1.0;
+
+pub(crate) struct BodyState {
+    pub account: usize,
+    pub attachments: Vec<Attachment>,
+    pub key: RowKey,
+    pub message: Option<Message>,
+    /// Set once mark-read was sent, or the user marked read or unread by hand, so the delay does not act again.
+    pub read_sent: bool,
+    pub saved: Option<String>,
+    pub shown_at: f64,
+}
 
 pub(crate) struct HistoryLine {
     pub at: i64,
@@ -100,6 +116,7 @@ pub(crate) enum UiAction {
     MoveTo(String),
     NextFocus,
     OpenMovePicker,
+    SaveAttachment(usize),
     SelectRow(usize),
     SelectView(View),
     SetTheme(egui::ThemePreference),
@@ -120,6 +137,8 @@ pub(crate) enum Focus {
 
 pub struct App {
     pub(crate) accounts: Vec<Account>,
+    pub(crate) body: Option<BodyState>,
+    pub(crate) downloads: PathBuf,
     pub(crate) engine: Option<Engine>,
     pub(crate) error: Option<String>,
     pub(crate) events: Receiver<Event>,
@@ -130,6 +149,7 @@ pub struct App {
     pub(crate) move_picker: Option<String>,
     pub(crate) notifier: fn(&str, &str),
     pub(crate) paths: Paths,
+    pub(crate) requested: HashSet<(usize, RowKey)>,
     pub(crate) theme: egui::ThemePreference,
     pub(crate) theme_applied: bool,
     pub(crate) view: View,
@@ -161,6 +181,8 @@ impl App {
             .collect();
         let mut app = App {
             accounts,
+            body: None,
+            downloads: downloads_dir(),
             engine: Some(engine),
             error: None,
             events,
@@ -171,6 +193,7 @@ impl App {
             move_picker: None,
             notifier: crate::notify::new_mail,
             paths,
+            requested: HashSet::new(),
             theme: preference(config.ui.theme),
             theme_applied: false,
             view: View::Folder {
@@ -207,6 +230,9 @@ impl App {
                 }
             });
         }
+        let now = ui.input(|input| input.time);
+        self.sync_body(now);
+        self.mark_read_after_delay(now, &ctx);
         let mut actions = Vec::new();
         egui::Panel::bottom("status").show(ui, |ui| actions.extend(status::show(self, ui)));
         egui::Panel::left("folders")
@@ -219,7 +245,11 @@ impl App {
                 .default_size(480.0)
                 .show(ui, |ui| actions.extend(list::show(self, ui)));
         }
-        egui::CentralPanel::default().show(ui, |_ui| {});
+        if let View::Folder { .. } = self.view {
+            egui::CentralPanel::default().show(ui, |ui| actions.extend(body::show(self, ui)));
+        } else {
+            egui::CentralPanel::default().show(ui, |_ui| {});
+        }
         actions.extend(list::show_move_picker(self, &ctx));
         for action in actions {
             self.apply(&ctx, action);
@@ -295,7 +325,16 @@ impl App {
                 }
                 self.refresh(index);
             }
-            Event::BodyReady { .. } | Event::Restored { .. } => {}
+            Event::BodyReady { folder, uid, .. } => {
+                if self
+                    .body
+                    .as_ref()
+                    .is_some_and(|b| b.account == index && b.key == (folder.clone(), uid))
+                {
+                    self.body = None;
+                }
+            }
+            Event::Restored { .. } => {}
         }
     }
 
@@ -312,6 +351,8 @@ impl App {
         let message = clean(&message, false);
         let line = match account {
             Some(index) => {
+                // A body fetch that failed is retried the next time its message is shown.
+                self.requested.retain(|(account, _)| *account != index);
                 self.accounts[index].error = Some(message.clone());
                 format!("{}: {message}", self.accounts[index].name)
             }
@@ -378,6 +419,7 @@ impl App {
                     self.move_picker = Some(String::new());
                 }
             }
+            UiAction::SaveAttachment(index) => self.save_attachment(index),
             UiAction::SelectRow(index) => {
                 self.list.cursor = index;
                 self.focus = Focus::List;
@@ -556,6 +598,104 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// Loads the cursor's message when the cursor moved to another one.
+    fn sync_body(&mut self, now: f64) {
+        let current = self
+            .view_account()
+            .zip(self.list.rows.get(self.list.cursor).map(Row::key));
+        if current == self.body.as_ref().map(|b| (b.account, b.key.clone())) {
+            return;
+        }
+        self.body = current.map(|(account, key)| self.load_body(account, key, now));
+    }
+
+    /// The stored message and its attachments; asks the sync thread for a missing body once per message.
+    fn load_body(&mut self, account: usize, key: RowKey, now: f64) -> BodyState {
+        let (stored, attachments) = match &self.accounts[account].store {
+            Ok(store) => (
+                store.message(&key.0, key.1).ok().flatten(),
+                store
+                    .raw(&key.0, key.1)
+                    .ok()
+                    .flatten()
+                    .map(|raw| message::attachments(&raw))
+                    .unwrap_or_default(),
+            ),
+            Err(_) => (None, Vec::new()),
+        };
+        let missing = stored.as_ref().is_some_and(|m| m.body_text.is_none());
+        if missing
+            && self.accounts[account].state == StartState::Running
+            && self.requested.insert((account, key.clone()))
+        {
+            self.send(
+                account,
+                Command::FetchBody {
+                    folder: key.0.clone(),
+                    uid: key.1,
+                },
+            );
+        }
+        BodyState {
+            account,
+            attachments,
+            key,
+            message: stored,
+            read_sent: false,
+            saved: None,
+            shown_at: now,
+        }
+    }
+
+    /// Marks the shown message read once it has been on screen for `READ_DELAY`.
+    fn mark_read_after_delay(&mut self, now: f64, ctx: &egui::Context) {
+        let Some(body) = &self.body else { return };
+        let account = &self.accounts[body.account];
+        let last_edit = account.pending.get(&body.key).and_then(|edits| {
+            edits.iter().rev().find_map(|edit| match edit {
+                Optimistic::Seen(seen) => Some(*seen),
+                _ => None,
+            })
+        });
+        let seen = last_edit.unwrap_or_else(|| body.message.as_ref().is_none_or(Message::is_seen));
+        if seen || body.read_sent || account.state != StartState::Running {
+            return;
+        }
+        let waited = now - body.shown_at;
+        if waited < READ_DELAY {
+            ctx.request_repaint_after(Duration::from_secs_f64(READ_DELAY - waited));
+            return;
+        }
+        let (index, (folder, uid)) = (body.account, body.key.clone());
+        if let Some(body) = &mut self.body {
+            body.read_sent = true;
+        }
+        self.send_apply(
+            index,
+            folder,
+            vec![uid],
+            Action::MarkRead,
+            Optimistic::Seen(true),
+        );
+        self.rebuild_rows();
+    }
+
+    fn save_attachment(&mut self, index: usize) {
+        let Some(body) = &self.body else { return };
+        let raw = match &self.accounts[body.account].store {
+            Ok(store) => store.raw(&body.key.0, body.key.1).ok().flatten(),
+            Err(_) => None,
+        };
+        let saved = match raw.map(|raw| message::save_attachment(&raw, index, &self.downloads)) {
+            Some(Ok(path)) => format!("Saved to {}", path.display()),
+            Some(Err(e)) => format!("Could not save: {e}"),
+            None => "Could not save: the message is not downloaded".into(),
+        };
+        if let Some(body) = &mut self.body {
+            body.saved = Some(saved);
+        }
+    }
+
     /// Rows from the cached threads, without a store query; keeps the cursor in range.
     pub(crate) fn rebuild_rows(&mut self) {
         let View::Folder { account, folder } = &self.view else {
@@ -578,6 +718,11 @@ impl App {
         let targets = self.targets(account);
         if targets.is_empty() || !self.ensure_can_act(account) {
             return;
+        }
+        if matches!(action, Action::MarkRead | Action::MarkUnread)
+            && let Some(body) = &mut self.body
+        {
+            body.read_sent = true;
         }
         for (folder, uids) in targets {
             self.send_apply(account, folder, uids, action.clone(), optimistic);
@@ -755,6 +900,13 @@ pub(crate) fn typed(input: &egui::InputState, text: &str) -> bool {
         .events
         .iter()
         .any(|event| matches!(event, egui::Event::Text(t) if t == text))
+}
+
+/// Where Save puts attachments: the Downloads folder, else home.
+fn downloads_dir() -> PathBuf {
+    directories::UserDirs::new()
+        .map(|dirs| dirs.download_dir().unwrap_or(dirs.home_dir()).to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn step(index: usize, delta: isize, len: usize) -> usize {
