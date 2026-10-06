@@ -58,4 +58,4 @@ postbode archive 41 --dry-run
 postbode delete 41 --dry-run
 ```
 
-`--dry-run` reads only the local store, so run `postbode sync` first for an up-to-date preview. It does not detect a missing Archive folder or a changed folder. Run the command again without `--dry-run` only after the human agreed. `delete` moves mail to the server's Trash folder. Inside Trash, or when there is no Trash folder, it deletes the mail and keeps a local `.eml` copy for 30 days. Every action is recorded in `postbode log` under the rule name `cli`.
+`--dry-run` reads only the local store, so run `postbode sync` first for an up-to-date preview. It does not detect a missing Archive folder or a changed folder. Run the command again without `--dry-run` only after the human agreed. `delete` moves mail to the server's Trash folder. Inside Trash, or when there is no Trash folder, it deletes the mail and keeps a local `.eml` copy for the account's `trash_retention_days` (30 by default). Every action is recorded in `postbode log` under the rule name `cli`.

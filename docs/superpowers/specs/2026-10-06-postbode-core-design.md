@@ -125,7 +125,7 @@ Files are written as tmp then rename. `rules.toml` is only written by `postbode 
 
 ## 6. Data model
 
-One SQLite file per account at `state/accounts/<name>/mail.db`, WAL mode, `synchronous=NORMAL`. The account's sync thread is the only writer, so account threads never contend. Other readers (CLI, later GUI) open read-only. Cross-account views (`list` without `--account`, later a unified inbox and global search) iterate accounts or `ATTACH` the files with `UNION ALL`. Removing an account is removing its directory.
+One SQLite file per account at `state/accounts/<name>/mail.db`, WAL mode, `synchronous=NORMAL`. The account's sync thread is the main writer. The CLI also writes, for direct actions (mark, move, archive, delete), body fetches and `rules approve`. A writer that finds the database busy waits for it, up to 5 seconds, instead of failing. Cross-account views (`list` without `--account`, later a unified inbox and global search) iterate accounts or `ATTACH` the files with `UNION ALL`. Removing an account is removing its directory.
 
 ```sql
 CREATE TABLE folders (
@@ -192,7 +192,7 @@ Special-use folders come from `LIST (SPECIAL-USE)` or the folder attributes in a
 
 `rules_seen` records when a rule name was first loaded by this account. A rule only acts on messages whose `internaldate` is at or after its `first_seen_at`, so adding a rule never mass-deletes history. Renaming a rule resets this. `rules apply-existing` is the explicit opt-in to older mail.
 
-Disabled rules have no entry: a rule's clock starts the first time it is loaded enabled, so a proposal approved a week later does not act on that week's mail, and disabling then enabling a rule restarts it.
+Disabled rules have no entry: a rule's clock starts the first time it is loaded enabled, or at approval time when `rules approve` enables it, so a proposal approved a week later does not act on that week's mail, and disabling then enabling a rule restarts it.
 
 ## 7. Sync
 
