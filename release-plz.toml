@@ -2,3 +2,5 @@
 # dist creates the GitHub release from the tag release-plz pushes.
 git_release_enable = false
 git_tag_name = "v{{ version }}"
+# .coderabbit.yaml skips auto-review on this label.
+pr_labels = ["release"]

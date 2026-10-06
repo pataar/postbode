@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+reviews:
+  auto_review:
+    # release-plz labels its PRs "release" (release-plz.toml); only triagers can add labels.
+    labels:
+      - "!release"
+  path_filters:
+    - "!.github/workflows/release.yml"  # dist generate
+    - "!CHANGELOG.md"                   # release-plz
+    - "!Cargo.lock"
+    - "!docs/src/cli.md"                # POSTBODE_BLESS=1 cargo test
+    - "!docs/src/rules.schema.json"     # POSTBODE_BLESS=1 cargo test
+  path_instructions:
+    - path: "Cargo.toml"
+      instructions: "Every dependency needs a one-line trailing comment giving the reason for it."
+    - path: "migrations/**"
+      instructions: >-
+        Migrations are applied once per store via SQLite user_version, so editing an existing migration
+        never reaches existing users. Flag any change to an existing migration; changes belong in a new
+        numbered migration.
+    - path: "src/**"
+      instructions: >-
+        Never log or print message bodies, passwords or tokens. Secrets must stay in the Secret type,
+        which has no Debug impl.
