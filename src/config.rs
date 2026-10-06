@@ -22,6 +22,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccountConfig {
     pub name: String,
     pub host: String,
@@ -219,6 +220,15 @@ notify = false
         assert!(matches!(Config::parse(&dup), Err(ConfigError::Invalid(_))));
         let bad = SAMPLE.replace("name = \"home\"", "name = \"ho/me\"");
         assert!(matches!(Config::parse(&bad), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_unknown_account_keys() {
+        let typo = SAMPLE.replace("aliases = ", "alias = ");
+        assert!(
+            matches!(Config::parse(&typo), Err(ConfigError::Parse(e)) if e.contains("alias")),
+            "a misspelled key must not be ignored"
+        );
     }
 
     #[test]
