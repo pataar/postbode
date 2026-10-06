@@ -31,7 +31,8 @@ pub(crate) struct Account {
     pub folders: Vec<FolderRow>,
     pub name: String,
     pub notify: bool,
-    pub pending: HashMap<RowKey, Optimistic>,
+    /// Edits of sent commands per row, oldest first; each `ActionDone` removes the oldest of its uids.
+    pub pending: HashMap<RowKey, Vec<Optimistic>>,
     pub queued: usize,
     pub state: StartState,
     pub store: Result<Store, String>,
@@ -272,7 +273,13 @@ impl App {
                 let account = &mut self.accounts[index];
                 account.queued = account.queued.saturating_sub(1);
                 for (uid, _) in &results {
-                    account.pending.remove(&(folder.clone(), *uid));
+                    let key = (folder.clone(), *uid);
+                    if let Some(edits) = account.pending.get_mut(&key) {
+                        edits.remove(0);
+                        if edits.is_empty() {
+                            account.pending.remove(&key);
+                        }
+                    }
                 }
                 let failed: Vec<&String> = results
                     .iter()
@@ -493,6 +500,7 @@ impl App {
 
     pub(crate) fn select_view(&mut self, view: View) {
         self.view = view;
+        self.move_picker = None;
         self.list = ListState::default();
         self.reload_view();
     }
@@ -598,9 +606,9 @@ impl App {
         ) {
             let state = &mut self.accounts[account];
             state.queued += 1;
-            state
-                .pending
-                .extend(keys.into_iter().map(|key| (key, optimistic)));
+            for key in keys {
+                state.pending.entry(key).or_default().push(optimistic);
+            }
         } else {
             self.note_error(
                 Some(account),
@@ -617,13 +625,16 @@ impl App {
 
     /// False, with the reason on the status line, when another process owns the account's connection.
     pub(crate) fn ensure_can_act(&mut self, account: usize) -> bool {
-        if self.accounts[account].state == StartState::Running {
-            return true;
-        }
-        self.note_error(
-            Some(account),
-            "another Postbode process syncs this account; actions are off here".into(),
-        );
+        let reason = match &self.accounts[account].state {
+            StartState::Running => return true,
+            StartState::Failed(reason) => {
+                format!("could not start: {reason}; actions are off here")
+            }
+            StartState::Locked { .. } => {
+                "another Postbode process syncs this account; actions are off here".into()
+            }
+        };
+        self.note_error(Some(account), reason);
         false
     }
 
@@ -976,6 +987,57 @@ mod tests {
         assert!(wires.sent().is_empty());
         assert_eq!(uids(&harness), [1]);
         assert!(harness.query_by_label_contains("actions are off").is_some());
+    }
+
+    #[test]
+    fn a_second_edit_on_a_row_stacks_and_the_first_done_keeps_it() {
+        let fx = Fixture::new(&["work"]);
+        let mut unread = message("INBOX", 1, "hello");
+        unread.flags = String::new();
+        fx.add("work", unread);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "u");
+        press(&mut harness, "s");
+        let row = &harness.state().list.rows[0];
+        assert!(!row.unread && row.flagged);
+        wires
+            .events
+            .send(Event::ActionDone {
+                account: "work".into(),
+                folder: "INBOX".into(),
+                results: vec![(1, Ok(1))],
+            })
+            .unwrap();
+        harness.run();
+        assert!(harness.state().list.rows[0].flagged);
+        assert_eq!(harness.state().accounts[0].queued, 1);
+    }
+
+    #[test]
+    fn a_failed_account_says_why_actions_are_off() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().accounts[0].state = StartState::Failed("no keyring".into());
+        press(&mut harness, "e");
+        assert!(wires.sent().is_empty());
+        assert!(
+            harness
+                .query_by_label_contains("could not start: no keyring; actions are off here")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn switching_views_closes_the_move_picker() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        inbox(&fx, &[1]);
+        let (mut harness, _wires) = fx.harness();
+        press(&mut harness, "m");
+        assert!(harness.state().move_picker.is_some());
+        harness.state_mut().select_view(View::Rules);
+        assert!(harness.state().move_picker.is_none());
     }
 
     #[test]

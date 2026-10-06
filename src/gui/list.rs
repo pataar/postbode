@@ -111,14 +111,20 @@ impl Optimistic {
     }
 }
 
-/// Rows of sent actions as they will be: moved rows hidden, read and flag changes shown.
-pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &HashMap<RowKey, Optimistic>) {
-    rows.retain(|row| pending.get(&row.key()) != Some(&Optimistic::Hidden));
+/// Rows of sent actions as they will be: moved rows hidden, read and flag changes shown, a later edit over an earlier.
+pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &HashMap<RowKey, Vec<Optimistic>>) {
+    rows.retain(|row| {
+        !pending
+            .get(&row.key())
+            .is_some_and(|edits| edits.contains(&Optimistic::Hidden))
+    });
     for row in rows {
-        match pending.get(&row.key()) {
-            Some(Optimistic::Flagged(flagged)) => row.flagged = *flagged,
-            Some(Optimistic::Seen(seen)) => row.unread = !seen,
-            Some(Optimistic::Hidden) | None => {}
+        for edit in pending.get(&row.key()).into_iter().flatten() {
+            match edit {
+                Optimistic::Flagged(flagged) => row.flagged = *flagged,
+                Optimistic::Seen(seen) => row.unread = !seen,
+                Optimistic::Hidden => {}
+            }
         }
     }
 }
@@ -558,9 +564,16 @@ mod tests {
         let threads = vec![thread("a", 1), thread("b", 2), thread("c", 3)];
         let mut rows = build_rows("INBOX", &threads, &HashMap::new());
         let pending = HashMap::from([
-            (("INBOX".to_string(), 1), Optimistic::Hidden),
-            (("INBOX".to_string(), 2), Optimistic::Seen(true)),
-            (("INBOX".to_string(), 3), Optimistic::Flagged(true)),
+            (("INBOX".to_string(), 1), vec![Optimistic::Hidden]),
+            (("INBOX".to_string(), 2), vec![Optimistic::Seen(true)]),
+            (
+                ("INBOX".to_string(), 3),
+                vec![
+                    Optimistic::Flagged(true),
+                    Optimistic::Flagged(false),
+                    Optimistic::Flagged(true),
+                ],
+            ),
         ]);
         apply_pending(&mut rows, &pending);
         let shape: Vec<(u32, bool, bool)> =
