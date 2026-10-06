@@ -552,21 +552,11 @@ pub fn run_rules_with(
         }
     }
     if mode == Mode::Normal {
-        mark_seen_without_rules(store, &folders)?;
+        // Folders no rule looks at count as seen up to their last uid, so a rule added for one later finds no old
+        // mail fresh.
+        store.mark_rules_seen_except(&folders)?;
     }
     Ok(run)
-}
-
-/// Folders no rule looks at count as seen up to their last uid, so a rule added for one later finds no old mail fresh.
-fn mark_seen_without_rules(store: &Store, rule_folders: &[String]) -> Result<(), StoreError> {
-    for folder in store.folders()? {
-        if !rule_folders.contains(&folder.name)
-            && folder.last_uid > store.rules_uid(&folder.name)?
-        {
-            store.set_rules_uid(&folder.name, folder.last_uid)?;
-        }
-    }
-    Ok(())
 }
 
 fn account_error(account: &AccountConfig, message: String) -> Event {
@@ -748,7 +738,6 @@ struct AccountSync<'a> {
     identity: Identity,
     rules_path: PathBuf,
     rules: Vec<CompiledRule>,
-    pending_full: bool,
 }
 
 impl<'a> AccountSync<'a> {
@@ -764,12 +753,11 @@ impl<'a> AccountSync<'a> {
             store,
             rules_path,
             rules,
-            pending_full: false,
         })
     }
 
     /// Syncs every folder (`full`) or only INBOX, reloads the rules, runs them and sends the events. Queued
-    /// commands run at the pass's checkpoints.
+    /// commands run at the pass's checkpoints; true when one of them wants a full pass next.
     fn pass(
         &mut self,
         ops: &mut dyn MailOps,
@@ -777,7 +765,7 @@ impl<'a> AccountSync<'a> {
         events: &Sender<Event>,
         commands: &Receiver<Command>,
         shutdown: &AtomicBool,
-    ) -> Result<(), SyncError> {
+    ) -> Result<bool, SyncError> {
         let (account, store, trash) = (self.account, &self.store, &self.trash);
         let activity = |activity| Event::Activity {
             account: account.name.clone(),
@@ -817,7 +805,6 @@ impl<'a> AccountSync<'a> {
         for message in sync_errors {
             let _ = events.send(account_error(account, message));
         }
-        self.pending_full |= pending_full;
         let previous = std::mem::take(&mut self.rules);
         self.rules = reload_rules(&self.store, &self.rules_path, now(), previous);
         let run = run_rules_with(
@@ -841,7 +828,7 @@ impl<'a> AccountSync<'a> {
             new_messages: new.len(),
             actions: run.actions,
         });
-        Ok(())
+        Ok(pending_full)
     }
 }
 
@@ -858,7 +845,8 @@ pub fn run_once(
         events,
         &no_commands,
         &AtomicBool::new(false),
-    )
+    )?;
+    Ok(())
 }
 
 pub fn run_loop(
@@ -964,10 +952,11 @@ fn run_session(
     let mut last_purge = 0i64;
     let mut full = true;
     let mut pass = true;
+    let mut pending_full = false;
 
     while !shutdown.load(Ordering::Acquire) {
         if pass {
-            state.pass(ops.as_mut(), full, events, commands, shutdown)?;
+            pending_full = state.pass(ops.as_mut(), full, events, commands, shutdown)?;
             if now() - last_purge > 3600 {
                 match state
                     .trash
@@ -988,7 +977,7 @@ fn run_session(
             commands,
             events,
         )?;
-        if drained.wants_full_pass || std::mem::take(&mut state.pending_full) {
+        if drained.wants_full_pass || std::mem::take(&mut pending_full) {
             (full, pass) = (true, true);
             continue;
         }

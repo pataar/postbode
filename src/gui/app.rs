@@ -558,7 +558,7 @@ impl App {
             }
             UiAction::SyncNow => self.sync_all(),
             UiAction::ToggleFlag => {
-                if let Some(flagged) = self.first_target().map(|row| row.flagged) {
+                if let Some(flagged) = self.selected_rows().first().map(|row| row.flagged) {
                     self.act(if flagged {
                         Action::Unflag
                     } else {
@@ -579,7 +579,7 @@ impl App {
                 }
             }
             UiAction::ToggleRead => {
-                if let Some(unread) = self.first_target().map(|row| row.unread) {
+                if let Some(unread) = self.selected_rows().first().map(|row| row.unread) {
                     self.act(if unread {
                         Action::MarkRead
                     } else {
@@ -695,19 +695,12 @@ impl App {
     /// Loads the shown view's rows from the store. Runs on view changes and when events mark the view dirty, never
     /// per frame: `thread_summaries` scans the folder.
     pub(crate) fn reload_view(&mut self) {
-        match &self.view {
-            View::Activity => {
-                self.activity_log = rules::activity_log(&self.accounts);
-                return;
-            }
-            View::Trash => {
-                self.trash = rules::trash_rows(&self.accounts, &self.paths);
-                return;
-            }
-            View::Rules => return,
-            View::Folder { .. } => {}
-        }
         let View::Folder { account, folder } = &self.view else {
+            match self.view {
+                View::Activity => self.activity_log = rules::activity_log(&self.accounts),
+                View::Trash => self.trash = rules::trash_rows(&self.accounts, &self.paths),
+                _ => {}
+            }
             return;
         };
         let (account, folder) = (*account, folder.clone());
@@ -853,9 +846,8 @@ impl App {
         if !body.armed {
             return;
         }
-        // The delay counts from the first frame that shows the text, not from "Loading…".
+        // The delay counts from when the text appears (`reload_body`), not from "Loading…".
         if body.message.as_ref().is_some_and(|m| m.body_text.is_none()) {
-            body.shown_at = now;
             return;
         }
         let account = &self.accounts[body.account];
@@ -1069,21 +1061,9 @@ impl App {
         }
     }
 
-    fn first_target(&self) -> Option<&Row> {
+    /// The rows an action covers: the marked rows, or else the cursor row.
+    fn selected_rows(&self) -> Vec<&Row> {
         if self.list.marked.is_empty() {
-            self.list.rows.get(self.list.cursor)
-        } else {
-            self.list
-                .rows
-                .iter()
-                .find(|row| self.list.marked.contains(&row.key()))
-        }
-    }
-
-    /// The uids each action covers, per folder: the marked rows or the cursor row, a thread row standing for every
-    /// message of its thread in that folder.
-    fn targets(&self, account: usize) -> Vec<(String, Vec<u32>)> {
-        let rows: Vec<&Row> = if self.list.marked.is_empty() {
             self.list.rows.get(self.list.cursor).into_iter().collect()
         } else {
             self.list
@@ -1091,9 +1071,14 @@ impl App {
                 .iter()
                 .filter(|row| self.list.marked.contains(&row.key()))
                 .collect()
-        };
+        }
+    }
+
+    /// The uids each action covers, per folder: the marked rows or the cursor row, a thread row standing for every
+    /// message of its thread in that folder.
+    fn targets(&self, account: usize) -> Vec<(String, Vec<u32>)> {
         let mut by_folder: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
-        for row in rows {
+        for row in self.selected_rows() {
             let uids = by_folder.entry(row.folder.clone()).or_default();
             let members = match (&row.thread_id, &self.accounts[account].store) {
                 (Some(thread), Ok(store)) if row.count > 1 => {

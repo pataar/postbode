@@ -48,10 +48,7 @@ impl Row {
         Row {
             count: 1,
             date: message.internaldate,
-            flagged: message
-                .flags
-                .split_whitespace()
-                .any(|flag| flag == "\\Flagged"),
+            flagged: message.is_flagged(),
             folder: message.folder.clone(),
             from: message.from_addr.clone().unwrap_or_default(),
             member: false,
@@ -140,6 +137,9 @@ impl Optimistic {
 
 /// Rows of sent actions as they will be: moved rows hidden, read and flag changes shown, a later edit over an earlier.
 pub(crate) fn apply_pending(rows: &mut Vec<Row>, pending: &HashMap<RowKey, Vec<Optimistic>>) {
+    if pending.is_empty() {
+        return;
+    }
     rows.retain(|row| {
         !pending
             .get(&row.key())
@@ -353,14 +353,11 @@ pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> 
     let (Some(filter), View::Folder { account, folder }) = (&app.move_picker, &app.view) else {
         return actions;
     };
-    let folder = match &app.search {
-        Some(_) => app
-            .list
-            .rows
-            .get(app.list.cursor)
-            .map_or(folder, |hit| &hit.folder),
-        None => folder,
-    };
+    let folder = app
+        .list
+        .rows
+        .get(app.list.cursor)
+        .map_or(folder, |row| &row.folder);
     let needle = filter.to_lowercase();
     let names: Vec<&str> = app.accounts[*account]
         .folders
