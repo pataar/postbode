@@ -104,7 +104,7 @@ enum RulesCommand {
         #[arg(long)]
         account: Option<String>,
     },
-    /// Names, enabled state and first-seen time
+    /// Names, enabled state and who proposed them
     List {
         #[arg(long)]
         json: bool,
@@ -158,16 +158,17 @@ pub fn run() -> Result<()> {
             let mut failed = false;
             for acc in select_accounts(&config, account.as_deref())? {
                 if let Err(e) = sync::run_once(acc, &paths, &tx) {
-                    eprintln!("[{}] error: {e:#}", acc.name);
+                    eprintln!("[{}] error: {}", acc.name, clean(&format!("{e:#}"), false));
                     failed = true;
                 }
             }
             drop(tx);
             for event in rx {
+                failed |= matches!(event, Event::Error { .. });
                 print_event(&event);
             }
             if failed {
-                bail!("sync failed for at least one account");
+                bail!("sync failed for at least one account or folder");
             }
             Ok(())
         }
@@ -448,8 +449,8 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                     println!(
                         "{}\t{}\t{}",
                         if r.enabled { "on " } else { "off" },
-                        r.name,
-                        r.proposed_by.as_deref().unwrap_or("")
+                        clean(&r.name, false),
+                        clean(r.proposed_by.as_deref().unwrap_or(""), false)
                     );
                 }
             }
@@ -544,7 +545,7 @@ fn print_planned_actions(
             for a in evaluate(rules, &msg, &ctx).actions {
                 println!(
                     "{}\t{}/{}\t{}\t{}",
-                    a.rule,
+                    clean(&a.rule, false),
                     clean(&msg.folder, false),
                     msg.uid,
                     a.action.label(),

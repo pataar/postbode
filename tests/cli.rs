@@ -238,6 +238,14 @@ fn trash_list_shows_subjects() {
 }
 
 #[test]
+fn error_lines_strip_control_characters() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postbode(home.path(), &["list", "--account", "x\u{1b}[2Jy"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no account named 'x[2Jy'"), "{stderr}");
+}
+
+#[test]
 fn rules_test_with_unknown_name_fails() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("config")).unwrap();

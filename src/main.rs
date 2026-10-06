@@ -6,7 +6,7 @@ fn main() {
     )
     .init();
     if let Err(e) = cli::run() {
-        eprintln!("error: {e:#}");
+        eprintln!("error: {}", cli::clean(&format!("{e:#}"), false));
         std::process::exit(1);
     }
 }
