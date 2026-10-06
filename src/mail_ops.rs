@@ -86,7 +86,6 @@ mod recording {
         pub uidvalidity: HashMap<String, u32>,
         pub mail: HashMap<String, Vec<Envelope>>,
         pub raw: HashMap<(String, u32), Vec<u8>>,
-        pub supports_move: bool,
         pub calls: Vec<String>,
         pub idle_outcomes: VecDeque<IdleOutcome>,
         /// Makes every `fetch_new` fail, like a connection dropping mid-sync.
@@ -102,7 +101,6 @@ mod recording {
                 uidvalidity: HashMap::new(),
                 mail: HashMap::new(),
                 raw: HashMap::new(),
-                supports_move: true,
                 calls: Vec::new(),
                 idle_outcomes: VecDeque::new(),
                 fail_fetch_new: false,
@@ -276,11 +274,7 @@ mod recording {
             if let Some(raw) = raw {
                 self.raw.insert((to.into(), new_uid), raw);
             }
-            Ok(if self.supports_move {
-                Some(new_uid)
-            } else {
-                None
-            })
+            Ok(None)
         }
 
         fn create_folder(&mut self, name: &str) -> MailResult<()> {
@@ -349,13 +343,13 @@ mod tests {
     }
 
     #[test]
-    fn fake_move_assigns_new_uid_and_records_call() {
+    fn fake_move_moves_the_message_and_records_call() {
         let mut ops = RecordingOps::new()
             .with_folder("INBOX", None)
             .with_folder("Archive", Some("Archive"));
         ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", Some("raw"));
         ops.select("INBOX").unwrap();
-        assert_eq!(ops.move_message(1, "Archive").unwrap(), Some(1));
+        assert_eq!(ops.move_message(1, "Archive").unwrap(), None);
         assert!(ops.mail["INBOX"].is_empty());
         assert_eq!(ops.raw.get(&("Archive".into(), 1)).unwrap(), b"raw");
         assert_eq!(ops.calls.last().unwrap(), "move INBOX 1 -> Archive");
@@ -374,19 +368,6 @@ mod tests {
         assert!(ops.mail["INBOX"].is_empty());
         assert!(ops.raw.is_empty());
         assert_eq!(ops.calls.last().unwrap(), "expunge INBOX 1");
-    }
-
-    #[test]
-    fn fake_move_without_move_capability_returns_no_uid() {
-        let mut ops = RecordingOps::new()
-            .with_folder("INBOX", None)
-            .with_folder("Archive", None);
-        ops.supports_move = false;
-        ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", Some("raw"));
-        ops.select("INBOX").unwrap();
-        assert_eq!(ops.move_message(1, "Archive").unwrap(), None);
-        assert!(ops.mail["INBOX"].is_empty());
-        assert_eq!(ops.mail["Archive"].len(), 1);
     }
 
     #[test]

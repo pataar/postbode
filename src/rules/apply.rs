@@ -342,7 +342,6 @@ mod tests {
     #[test]
     fn only_first_move_runs_and_flags_precede_it() {
         let (mut ops, store, trash, _dir, msg) = setup();
-        ops.supports_move = false;
         apply(
             &plan(vec![
                 Action::Move("Archive".into()),
@@ -379,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn move_creates_missing_folder_and_updates_row() {
+    fn move_creates_missing_folder_and_drops_row_for_resync() {
         let (mut ops, store, trash, _dir, msg) = setup();
         apply(
             &plan(vec![Action::Move("Lists/GitHub".into()), Action::MarkRead]),
@@ -393,15 +392,15 @@ mod tests {
         assert!(ops.calls.iter().any(|c| c == "create_folder Lists/GitHub"));
         assert!(store.folder("Lists/GitHub").unwrap().is_some());
         assert_eq!(store.message("INBOX", 5).unwrap(), None);
-        let moved = store.message("Lists/GitHub", 1).unwrap().unwrap();
         assert!(
-            moved.is_seen(),
-            "mark_read is applied before the move and travels with the row"
+            store.messages_in_folder("Lists/GitHub").unwrap().is_empty(),
+            "the next sync of the target folder adds the row"
         );
         assert!(
             ops.mail["Lists/GitHub"][0]
                 .flags
-                .contains(&"\\Seen".to_string())
+                .contains(&"\\Seen".to_string()),
+            "mark_read runs before the move, so the server copy carries it"
         );
     }
 
@@ -422,23 +421,6 @@ mod tests {
         assert_eq!(ops.mail["Lists"].len(), 1);
         assert!(ops.mail["INBOX"].is_empty());
         assert!(store.folder("Lists").unwrap().is_some());
-    }
-
-    #[test]
-    fn move_without_move_capability_drops_row_for_resync() {
-        let (mut ops, store, trash, _dir, msg) = setup();
-        ops.supports_move = false;
-        apply(
-            &plan(vec![Action::Move("Archive".into())]),
-            &msg,
-            &mut ops,
-            &store,
-            &trash,
-            500,
-        )
-        .unwrap();
-        assert_eq!(store.message("INBOX", 5).unwrap(), None);
-        assert!(store.messages_in_folder("Archive").unwrap().is_empty());
     }
 
     #[test]
