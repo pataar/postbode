@@ -8,6 +8,7 @@ mod rules;
 mod status;
 #[cfg(test)]
 mod test_support;
+mod theme;
 
 use std::sync::mpsc;
 
@@ -20,12 +21,18 @@ use crate::paths::Paths;
 
 pub use app::App;
 
+/// The window icon: `assets/icon.svg` rendered to PNG (see AGENTS.md).
+const ICON: &[u8] = include_bytes!("../../assets/icon.png");
+
 /// Opens the window and returns when it closes.
 pub fn run(config: &Config, paths: &Paths) -> Result<()> {
     let (engine, events) = Engine::start(config, paths);
     let (config, paths) = (config.clone(), paths.clone());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(
+                eframe::icon_data::from_png_bytes(ICON).expect("assets/icon.png is a valid PNG"),
+            )
             .with_inner_size([1280.0, 800.0])
             .with_title("Postbode"),
         ..Default::default()
@@ -50,4 +57,14 @@ pub fn run(config: &Config, paths: &Paths) -> Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("the window failed: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_icon_is_a_square_png_with_transparent_corners() {
+        let icon = eframe::icon_data::from_png_bytes(super::ICON).unwrap();
+        assert_eq!((icon.width, icon.height), (512, 512));
+        assert_eq!(icon.rgba[3], 0, "the top-left pixel must be transparent");
+    }
 }

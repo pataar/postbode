@@ -9,6 +9,7 @@ use crate::rules::Action;
 use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::app::{App, UiAction, View};
+use super::theme::{self, Palette};
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
 pub(crate) const THREAD_LIMIT: u32 = 10_000;
@@ -222,6 +223,49 @@ where
     clean(&text, false)
 }
 
+/// A row's text in colour: the unread dot in the accent, flag and mark in the highlight, read rows dimmer and the date
+/// muted; everything on-accent when the row is selected.
+pub(crate) fn row_job(
+    text: &str,
+    unread: bool,
+    selected: bool,
+    palette: &Palette,
+    font: &egui::FontId,
+) -> egui::text::LayoutJob {
+    let (main, date) = text.rsplit_once("  ·  ").unwrap_or((text, ""));
+    let markers = main
+        .find(|c: char| !matches!(c, '•' | '⚑' | '✔' | ' '))
+        .unwrap_or(main.len());
+    let mut parts: Vec<(String, egui::Color32)> = main[..markers]
+        .chars()
+        .map(|c| {
+            let color = match c {
+                '•' => palette.accent,
+                '⚑' | '✔' => palette.highlight,
+                _ => palette.text,
+            };
+            (c.to_string(), color)
+        })
+        .collect();
+    parts.push((
+        main[markers..].to_string(),
+        if unread {
+            palette.text
+        } else {
+            palette.secondary
+        },
+    ));
+    if !date.is_empty() {
+        parts.push((format!("  ·  {date}"), palette.muted));
+    }
+    let mut job = egui::text::LayoutJob::default();
+    for (part, color) in parts {
+        let color = if selected { palette.on_accent } else { color };
+        job.append(&part, 0.0, egui::TextFormat::simple(font.clone(), color));
+    }
+    job
+}
+
 /// The scroll offset that shows the cursor row, moving the view as little as possible.
 pub(crate) fn offset_showing(cursor: usize, row_height: f32, offset: f32, height: f32) -> f32 {
     let top = cursor as f32 * row_height;
@@ -268,6 +312,8 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         let (offset, height) = list.viewport;
         area = area.vertical_scroll_offset(offset_showing(list.cursor, row_height, offset, height));
     }
+    let palette = theme::palette(ui);
+    let font = egui::TextStyle::Button.resolve(ui.style());
     let output = area.show_rows(ui, ROW_HEIGHT, list.rows.len(), |ui, range| {
         for index in range {
             let row = &list.rows[index];
@@ -276,7 +322,9 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             if marked {
                 text = format!("✔ {text}");
             }
-            let button = egui::Button::selectable(index == list.cursor || marked, text)
+            let selected = index == list.cursor || marked;
+            let job = row_job(&text, row.unread, selected, palette, &font);
+            let button = egui::Button::selectable(selected, job)
                 .truncate()
                 .min_size(egui::vec2(ui.available_width(), ROW_HEIGHT));
             if ui.add(button).clicked() {
@@ -338,6 +386,49 @@ mod tests {
     use crate::gui::app::{Focus, View};
     use crate::gui::test_support::{Fixture, message};
     use crate::store::{MessageSummary, ThreadSummary};
+
+    #[test]
+    fn row_job_colours_markers_and_mutes_read_rows() {
+        let font = egui::FontId::proportional(14.0);
+        let parts = |job: &egui::text::LayoutJob| -> Vec<(String, egui::Color32)> {
+            job.sections
+                .iter()
+                .map(|s| {
+                    (
+                        job.text[s.byte_range.start.0..s.byte_range.end.0].to_string(),
+                        s.format.color,
+                    )
+                })
+                .collect()
+        };
+        let p = &crate::gui::theme::MOCHA;
+        let unread = row_job("• ⚑ Alice — hi  ·  09:30", true, false, p, &font);
+        assert_eq!(
+            parts(&unread),
+            [
+                ("•".to_string(), p.accent),
+                (" ".into(), p.text),
+                ("⚑".into(), p.highlight),
+                (" Alice — hi".into(), p.text),
+                ("  ·  09:30".into(), p.muted),
+            ]
+        );
+        let read = row_job("   Bob — re  ·  Sun", false, false, p, &font);
+        assert_eq!(
+            parts(&read),
+            [
+                ("   ".to_string(), p.text),
+                ("Bob — re".into(), p.secondary),
+                ("  ·  Sun".into(), p.muted),
+            ]
+        );
+        let selected = row_job("• Alice — hi  ·  09:30", true, true, p, &font);
+        assert!(
+            parts(&selected)
+                .iter()
+                .all(|(_, color)| *color == p.on_accent)
+        );
+    }
 
     fn summary(uid: u32, flags: &str) -> MessageSummary {
         MessageSummary {

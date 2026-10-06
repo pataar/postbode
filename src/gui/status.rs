@@ -8,6 +8,7 @@ use crate::sync::Activity;
 
 use super::app::{Account, App, UiAction};
 use super::folders::locked_text;
+use super::theme;
 
 pub(crate) fn activity_text(activity: &Activity) -> String {
     match activity {
@@ -105,6 +106,19 @@ fn progress(activity: &Activity) -> Option<f32> {
     }
 }
 
+/// Red for an error, green once the account is up to date, otherwise the default text colour.
+fn line_color(
+    account: &Account,
+    error_color: egui::Color32,
+    palette: &theme::Palette,
+) -> Option<egui::Color32> {
+    match (&account.error, &account.state, &account.activity) {
+        (Some(_), _, _) => Some(error_color),
+        (None, StartState::Running, Some(Activity::Idle { .. })) => Some(palette.success),
+        _ => None,
+    }
+}
+
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let error_color = ui.visuals().error_fg_color;
@@ -123,8 +137,8 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             for account in &app.accounts {
                 ui.horizontal(|ui| {
                     let mut text = egui::RichText::new(account_line(account));
-                    if account.error.is_some() {
-                        text = text.color(error_color);
+                    if let Some(color) = line_color(account, error_color, theme::palette(ui)) {
+                        text = text.color(color);
                     }
                     if ui
                         .add(egui::Label::new(text).sense(egui::Sense::click()))
@@ -293,6 +307,24 @@ mod tests {
         for (activity, text) in cases {
             assert_eq!(activity_text(&activity), text);
         }
+    }
+
+    #[test]
+    fn an_up_to_date_account_line_is_green_and_an_error_wins() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = fx.harness();
+        let account = &mut harness.state_mut().accounts[0];
+        let (error_color, palette) = (egui::Color32::RED, &theme::MOCHA);
+        assert_eq!(line_color(account, error_color, palette), None);
+        account.activity = Some(Activity::Idle {
+            since: 1_790_000_000,
+        });
+        assert_eq!(
+            line_color(account, error_color, palette),
+            Some(palette.success)
+        );
+        account.error = Some("boom".into());
+        assert_eq!(line_color(account, error_color, palette), Some(error_color));
     }
 
     #[test]

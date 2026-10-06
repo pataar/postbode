@@ -43,6 +43,8 @@ Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as
 ## Build speed
 `mise install` brings kache, cargo-nextest and actionlint. Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
 
+`assets/icon.png` (the window icon) is `assets/icon.svg` rendered at 512×512 by headless Chrome with `--default-background-color=00000000`; re-render it when the SVG changes.
+
 ## Releasing
 Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand.
 

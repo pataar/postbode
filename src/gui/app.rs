@@ -19,6 +19,7 @@ use super::folders;
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
 use super::rules::{self, RulesState, TrashRow};
 use super::status;
+use super::theme;
 
 /// Lines kept for the history window.
 const HISTORY: usize = 50;
@@ -246,6 +247,7 @@ impl App {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if !self.theme_applied {
+            theme::install(&ctx);
             ctx.set_theme(self.theme);
             self.theme_applied = true;
         }
@@ -290,19 +292,16 @@ impl App {
                     .resizable(true)
                     .default_size(480.0)
                     .show(ui, |ui| actions.extend(list::show(self, ui)));
-                egui::CentralPanel::default().show(ui, |ui| actions.extend(body::show(self, ui)));
+                central_panel(ui).show(ui, |ui| actions.extend(body::show(self, ui)));
             }
             View::Rules => {
-                egui::CentralPanel::default()
-                    .show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
+                central_panel(ui).show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
             }
             View::Activity => {
-                egui::CentralPanel::default()
-                    .show(ui, |ui| actions.extend(rules::show_activity(self, ui)));
+                central_panel(ui).show(ui, |ui| actions.extend(rules::show_activity(self, ui)));
             }
             View::Trash => {
-                egui::CentralPanel::default()
-                    .show(ui, |ui| actions.extend(rules::show_trash(self, ui)));
+                central_panel(ui).show(ui, |ui| actions.extend(rules::show_trash(self, ui)));
             }
         }
         actions.extend(list::show_move_picker(self, &ctx));
@@ -1101,6 +1100,12 @@ impl App {
 }
 
 /// A printable shortcut, matched on the typed text so it follows the keyboard layout.
+/// The central panel on the base colour; side panels and the status bar keep the darker panel colour.
+pub(crate) fn central_panel(ui: &egui::Ui) -> egui::CentralPanel {
+    egui::CentralPanel::default()
+        .frame(egui::Frame::central_panel(ui.style()).fill(ui.visuals().window_fill))
+}
+
 pub(crate) fn typed(input: &egui::InputState, text: &str) -> bool {
     input
         .events
