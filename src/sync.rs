@@ -52,7 +52,7 @@ pub enum Event {
     ActionDone {
         account: String,
         folder: String,
-        results: Vec<(u32, Result<usize, String>)>,
+        results: EventResults,
     },
     BodyReady {
         account: String,
@@ -578,19 +578,10 @@ pub fn run_commands(
                 });
                 let outcome = actions::run(ops, store, trash, &folder, &uids, &action, now());
                 let (results, lost) = match outcome {
-                    Ok(results) => {
-                        let lost = results
-                            .iter()
-                            .any(|(_, r)| r.as_ref().is_err_and(connection_lost));
-                        let results = results
-                            .into_iter()
-                            .map(|(uid, r)| (uid, r.map_err(|e| e.to_string())))
-                            .collect();
-                        (results, lost)
-                    }
+                    Ok(results) => split_lost(results),
                     Err(e) => (
                         uids.iter().map(|&uid| (uid, Err(e.to_string()))).collect(),
-                        connection_lost(&e),
+                        connection_lost(&e).then_some(e),
                     ),
                 };
                 let _ = events.send(Event::ActionDone {
@@ -598,8 +589,8 @@ pub fn run_commands(
                     folder,
                     results,
                 });
-                if lost {
-                    return Err(MailError::Io("connection lost during command".into()).into());
+                if let Some(e) = lost {
+                    return Err(e.into());
                 }
             }
             Command::FetchBody { folder, uid } => {
@@ -628,7 +619,7 @@ pub fn run_commands(
                             folder,
                         });
                     }
-                    Err(RestoreError::Mail(e @ (MailError::Io(_) | MailError::Connect(_)))) => {
+                    Err(RestoreError::Mail(e)) if is_connection_error(&e) => {
                         return Err(SyncError::Mail(e));
                     }
                     Err(e) => {
@@ -641,12 +632,36 @@ pub fn run_commands(
     Ok(run)
 }
 
+fn is_connection_error(e: &MailError) -> bool {
+    matches!(e, MailError::Io(_) | MailError::Connect(_))
+}
+
 fn connection_lost(e: &ActionError) -> bool {
-    let mail = match e {
-        ActionError::Mail(e) | ActionError::Apply(ApplyError::Mail(e)) => e,
-        _ => return false,
-    };
-    matches!(mail, MailError::Io(_) | MailError::Connect(_))
+    match e {
+        ActionError::Mail(e) | ActionError::Apply(ApplyError::Mail(e)) => is_connection_error(e),
+        _ => false,
+    }
+}
+
+type EventResults = Vec<(u32, Result<usize, String>)>;
+
+/// Stringifies per-uid results for the event, keeping the first connection loss so it can end the drain.
+fn split_lost(results: Vec<actions::UidResult>) -> (EventResults, Option<ActionError>) {
+    let mut lost = None;
+    let strings = results
+        .into_iter()
+        .map(|(uid, result)| match result {
+            Ok(count) => (uid, Ok(count)),
+            Err(e) => {
+                let message = e.to_string();
+                if lost.is_none() && connection_lost(&e) {
+                    lost = Some(e);
+                }
+                (uid, Err(message))
+            }
+        })
+        .collect();
+    (strings, lost)
 }
 
 fn describe(action: &Action, count: usize) -> String {
@@ -2019,7 +2034,9 @@ mod tests {
     #[test]
     fn restore_refuses_a_file_outside_the_trash() {
         let (mut ops, store, dir) = synced();
-        let trash = Trash::new(dir.path().join("trash"));
+        let trash_dir = dir.path().join("trash");
+        std::fs::create_dir(&trash_dir).unwrap();
+        let trash = Trash::new(trash_dir);
         let outside = dir.path().join("100-INBOX-7.eml");
         std::fs::write(&outside, b"Subject: x\r\n\r\n").unwrap();
         let restore = Command::Restore {
@@ -2032,6 +2049,112 @@ mod tests {
         assert!(events.iter().any(
             |e| matches!(e, Event::Error { message, .. } if message.contains("not a backup"))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_refuses_a_symlink_in_the_trash_pointing_outside() {
+        let (mut ops, store, dir) = synced();
+        let trash_dir = dir.path().join("trash");
+        std::fs::create_dir(&trash_dir).unwrap();
+        let trash = Trash::new(trash_dir.clone());
+        let outside = dir.path().join("secret.eml");
+        std::fs::write(&outside, b"Subject: x\r\n\r\n").unwrap();
+        let link = trash_dir.join("100-INBOX-7.eml");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let restore = Command::Restore { file: link.clone() };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![restore]);
+        assert!(run.is_ok());
+        assert!(outside.exists());
+        assert!(link.is_symlink());
+        assert!(!ops.calls.iter().any(|c| c.starts_with("append")));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Error { message, .. } if message.contains("not a backup"))
+        ));
+    }
+
+    #[test]
+    fn a_lost_connection_during_apply_reports_then_ends_the_drain() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        ops.fail_next = Some(MailError::Io("reset".into()));
+        let apply = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1],
+            action: Action::MarkRead,
+        };
+        let next = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 2,
+        };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![apply, next]);
+        assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::ActionDone { results, .. }
+            if matches!(&results[0], (1, Err(m)) if m.contains("reset"))))
+        );
+        assert!(!events.iter().any(|e| matches!(e, Event::BodyReady { .. })));
+    }
+
+    #[test]
+    fn a_lost_connection_during_fetch_body_ends_the_drain() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        ops.fail_next = Some(MailError::Io("reset".into()));
+        let fetch = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 1,
+        };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![fetch]);
+        assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
+        assert!(!events.iter().any(|e| matches!(e, Event::Error { .. })));
+    }
+
+    #[test]
+    fn a_lost_connection_during_restore_ends_the_drain() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let file = trash
+            .save("INBOX", 7, b"Subject: back\r\n\r\n", 100)
+            .unwrap();
+        ops.fail_next = Some(MailError::Io("reset".into()));
+        let (run, _) = drain(
+            &mut ops,
+            &store,
+            &trash,
+            vec![Command::Restore { file: file.clone() }],
+        );
+        assert!(matches!(run, Err(SyncError::Mail(MailError::Io(_)))));
+        assert!(file.exists());
+    }
+
+    #[test]
+    fn a_protocol_error_is_reported_and_the_next_command_runs() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        ops.fail_next = Some(MailError::Protocol("NO".into()));
+        let commands = vec![
+            Command::FetchBody {
+                folder: "INBOX".into(),
+                uid: 1,
+            },
+            Command::FetchBody {
+                folder: "INBOX".into(),
+                uid: 2,
+            },
+        ];
+        let (run, events) = drain(&mut ops, &store, &trash, commands);
+        assert!(run.is_ok());
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Error { message, .. } if message.contains("INBOX/1") && message.contains("NO"))
+        ));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::BodyReady { uid: 2, .. }))
+        );
     }
 
     #[test]

@@ -93,6 +93,8 @@ mod recording {
         pub idle_outcomes: VecDeque<IdleOutcome>,
         /// Makes `fetch_envelopes` fail once this many calls succeeded, like a connection dropping mid-sync.
         pub fail_fetch_after: Option<usize>,
+        /// Makes the next `add_flags`, `append` or `fetch_raw` fail with this error, once.
+        pub fail_next: Option<MailError>,
         envelope_fetches: usize,
         selected: String,
         next_uid: HashMap<String, u32>,
@@ -108,6 +110,7 @@ mod recording {
                 calls: Vec::new(),
                 idle_outcomes: VecDeque::new(),
                 fail_fetch_after: None,
+                fail_next: None,
                 envelope_fetches: 0,
                 selected: String::new(),
                 next_uid: HashMap::new(),
@@ -240,6 +243,7 @@ mod recording {
         fn fetch_raw(&mut self, uid: u32) -> MailResult<Option<Vec<u8>>> {
             self.calls
                 .push(format!("fetch_raw {} {uid}", self.selected));
+            self.fail_next.take().map_or(Ok(()), Err)?;
             Ok(self.raw.get(&(self.selected.clone(), uid)).cloned())
         }
 
@@ -249,6 +253,7 @@ mod recording {
                 self.selected,
                 flags.join(" ")
             ));
+            self.fail_next.take().map_or(Ok(()), Err)?;
             let env = self.envelope_mut(uid)?;
             for f in flags {
                 if !env.flags.iter().any(|x| x == f) {
@@ -323,6 +328,7 @@ mod recording {
         fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()> {
             self.calls
                 .push(format!("append {folder} {} bytes", raw.len()));
+            self.fail_next.take().map_or(Ok(()), Err)?;
             let Some(list) = self.mail.get_mut(folder) else {
                 return Err(MailError::Protocol(format!("no folder {folder}")));
             };
