@@ -176,15 +176,35 @@ pub fn sync_all(
     ops: &mut dyn MailOps,
     store: &Store,
 ) -> Result<(Vec<NewMessageRef>, Vec<String>), SyncError> {
+    let mut folders = ops.list_folders()?;
+    special_use_by_name(&mut folders);
     let mut new = Vec::new();
     let mut errors = Vec::new();
-    for folder in ops.list_folders()? {
+    for folder in folders {
         match sync_folder(ops, store, &folder) {
             Ok(found) => new.extend(found),
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
         }
     }
     Ok((new, errors))
+}
+
+/// Spec section 6: a role no folder is marked with goes to the folder carrying that name, ignoring case.
+fn special_use_by_name(folders: &mut [RemoteFolder]) {
+    for role in ["Archive", "Drafts", "Junk", "Sent", "Trash"] {
+        if folders
+            .iter()
+            .any(|f| f.special_use.as_deref() == Some(role))
+        {
+            continue;
+        }
+        if let Some(folder) = folders
+            .iter_mut()
+            .find(|f| f.special_use.is_none() && f.name.eq_ignore_ascii_case(role))
+        {
+            folder.special_use = Some(role.to_string());
+        }
+    }
 }
 
 pub fn load_rules_for(
@@ -1040,6 +1060,44 @@ mod tests {
             "{:?}",
             run.events
         );
+    }
+
+    #[test]
+    fn special_use_falls_back_to_folder_name() {
+        let mut ops = RecordingOps::new()
+            .with_folder("INBOX", None)
+            .with_folder("archive", None)
+            .with_folder("Deleted Items", Some("Trash"))
+            .with_folder("Trash", None);
+        ops.add_mail("INBOX", 1, 10 * H, &headers("a@x", "old", "a1@x"), None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let rules = rules_from(
+            "[[rules]]\nname = \"a\"\nmatch.from = { contains = \"a@x\" }\nactions = [\"archive\"]\n",
+            &store,
+            0,
+        );
+        let new = sync_all(&mut ops, &store).unwrap().0;
+        let special_use = |name: &str| store.folder(name).unwrap().unwrap().special_use;
+        assert_eq!(special_use("archive").as_deref(), Some("Archive"));
+        assert_eq!(special_use("Trash"), None, "a marked Trash folder wins");
+        let run = run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
+        assert!(run.events.is_empty(), "{:?}", run.events);
+        assert_eq!(ops.mail["archive"].len(), 1);
     }
 
     #[test]
