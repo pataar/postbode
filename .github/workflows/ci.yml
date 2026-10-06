@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: kunobi-ninja/kache-action@v1
+        with:
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+          pr-comment: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-machete
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo machete
+      - run: cargo audit
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # The Dovecot containers only run on Linux; empty skips the live tests elsewhere.
+      POSTBODE_TEST_IMAP_HOST: ${{ matrix.os == 'ubuntu-latest' && 'localhost' || '' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: kunobi-ninja/kache-action@v1
+        with:
+          save-cache: ${{ github.ref == 'refs/heads/main' }}
+          pr-comment: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Start Dovecot
+        if: runner.os == 'Linux'
+        run: |
+          docker compose -f tests/dovecot/compose.yml up -d
+          for port in 10993 11993; do
+            for _ in $(seq 30); do (echo > /dev/tcp/localhost/$port) 2>/dev/null && break; sleep 1; done
+          done
+      - run: cargo test --all-features

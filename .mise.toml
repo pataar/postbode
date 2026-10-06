@@ -1,2 +1,5 @@
 [tools]
+actionlint = "1.7.12"
+"github:kunobi-ninja/kache" = "1.0.0"
+"github:nextest-rs/nextest" = "cargo-nextest-0.9.146"
 rust = { version = "1.99", components = ["rustfmt", "clippy"] }
