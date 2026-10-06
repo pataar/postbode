@@ -55,6 +55,7 @@ pub fn apply(
     {
         return delete(planned, msg, ops, store, trash, now);
     }
+    let first_move = first_move(plan, msg, store)?;
     let mut current = msg.clone();
     for planned in &plan.actions {
         let flag = match planned.action {
@@ -65,19 +66,32 @@ pub fn apply(
         store.log_action(&log_entry(planned, msg, now))?;
         set_flag(&mut current, flag, ops, store)?;
     }
-    let first_move = plan
-        .actions
-        .iter()
-        .find(|planned| matches!(planned.action, Action::Move(_) | Action::Archive));
-    if let Some(planned) = first_move {
-        let target = match &planned.action {
-            Action::Move(target) => target.clone(),
-            _ => archive_folder(store)?,
-        };
+    if let Some((planned, target)) = first_move {
         store.log_action(&log_entry(planned, msg, now))?;
         move_to(&current, &target, ops, store)?;
     }
     Ok(())
+}
+
+/// The first move or archive in the plan with its resolved target. Resolved before anything runs so a failure leaves no
+/// partial effects; a move into the message's own folder is dropped because the next sync would re-add and re-move it.
+fn first_move<'a>(
+    plan: &'a Plan,
+    msg: &Message,
+    store: &Store,
+) -> Result<Option<(&'a PlannedAction, String)>, ApplyError> {
+    let Some(planned) = plan
+        .actions
+        .iter()
+        .find(|planned| matches!(planned.action, Action::Move(_) | Action::Archive))
+    else {
+        return Ok(None);
+    };
+    let target = match &planned.action {
+        Action::Move(target) => target.clone(),
+        _ => archive_folder(store)?,
+    };
+    Ok((target != msg.folder).then_some((planned, target)))
 }
 
 fn log_entry(planned: &PlannedAction, msg: &Message, now: i64) -> LogEntry {
@@ -397,6 +411,71 @@ mod tests {
         .unwrap();
         assert_eq!(store.message("INBOX", 5).unwrap(), None);
         assert!(store.messages_in_folder("Archive").unwrap().is_empty());
+    }
+
+    #[test]
+    fn move_to_own_folder_is_skipped() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        apply(
+            &plan(vec![Action::Move("INBOX".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(!ops.calls.iter().any(|c| c.starts_with("move")));
+        assert!(store.message("INBOX", 5).unwrap().is_some());
+        assert!(store.log(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn archive_without_folder_changes_nothing() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        store
+            .upsert_folder(&Folder {
+                name: "Archive".into(),
+                uidvalidity: 1,
+                last_uid: 0,
+                special_use: None,
+            })
+            .unwrap();
+        let result = apply(
+            &plan(vec![Action::MarkRead, Action::Archive]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        );
+        assert!(matches!(result, Err(ApplyError::NoArchiveFolder)));
+        assert!(!ops.calls.iter().any(|c| c.starts_with("add_flags")));
+        assert!(store.log(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_refused_when_trash_write_fails() {
+        let (mut ops, store, _trash, dir, msg) = setup();
+        let blocked = dir.path().join("not-a-dir");
+        std::fs::write(&blocked, b"").unwrap();
+        let err = apply(
+            &plan(vec![Action::Delete]),
+            &msg,
+            &mut ops,
+            &store,
+            &Trash::new(blocked),
+            500,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ApplyError::Trash(_)));
+        assert!(
+            !ops.calls
+                .iter()
+                .any(|c| c.starts_with("add_flags") || c.starts_with("expunge"))
+        );
+        assert_eq!(ops.mail["INBOX"].len(), 1);
+        assert!(store.message("INBOX", 5).unwrap().is_some());
     }
 
     #[test]
