@@ -285,6 +285,9 @@ mod recording {
 
         fn create_folder(&mut self, name: &str) -> MailResult<()> {
             self.calls.push(format!("create_folder {name}"));
+            if self.mail.contains_key(name) {
+                return Err(MailError::Protocol(format!("[ALREADYEXISTS] {name}")));
+            }
             self.folders.push(RemoteFolder {
                 name: name.into(),
                 special_use: None,

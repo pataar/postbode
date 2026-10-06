@@ -165,8 +165,13 @@ fn move_to(
     ops: &mut dyn MailOps,
     store: &Store,
 ) -> Result<(), ApplyError> {
-    if store.folder(target)?.is_none() {
-        ops.create_folder(target)?;
+    let known = store.folder(target)?.is_some();
+    // The folder may exist on the server before our first sync of it; a real create failure surfaces in the move.
+    if !known && let Err(e) = ops.create_folder(target) {
+        log::debug!("{target}: create failed ({e}), trying the move anyway");
+    }
+    let new_uid = ops.move_message(current.uid, target)?;
+    if !known {
         store.upsert_folder(&Folder {
             name: target.to_string(),
             uidvalidity: 0,
@@ -174,7 +179,6 @@ fn move_to(
             special_use: None,
         })?;
     }
-    let new_uid = ops.move_message(current.uid, target)?;
     store.move_message_row(&current.folder, current.uid, target, new_uid)?;
     Ok(())
 }
@@ -399,6 +403,25 @@ mod tests {
                 .flags
                 .contains(&"\\Seen".to_string())
         );
+    }
+
+    #[test]
+    fn move_into_folder_the_store_does_not_know_yet() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        ops = ops.with_folder("Lists", None);
+        let executed = apply(
+            &plan(vec![Action::Move("Lists".into())]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert_eq!(executed, 1);
+        assert_eq!(ops.mail["Lists"].len(), 1);
+        assert!(ops.mail["INBOX"].is_empty());
+        assert!(store.folder("Lists").unwrap().is_some());
     }
 
     #[test]
