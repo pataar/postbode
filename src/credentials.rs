@@ -59,6 +59,7 @@ fn run_command(account_name: &str, command: &str) -> Result<Secret, CredentialEr
     let output = Command::new("sh")
         .arg("-c")
         .arg(command)
+        .stderr(std::process::Stdio::inherit())
         .output()
         .map_err(|e| CredentialError::CommandSpawn(e.to_string()))?;
     if !output.status.success() {
