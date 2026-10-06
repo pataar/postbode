@@ -906,22 +906,14 @@ impl App {
         let View::Folder { account, folder } = &self.view else {
             return;
         };
-        // A thread row and its expanded latest member share a key, so `member` tells them apart.
-        let current = self
-            .list
-            .rows
-            .get(self.list.cursor)
-            .map(|row| (row.key(), row.member));
+        let current = self.list.rows.get(self.list.cursor).cloned();
         let mut rows = if self.search.is_some() {
             self.list.hits.clone()
         } else {
             list::build_rows(folder, &self.list.threads, &self.list.expanded)
         };
         list::apply_pending(&mut rows, &self.accounts[*account].pending);
-        let kept = current.and_then(|(key, member)| {
-            rows.iter()
-                .position(|row| row.member == member && row.key() == key)
-        });
+        let kept = current.and_then(|cursor| rows.iter().position(|row| same_row(row, &cursor)));
         self.list.rows = rows;
         self.list.cursor =
             kept.unwrap_or_else(|| self.list.cursor.min(self.list.rows.len().saturating_sub(1)));
@@ -1184,6 +1176,18 @@ pub(crate) fn central_panel(ui: &egui::Ui, focused: bool) -> egui::CentralPanel 
 
 fn body_text(message: Option<&Message>) -> Option<String> {
     message?.body_text.as_deref().map(|text| clean(text, true))
+}
+
+/// A thread row's key is its latest uid, which changes with new mail, so it is matched by thread id. A member and its
+/// thread row share a key, so `member` tells them apart.
+fn same_row(row: &Row, cursor: &Row) -> bool {
+    if row.member != cursor.member {
+        return false;
+    }
+    match (&row.thread_id, &cursor.thread_id) {
+        (Some(row_thread), Some(cursor_thread)) if !row.member => row_thread == cursor_thread,
+        _ => row.key() == cursor.key(),
+    }
 }
 
 /// A printable shortcut, matched on the typed text so it follows the keyboard layout.

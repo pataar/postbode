@@ -680,4 +680,38 @@ mod tests {
         at(&mut harness, 11.1);
         assert_eq!(wires.sent(), [read(1)]);
     }
+
+    #[test]
+    fn a_reply_in_the_cursor_thread_keeps_the_cursor_on_that_thread() {
+        let fx = Fixture::new(&["work"]);
+        for (uid, subject) in [(1, "c"), (2, "b"), (3, "a")] {
+            fx.add("work", message("INBOX", uid, subject));
+        }
+        let (mut harness, wires) = fx.harness();
+        harness.event(egui::Event::Text("j".into()));
+        harness.step();
+        let thread_b = "<2@example.com>";
+        let mut reply = message("INBOX", 4, "Re: b");
+        reply.thread_id = thread_b.into();
+        fx.add("work", reply);
+        wires
+            .events
+            .send(Event::Synced {
+                account: "work".into(),
+                new_messages: 1,
+                actions: 0,
+            })
+            .unwrap();
+        harness.step();
+        let list = &harness.state().list;
+        assert_eq!(list.rows[list.cursor].thread_id.as_deref(), Some(thread_b));
+        harness.event(egui::Event::Text("e".into()));
+        harness.step();
+        let archive = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![2, 4],
+            action: Action::Archive,
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), archive)]);
+    }
 }
