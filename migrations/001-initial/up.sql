@@ -6,6 +6,7 @@ CREATE TABLE folders (
 );
 
 CREATE TABLE messages (
+  id            INTEGER PRIMARY KEY,   -- stable rowid for the external-content FTS index
   folder        TEXT NOT NULL REFERENCES folders(name) ON DELETE CASCADE,
   uid           INTEGER NOT NULL,
   message_id    TEXT,
@@ -24,7 +25,7 @@ CREATE TABLE messages (
   headers       BLOB NOT NULL,
   raw           BLOB,
   body_text     TEXT,
-  PRIMARY KEY (folder, uid)
+  UNIQUE (folder, uid)
 );
 CREATE INDEX messages_internaldate ON messages (folder, internaldate);
 CREATE INDEX messages_thread ON messages (thread_id);
@@ -32,21 +33,21 @@ CREATE INDEX messages_message_id ON messages (message_id);
 
 CREATE VIRTUAL TABLE messages_fts USING fts5 (
   subject, from_addr, to_addr, body_text,
-  content='messages', content_rowid='rowid'
+  content='messages', content_rowid='id'
 );
 CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
   INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_text)
-  VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_text);
+  VALUES (new.id, new.subject, new.from_addr, new.to_addr, new.body_text);
 END;
 CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, subject, from_addr, to_addr, body_text)
-  VALUES ('delete', old.rowid, old.subject, old.from_addr, old.to_addr, old.body_text);
+  VALUES ('delete', old.id, old.subject, old.from_addr, old.to_addr, old.body_text);
 END;
-CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+CREATE TRIGGER messages_au AFTER UPDATE OF subject, from_addr, to_addr, body_text ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, subject, from_addr, to_addr, body_text)
-  VALUES ('delete', old.rowid, old.subject, old.from_addr, old.to_addr, old.body_text);
+  VALUES ('delete', old.id, old.subject, old.from_addr, old.to_addr, old.body_text);
   INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_text)
-  VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_text);
+  VALUES (new.id, new.subject, new.from_addr, new.to_addr, new.body_text);
 END;
 
 CREATE TABLE rules_seen (

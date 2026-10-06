@@ -193,7 +193,7 @@ impl Store {
 
     pub fn update_flags(&self, folder: &str, uid: u32, flags: &str) -> Result<(), StoreError> {
         self.conn.execute(
-            "UPDATE messages SET flags = ?3 WHERE folder = ?1 AND uid = ?2",
+            "UPDATE messages SET flags = ?3 WHERE folder = ?1 AND uid = ?2 AND flags IS NOT ?3",
             params![folder, uid, flags],
         )?;
         Ok(())
@@ -441,6 +441,73 @@ mod tests {
         );
         s.remove_message("INBOX", 1).unwrap();
         assert_eq!(s.message("INBOX", 1).unwrap(), None);
+    }
+
+    fn fts_hits(s: &Store, query: &str) -> i64 {
+        s.conn
+            .query_row(
+                "SELECT count(*) FROM messages_fts WHERE messages_fts MATCH ?1",
+                params![query],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn fts_integrity_check(s: &Store) {
+        s.conn
+            .execute(
+                "INSERT INTO messages_fts(messages_fts) VALUES ('integrity-check')",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn fts_follows_rows_and_ignores_flag_updates() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        assert_eq!(fts_hits(&s, "alice"), 1);
+        s.set_raw("INBOX", 1, b"raw", "pineapple").unwrap();
+        assert_eq!(fts_hits(&s, "pineapple"), 1);
+        let before = s.conn.total_changes();
+        s.update_flags("INBOX", 1, "").unwrap();
+        assert_eq!(
+            s.conn.total_changes(),
+            before,
+            "unchanged flags write nothing"
+        );
+        s.update_flags("INBOX", 1, "\\Seen").unwrap();
+        assert_eq!(
+            s.conn.total_changes(),
+            before + 1,
+            "a flag change does not touch the FTS index"
+        );
+        s.upsert_folder(&Folder {
+            name: "Archive".into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+        })
+        .unwrap();
+        s.move_message_row("INBOX", 1, "Archive", Some(9)).unwrap();
+        assert_eq!(fts_hits(&s, "pineapple"), 1);
+        fts_integrity_check(&s);
+        s.remove_message("Archive", 9).unwrap();
+        assert_eq!(fts_hits(&s, "pineapple"), 0);
+        fts_integrity_check(&s);
+    }
+
+    #[test]
+    fn insert_ignores_duplicate_folder_uid() {
+        let s = store_with_inbox();
+        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
+        let mut again = msg("INBOX", 1, 99);
+        again.subject = Some("other".into());
+        s.insert_message(&again).unwrap();
+        assert_eq!(
+            s.messages_in_folder("INBOX").unwrap(),
+            vec![msg("INBOX", 1, 10)]
+        );
     }
 
     #[test]
