@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 reviews:
   auto_review:
-    # release-plz titles its PRs "chore: release vX.Y.Z".
-    ignore_title_keywords:
-      - "chore: release"
+    # release-plz labels its PRs "release" (release-plz.toml); only triagers can add labels.
+    labels:
+      - "!release"
