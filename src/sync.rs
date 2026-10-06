@@ -487,10 +487,16 @@ pub fn run_rules_with(
         });
         let (rules_uid, initial_uid_next) =
             (store.rules_uid(&folder)?, store.initial_uid_next(&folder)?);
-        // Fresh: not yet seen by the rules and not already on the server when the folder was first tracked.
-        let fresh = |uid: u32| mode == Mode::Normal && uid > rules_uid && uid >= initial_uid_next;
+        /* Fresh: not yet seen by the rules, not already on the server when the folder was first tracked, and synced.
+        A row a move stored above last_uid waits for sync, so unsynced mail below it is not marked seen too early. */
+        let fresh = |uid: u32| {
+            mode == Mode::Normal
+                && uid > rules_uid
+                && uid >= initial_uid_next
+                && uid <= stored.last_uid
+        };
         let messages = store.messages_in_folder(&folder)?;
-        let highest_uid = messages.last().map(|m| m.uid);
+        let highest_uid = messages.last().map(|m| m.uid.min(stored.last_uid));
         let bodies_total = if needs_body {
             messages
                 .iter()
@@ -1954,6 +1960,27 @@ mod tests {
         ops.add_mail("INBOX", 1, 10 * H, &headers("a@x", "first", "f@x"), None);
         sync_folder(&mut ops, &store, &inbox()).unwrap();
         assert_eq!(notify_uids(&mut ops, &store), [1]);
+    }
+
+    #[test]
+    fn a_row_moved_in_above_last_uid_does_not_hide_unsynced_mail_below_it() {
+        let mut ops = ops_with_inbox().with_folder("Archive", Some("Archive"));
+        ops.add_mail("Archive", 1, 10 * H, &headers("c@x", "kept", "a1@x"), None);
+        let store = Store::open_in_memory().unwrap();
+        sync_all(&mut ops, &store).unwrap();
+        assert!(notify_uids(&mut ops, &store).is_empty());
+        ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
+        // A command moved Archive/1 into INBOX and UIDPLUS gave it uid 4, above INBOX's last_uid; uid 3 is not synced yet.
+        ops.mail.get_mut("Archive").unwrap().clear();
+        ops.add_mail("INBOX", 4, 10 * H, &headers("c@x", "kept", "a1@x"), None);
+        store
+            .move_message_row("Archive", 1, "INBOX", Some(4))
+            .unwrap();
+        assert!(notify_uids(&mut ops, &store).is_empty());
+        sync_all(&mut ops, &store).unwrap();
+        assert_eq!(notify_uids(&mut ops, &store), [3, 4]);
+        sync_all(&mut ops, &store).unwrap();
+        assert!(notify_uids(&mut ops, &store).is_empty());
     }
 
     #[test]
