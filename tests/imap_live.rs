@@ -6,11 +6,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use postbode::config::{AccountConfig, Config, PasswordSource};
 use postbode::credentials::Secret;
+use postbode::engine::Engine;
 use postbode::mail_ops::imap::ImapOps;
 use postbode::mail_ops::{Envelope, IdleOutcome, MailOps};
 use postbode::paths::Paths;
+use postbode::rules::Action;
 use postbode::store::Store;
-use postbode::sync::{self, Event};
+use postbode::sync::{self, Activity, Command, Event};
 
 const PASSWORD: &str = "postbode-test";
 const PORT: u16 = 10993;
@@ -366,4 +368,91 @@ fn account_add_accepts_a_private_ca_file() {
     );
     let saved = Config::load(&Paths::under(home.path()).config_file()).unwrap();
     assert_eq!(saved.accounts[0].ca_file, template.ca_file);
+}
+
+#[test]
+fn first_sync_of_a_large_folder_runs_in_chunks() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "chunks");
+    let mut ops = connect(&account);
+    for i in 0..1200 {
+        ops.append("INBOX", &mail(&format!("bulk {i}")), &[])
+            .unwrap();
+    }
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    let (tx, rx) = std::sync::mpsc::channel();
+    sync::run_once(&account, &paths, &tx).unwrap();
+    drop(tx);
+    let progress: Vec<usize> = rx
+        .iter()
+        .filter_map(|e| match e {
+            Event::Activity {
+                activity:
+                    Activity::FetchingHeaders {
+                        folder,
+                        done,
+                        total,
+                    },
+                ..
+            } if folder == "INBOX" => {
+                assert_eq!(total, 1200);
+                Some(done)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(progress, [0, 500, 1000, 1200]);
+    let store = Store::open(&paths.mail_db(&account.name)).unwrap();
+    assert_eq!(store.message_count("INBOX").unwrap(), 1200);
+}
+
+#[test]
+fn a_command_wakes_idle_and_runs_within_two_seconds() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "wake");
+    connect(&account)
+        .append("INBOX", &mail("wake me"), &[])
+        .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let config = Config {
+        accounts: vec![account.clone()],
+    };
+    let (engine, events) = Engine::start(&config, &Paths::under(home.path())).unwrap();
+    let wait = |wanted: &dyn Fn(&Event) -> bool| {
+        loop {
+            let event = events
+                .recv_timeout(Duration::from_secs(30))
+                .expect("event within 30 s");
+            if wanted(&event) {
+                return event;
+            }
+        }
+    };
+    wait(&|e| {
+        matches!(
+            e,
+            Event::Activity {
+                activity: Activity::Idle { .. },
+                ..
+            }
+        )
+    });
+    let sent = Instant::now();
+    assert!(engine.send(
+        &account.name,
+        Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1],
+            action: Action::MarkRead,
+        }
+    ));
+    let done = wait(&|e| matches!(e, Event::ActionDone { .. }));
+    assert!(
+        sent.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        sent.elapsed()
+    );
+    assert!(matches!(done, Event::ActionDone { results, .. } if results == [(1, Ok(1))]));
+    engine.stop();
 }
