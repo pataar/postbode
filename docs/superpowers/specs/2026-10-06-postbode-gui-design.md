@@ -135,9 +135,13 @@ UIDs can be sparse (Gmail and Exchange folders span millions of UID values for a
 
 ```sql
 ALTER TABLE folders ADD COLUMN initial_uid_next INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE folders ADD COLUMN rules_uid INTEGER NOT NULL DEFAULT 0;
+UPDATE folders SET rules_uid = last_uid;
 ```
 
-When a folder is newly tracked, a placeholder is adopted, or a UIDVALIDITY change resets it, `initial_uid_next` is set to one above the highest UID that pass's `search_uids` returned, or 0 when the folder is empty. A message is `initial` (never notifies) when `uid < initial_uid_next`. This replaces "the pass started at `last_uid == 0`", which chunking would break: after the first chunk commits, a resumed sync would notify for every remaining old message. Existing folders migrate with 0, so nothing in them counts as initial, matching today. This also closes the plan-1 follow-up "a first pass that dies mid-fetch leaves the folder tracked at last_uid 0, so the retry … may notify".
+When a folder is newly tracked, a placeholder is adopted, or a UIDVALIDITY change resets it, `initial_uid_next` is set to one above the highest UID that pass's `search_uids` returned, or 0 when the folder is empty, and `rules_uid` is set to 0 in the same transaction. `rules_uid` is the highest UID the rules have evaluated. Existing rows migrate with `initial_uid_next` 0 and `rules_uid = last_uid`, so an upgrade treats no existing mail as fresh.
+
+In Normal mode a message is fresh (it may notify, and body rules fetch its body) when `initial_uid_next <= uid` and `rules_uid < uid <= last_uid`; other modes treat nothing as fresh. Freshness is stored, not taken from the pass's in-memory list, so mail committed by a pass that aborts (failed chunk, lost connection, stop, crash) is still fresh on the next pass, and a resumed chunked first sync stays silent. The `uid <= last_uid` bound keeps a row a UIDPLUS move stored above `last_uid` from marking unsynced mail below it as seen. After a folder's rules complete, `rules_uid` advances to the highest UID evaluated, capped at `last_uid`; synced folders the rules do not look at advance to `last_uid`, so a rule added for one later finds no old mail fresh. It never moves down.
 
 ### Store queries for the list
 
@@ -261,7 +265,7 @@ Three fixed entries below the account trees; selecting one replaces the list and
 - Commands sent while offline run after reconnect; a failing command emits `Error` and the session continues.
 - Chunked fetch: 1,200 messages with sparse UIDs arrive in three chunks, each committed; an error in chunk 2 leaves chunk 1 stored and the next session resumes from it.
 - `initial_uid_next`: a first sync interrupted after one chunk, then resumed, sends no `NewMail`; mail with a uid at or above it notifies.
-- Migration 002 on a store created by 001 keeps every row and sets 0.
+- Migration 002 on a store created by 001 keeps every row, sets `initial_uid_next` to 0 and `rules_uid` to `last_uid`.
 - Activity events arrive in order for a full pass.
 - `thread_summaries` and `thread_members` against `threads()` on the same fixture.
 - `set_enabled` keeps comments and other rules byte-for-byte.
