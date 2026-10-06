@@ -3,3 +3,8 @@ title = "Postbode"
 authors = ["pataar"]
 language = "en"
 src = "src"
+
+[output.html]
+additional-css = ["theme/postbode.css"]
+default-theme = "light"
+preferred-dark-theme = "coal"
