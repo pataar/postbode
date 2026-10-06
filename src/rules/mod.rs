@@ -18,6 +18,7 @@ pub enum RulesError {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuleFile {
     #[serde(default)]
     pub rules: Vec<Rule>,
@@ -162,6 +163,13 @@ impl Matcher {
             rule: rule.to_string(),
             reason,
         };
+        if [contains, equals, regex]
+            .into_iter()
+            .flatten()
+            .any(|value| value.trim().is_empty())
+        {
+            return Err(invalid(format!("match.{field} must not be empty")));
+        }
         match (contains, equals, regex) {
             (Some(c), None, None) => Ok(Matcher::Contains(c.to_lowercase())),
             (None, Some(e), None) => Ok(Matcher::Equals(e.clone())),
@@ -243,6 +251,22 @@ fn compile_rule(
         || m.alias.is_some();
     if !has_condition {
         return Err(invalid("match needs at least one condition"));
+    }
+    if m.header.as_ref().is_some_and(|h| h.name.trim().is_empty()) {
+        return Err(invalid("match.header.name must not be empty"));
+    }
+    if m.alias
+        .as_ref()
+        .is_some_and(|alias| alias.trim().is_empty())
+    {
+        return Err(invalid("match.alias must not be empty"));
+    }
+    if rule
+        .actions
+        .iter()
+        .any(|action| matches!(action, Action::Move(folder) if folder.trim().is_empty()))
+    {
+        return Err(invalid("move folder must not be empty"));
     }
     let text = |field: &str, t: &Option<TextMatch>| -> Result<Option<Matcher>, RulesError> {
         t.as_ref()
@@ -420,5 +444,38 @@ actions = [{ move = "Shopping" }, "notify"]
         assert!(Matcher::Equals("a@b.c".into()).is_match("A@B.C"));
         assert!(!Matcher::Equals("a@b.c".into()).is_match("xa@b.c"));
         assert!(Matcher::Regex(regex::Regex::new("^no-?reply").unwrap()).is_match("noreply@x"));
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_key() {
+        let typo = "[[rule]]\nname = \"x\"\nmatch.seen = true\nactions = [\"flag\"]\n";
+        assert!(matches!(parse(typo), Err(RulesError::Parse(_))));
+    }
+
+    #[test]
+    fn rejects_empty_values() {
+        let rule = |matcher: &str, action: &str| {
+            format!("[[rules]]\nname = \"x\"\n{matcher}\nactions = [{action}]\n")
+        };
+        let cases = [
+            rule("match.subject = { contains = \"\" }", "\"delete\""),
+            rule("match.subject = { equals = \"  \" }", "\"delete\""),
+            rule("match.subject = { regex = \"\" }", "\"delete\""),
+            rule(
+                "match.header = { name = \"\", contains = \"a\" }",
+                "\"delete\"",
+            ),
+            rule("match.seen = true", "{ move = \"\" }"),
+            rule("match.alias = \"\"", "\"delete\""),
+        ];
+        for text in cases {
+            assert!(
+                matches!(
+                    parse(&text).and_then(|f| compile(&f)),
+                    Err(RulesError::Invalid { .. })
+                ),
+                "{text}"
+            );
+        }
     }
 }
