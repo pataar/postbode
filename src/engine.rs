@@ -69,13 +69,22 @@ impl Engine {
             };
             let (commands_tx, commands) = mpsc::channel();
             let wake = Arc::new(AtomicBool::new(false));
-            let handle = std::thread::Builder::new()
+            let spawned = std::thread::Builder::new()
                 .name(format!("sync-{name}"))
                 .spawn({
                     let (account, paths, events) = (account.clone(), paths.clone(), events.clone());
                     let (shutdown, wake) = (shutdown.clone(), wake.clone());
                     move || sync::run_loop(account, paths, events, shutdown, commands, wake)
-                })?;
+                });
+            let handle = match spawned {
+                Ok(handle) => handle,
+                Err(e) => {
+                    engine
+                        .accounts
+                        .push((name, StartState::Failed(e.to_string())));
+                    continue;
+                }
+            };
             engine._locks.push(lock);
             engine.handles.push(handle);
             threads.insert(
@@ -107,17 +116,9 @@ impl Engine {
         }
     }
 
-    /// Sets shutdown and every wake flag, then joins the threads.
+    /// Stops the threads and releases the locks, like dropping the engine.
     pub fn stop(self) {
-        self.shutdown.store(true, Ordering::Release);
-        if let Route::Threads(threads) = &self.route {
-            for thread in threads.values() {
-                thread.wake.store(true, Ordering::Release);
-            }
-        }
-        for handle in self.handles {
-            let _ = handle.join();
-        }
+        drop(self);
     }
 
     /// An engine with no threads whose commands arrive on the returned receiver, for front-end tests.
@@ -134,6 +135,21 @@ impl Engine {
             _locks: Vec::new(),
         };
         (engine, received)
+    }
+}
+
+impl Drop for Engine {
+    /// Sets shutdown and every wake flag, then joins the threads; the locks are released after, with the fields.
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Release);
+        if let Route::Threads(threads) = &self.route {
+            for thread in threads.values() {
+                thread.wake.store(true, Ordering::Release);
+            }
+        }
+        for handle in std::mem::take(&mut self.handles) {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -236,6 +252,26 @@ mod tests {
         let started = std::time::Instant::now();
         engine.stop();
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn dropping_the_engine_stops_its_threads_before_releasing_the_locks() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let config = Config {
+            accounts: vec![offline_account("work")],
+        };
+        let (engine, events) = Engine::start(&config, &paths).unwrap();
+        let started = std::time::Instant::now();
+        drop(engine);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        events.try_iter().for_each(drop);
+        assert_eq!(
+            events.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected),
+            "every sync thread has ended"
+        );
+        assert!(lock_account(&paths, "work").unwrap().is_ok());
     }
 
     #[test]
