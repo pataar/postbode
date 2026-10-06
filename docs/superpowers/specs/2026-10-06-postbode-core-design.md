@@ -348,7 +348,7 @@ Human steps, one time: add the `HOMEBREW_TAP_TOKEN` and `RELEASE_PLZ_TOKEN` secr
 
 Release binaries are not code-signed yet. On macOS every new binary asks again for Keychain access. Developer ID signing is a later decision.
 
-**Renovate** via the Mend Renovate GitHub App, installed on the repo by the owner. Local `renovate.json`: `config:recommended`, `:semanticCommits` with type `chore`, lockfile maintenance monthly, `minimumReleaseAge` 3 days, majors as draft PRs, OSV vulnerability alerts, GitHub Actions digests pinned (except in `.github/workflows/release.yml`, which `cargo-dist` owns), `rust-toolchain.toml` and `.mise.toml` managed so Rust bumps arrive as PRs too. Dependabot is not enabled; two bots on one repo fight.
+**Renovate** via the Mend Renovate GitHub App, installed on the repo by the owner. Local `renovate.json`: `config:recommended`, `:semanticCommits` with type `chore`, lockfile maintenance monthly, `minimumReleaseAge` 3 days, majors as draft PRs, OSV vulnerability alerts, GitHub Actions digests pinned (except in `.github/workflows/release.yml`, which `cargo-dist` owns; that `ignorePaths` replaces Renovate's default ignores, so `tests/` is scanned and the Dovecot test image gets update PRs, which is wanted), `rust-toolchain.toml` and `.mise.toml` managed so Rust bumps arrive as PRs too. Dependabot is not enabled; two bots on one repo fight.
 
 ## 16. Documentation
 

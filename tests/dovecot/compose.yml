@@ -1,3 +1,4 @@
+# The zz- prefix makes our conf files load after the image's own conf.d/ssl.conf, which would otherwise override ssl_server.
 # Live IMAP test servers; see AGENTS.md. Any username logs in with USER_PASSWORD; mail lives only in the container.
 services:
   dovecot:

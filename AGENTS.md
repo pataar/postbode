@@ -16,7 +16,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `main` + `cli/` clap only; no logic
 
 ## Definition of done
-- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` all pass
+- `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` all pass
 - New logic has a test; a bug fix has a regression test
 - Platform coverage reported honestly: say "compiled on" vs "ran on"
 - Every new dependency has a one-line reason in `Cargo.toml`
