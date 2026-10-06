@@ -605,8 +605,9 @@ fn run_exits_nonzero_when_every_account_is_synced_elsewhere() {
 #[cfg(feature = "mcp")]
 #[test]
 fn mcp_speaks_only_json_rpc_on_stdout() {
-    use std::io::Write;
+    use std::io::{BufRead, BufReader, Write};
     use std::process::Stdio;
+    use std::time::Duration;
 
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("config")).unwrap();
@@ -621,7 +622,7 @@ fn mcp_speaks_only_json_rpc_on_stdout() {
         .env("RUST_LOG", "info")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .unwrap();
     let requests = [
@@ -634,14 +635,33 @@ fn mcp_speaks_only_json_rpc_on_stdout() {
     for line in requests {
         writeln!(stdin, "{line}").unwrap();
     }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // A reader thread lets the wait for id 3 time out instead of hanging the suite.
+    let stdout = BufReader::new(child.stdout.take().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in stdout.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let json_rpc = |line: &str| {
+        let reply: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("not JSON-RPC: {line}: {e}"));
+        assert_eq!(reply["jsonrpc"], "2.0", "{line}");
+        reply
+    };
+    loop {
+        let line = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("no reply with id 3");
+        if json_rpc(&line)["id"] == 3 {
+            break;
+        }
+    }
     drop(stdin);
-    let out = child.wait_with_output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let replies: Vec<serde_json::Value> = stdout
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON-RPC: {l}: {e}")))
-        .collect();
-    assert!(replies.iter().any(|r| r["id"] == 3), "{stdout}");
-    assert!(replies.iter().all(|r| r["jsonrpc"] == "2.0"), "{stdout}");
+    child.wait().unwrap();
+    for line in rx {
+        json_rpc(&line);
+    }
 }

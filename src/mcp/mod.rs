@@ -44,17 +44,18 @@ impl Scope {
     }
 }
 
-/// A comma-separated scope list; an unknown scope names the valid ones.
+/// A comma-separated scope list; an unknown scope, or none at all, names the valid ones.
 pub fn parse_scopes(list: &str) -> Result<BTreeSet<Scope>> {
+    let valid = || Scope::ALL.map(Scope::as_str).join(", ");
     let mut scopes = BTreeSet::new();
     for word in list.split(',').map(str::trim).filter(|w| !w.is_empty()) {
         match Scope::ALL.into_iter().find(|s| s.as_str() == word) {
             Some(scope) => scopes.insert(scope),
-            None => {
-                let valid: Vec<&str> = Scope::ALL.iter().map(|s| s.as_str()).collect();
-                bail!("unknown scope '{word}'; valid scopes: {}", valid.join(", "))
-            }
+            None => bail!("unknown scope '{word}'; valid scopes: {}", valid()),
         };
+    }
+    if scopes.is_empty() {
+        bail!("no scopes given; valid scopes: {}", valid());
     }
     Ok(scopes)
 }

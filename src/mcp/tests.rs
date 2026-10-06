@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use super::{Backend, Server, parse_scopes};
 use crate::config::Config;
 use crate::paths::Paths;
-use crate::store::{Folder, Message, Store};
+use crate::store::{Folder, LogEntry, Message, Store};
 
 pub(super) struct Fixture {
     pub paths: Paths,
@@ -135,6 +135,10 @@ pub(super) fn error_text(result: &CallToolResult) -> String {
 fn scopes_parse_and_unknown_ones_name_the_valid_ones() {
     let scopes = parse_scopes("read, rules:propose").unwrap();
     assert_eq!(scopes.len(), 2);
+    for empty in ["", ","] {
+        let err = parse_scopes(empty).unwrap_err().to_string();
+        assert!(err.contains("read:bodies"), "{err}");
+    }
     let err = parse_scopes("read,mail:everything")
         .unwrap_err()
         .to_string();
@@ -223,15 +227,30 @@ async fn account_filter_hides_other_accounts_everywhere() {
     let fx = fixture(&["home", "work"]);
     fx.add("home", fixture_message("INBOX", 1, "Family", "x"));
     fx.add("work", fixture_message("INBOX", 1, "Invoice", "x"));
+    for account in ["home", "work"] {
+        let entry = LogEntry {
+            id: 0,
+            at: 1,
+            rule_name: "r".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            message_id: None,
+            subject: None,
+            action: "flag".into(),
+            trash_file: None,
+        };
+        fx.store(account).log_action(&entry).unwrap();
+    }
     let client = connect(&fx, "read", &["work"]).await;
     let list = rows(&call(&client, "list", json!({})).await);
     assert_eq!(list.len(), 1);
     assert_eq!(list[0]["account"], "work");
-    assert!(
-        rows(&call(&client, "log", json!({})).await)
-            .iter()
-            .all(|r| r["account"] == "work")
-    );
+    let folders = rows(&call(&client, "folders", json!({})).await);
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0]["account"], "work");
+    let log = rows(&call(&client, "log", json!({})).await);
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0]["account"], "work");
     let hidden = error_text(&call(&client, "list", json!({ "account": "home" })).await);
     assert!(hidden.contains("no account named 'home'"), "{hidden}");
 }

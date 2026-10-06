@@ -97,6 +97,7 @@ struct AccountArgs {
 struct ListArgs {
     /// Only this account; default every visible account
     account: Option<String>,
+    /// Folder name as `folders` lists it; default INBOX
     #[serde(default = "inbox")]
     folder: String,
     /// At most 500
@@ -112,6 +113,7 @@ struct ListArgs {
 struct LogArgs {
     /// Only this account; default every visible account
     account: Option<String>,
+    /// At most 500
     #[serde(default = "fifty")]
     limit: u32,
 }
@@ -119,6 +121,7 @@ struct LogArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SearchArgs {
+    /// Words to find; FTS5 syntax when bodies are searchable
     query: String,
     /// Only this account; default every visible account
     account: Option<String>,
