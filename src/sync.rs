@@ -239,14 +239,30 @@ pub fn run_rules(
 
     let mut run = RulesRun::default();
     for folder in folders {
-        if store.folder(&folder)?.is_none() {
+        let Some(stored) = store.folder(&folder)? else {
             continue;
-        }
-        if let Err(e) = ops.select(&folder) {
-            run.events.push(rule_error(
-                account,
-                format!("{folder}: {e}; skipping its rules"),
-            ));
+        };
+        let info = match ops.select(&folder) {
+            Ok(info) => info,
+            Err(e) => {
+                run.events.push(rule_error(
+                    account,
+                    format!("{folder}: {e}; skipping its rules"),
+                ));
+                continue;
+            }
+        };
+        // Stored uids belong to another UIDVALIDITY: acting on them would hit unrelated server messages.
+        if info.uidvalidity != stored.uidvalidity {
+            // uidvalidity 0 is a placeholder from a rule move; the next full sync adopts the server value.
+            if stored.uidvalidity != 0 {
+                run.events.push(rule_error(
+                    account,
+                    format!(
+                        "{folder}: folder changed on server; resync needed, skipping its rules"
+                    ),
+                ));
+            }
             continue;
         }
         let needs_body = folder_needs_body(rules, &account.name, &folder);
@@ -973,6 +989,70 @@ mod tests {
         assert_eq!(run.events.len(), 1);
         assert!(
             matches!(&run.events[0], Event::Error { message, .. } if message.contains("Gone")),
+            "{:?}",
+            run.events
+        );
+    }
+
+    #[test]
+    fn changed_uidvalidity_blocks_rules_on_stale_rows() {
+        let mut ops = RecordingOps::new()
+            .with_folder("INBOX", None)
+            .with_folder("Codes", None);
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let rules = rules_from(
+            "[[rules]]\nname = \"p\"\nfolder = \"Codes\"\nmatch.subject = { contains = \"code\" }\nactions = [\"delete\"]\n",
+            &store,
+            0,
+        );
+        sync_all(&mut ops, &store).unwrap();
+        ops.add_mail(
+            "Codes",
+            1,
+            10 * H,
+            &headers("n@x", "your code", "c1@x"),
+            Some("Subject: your code\r\n\r\nOLD"),
+        );
+        sync_all(&mut ops, &store).unwrap();
+        // Folder recreated elsewhere: new UIDVALIDITY and uid 1 is now an unrelated message; only INBOX is synced.
+        ops.uidvalidity.insert("Codes".into(), 9);
+        ops.mail.get_mut("Codes").unwrap().clear();
+        ops.raw.clear();
+        ops.add_mail(
+            "Codes",
+            1,
+            11 * H,
+            &headers("boss@x", "contract", "k1@x"),
+            Some("Subject: contract\r\n\r\nIMPORTANT"),
+        );
+        let inbox = RemoteFolder {
+            name: "INBOX".into(),
+            special_use: None,
+        };
+        let new = sync_folder(&mut ops, &store, &inbox).unwrap();
+        let run = run_rules(
+            &mut ops,
+            &store,
+            &trash,
+            &rules,
+            &acc,
+            &identity,
+            &new,
+            Mode::Normal,
+            12 * H,
+        )
+        .unwrap();
+        assert!(!ops.calls.iter().any(|c| c.starts_with("expunge")));
+        assert_eq!(ops.mail["Codes"].len(), 1, "server message intact");
+        assert!(trash.list().unwrap().is_empty());
+        assert!(
+            run.events.iter().any(
+                |e| matches!(e, Event::Error { message, .. } if message.contains("resync needed"))
+            ),
             "{:?}",
             run.events
         );

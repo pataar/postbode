@@ -234,7 +234,13 @@ pub fn run() -> Result<()> {
                 None => {
                     let secret = credentials::resolve(acc)?;
                     let mut ops = postbode::mail_ops::imap::ImapOps::connect(acc, &secret)?;
-                    ops.select(&folder)?;
+                    let info = ops.select(&folder)?;
+                    let stored = store.folder(&folder)?.map(|f| f.uidvalidity);
+                    if stored != Some(info.uidvalidity) {
+                        bail!(
+                            "{folder} changed on the server since the last sync; run `postbode sync` first"
+                        );
+                    }
                     postbode::rules::apply::ensure_raw(&msg, &mut ops, &store)?
                 }
             };
