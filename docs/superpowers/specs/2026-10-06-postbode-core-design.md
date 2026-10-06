@@ -271,7 +271,7 @@ postbode rules schema                         JSON Schema for rules.toml, from t
 postbode rules propose [--by WHO]             read one rule as JSON on stdin, append with enabled = false
 postbode rules approve NAME | reject NAME     flip enabled, or remove the proposal
 postbode rules list [--json]                  name, enabled, proposed_by
-postbode guide                                print docs/agent-guide.md
+postbode guide                                print docs/src/agent-guide.md
 postbode folders [--account NAME] [--json]
 postbode list [--account NAME] [--folder INBOX] [--limit 50] [--threads] [--json]
 postbode show UID [--account NAME] [--folder INBOX] [--raw] [--json]
@@ -365,7 +365,7 @@ docs/
 Rules for keeping it truthful:
 - `postbode guide` is `include_str!("../docs/src/agent-guide.md")`. The binary and the site can't drift.
 - `README.md` is `docs/src/index.md` plus badges; a CI check diffs them.
-- Every ```toml block in `rules.md` and `agent-guide.md` is extracted by a test and run through the rules parser. A broken example fails the build.
+- Every ```toml block in `index.md`, `rules.md` and `accounts.md` is extracted by a test and run through the rules or config parser, and the JSON proposal examples in `agent-guide.md` through the rule validator. A broken example fails the build.
 - `cli.md` is regenerated in CI from `--help` output and the job fails on a diff, so flag changes force a docs commit.
 - `rules schema` output is written to `docs/src/rules.schema.json` by the same job, for editors and agents that want it offline.
 
