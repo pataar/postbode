@@ -294,3 +294,42 @@ fn run_refuses_to_start_with_invalid_rules() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("rule 'x'"), "{stderr}");
 }
+
+#[test]
+fn delete_dry_run_reads_only_the_local_store() {
+    let (home, _store) = seeded_home(&[message(42, "a@example.com", "Old newsletter")]);
+    let out = postbode(home.path(), &["delete", "42", "--dry-run"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "would trash  INBOX/42  Old newsletter\n"
+    );
+    let out = postbode(home.path(), &["mark", "read", "42", "43", "--dry-run"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("INBOX/43: not in the local store"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn direct_actions_need_at_least_one_uid() {
+    let (home, _store) = seeded_home(&[]);
+    assert_eq!(postbode(home.path(), &["archive"]).status.code(), Some(2));
+}
+
+#[test]
+fn show_json_carries_the_account() {
+    let (home, store) = seeded_home(&[message(42, "a@example.com", "Hello")]);
+    store
+        .set_raw("INBOX", 42, b"Subject: Hello\r\n\r\nhi", "hi")
+        .unwrap();
+    let out = postbode(home.path(), &["show", "42", "--json"]);
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["account"], "work");
+}

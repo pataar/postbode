@@ -11,8 +11,8 @@ use postbode::config::{AccountConfig, Config, Identity, PasswordSource};
 use postbode::credentials::{self, Secret};
 use postbode::mail_ops::MailOps;
 use postbode::paths::Paths;
-use postbode::rules::CompiledRule;
 use postbode::rules::engine::{Context, Mode, evaluate};
+use postbode::rules::{Action, CompiledRule};
 use postbode::store::{Message, Store};
 use postbode::sync::{self, Event};
 use postbode::trash::Trash;
@@ -26,6 +26,28 @@ use postbode::trash::Trash;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(clap::Args)]
+struct Selection {
+    /// Message uids in --folder, as `list` prints them
+    #[arg(required = true)]
+    uids: Vec<u32>,
+    #[arg(long)]
+    account: Option<String>,
+    #[arg(long, default_value = "INBOX")]
+    folder: String,
+    /// Print what would happen without touching the server
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Mark {
+    Flag,
+    Read,
+    Unflag,
+    Unread,
 }
 
 #[derive(Subcommand)]
@@ -72,6 +94,30 @@ enum Command {
         raw: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Mark messages read or unread, flagged or unflagged
+    Mark {
+        #[arg(value_enum)]
+        how: Mark,
+        #[command(flatten)]
+        selection: Selection,
+    },
+    /// Move messages to another folder, creating it if needed
+    Move {
+        #[arg(long)]
+        to: String,
+        #[command(flatten)]
+        selection: Selection,
+    },
+    /// Move messages to the Archive folder
+    Archive {
+        #[command(flatten)]
+        selection: Selection,
+    },
+    /// Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup
+    Delete {
+        #[command(flatten)]
+        selection: Selection,
     },
     /// Show what rules did, newest first
     Log {
@@ -221,26 +267,13 @@ pub fn run() -> Result<()> {
             let msg = store
                 .message(&folder, uid)?
                 .with_context(|| format!("no message {folder}/{uid}"))?;
-            let body = match store.raw(&folder, uid)? {
-                Some(raw) => raw,
-                None => {
-                    let mut ops = sync::connect(acc)?;
-                    let info = ops.select(&folder)?;
-                    let stored = store.folder(&folder)?.map(|f| f.uidvalidity);
-                    if stored != Some(info.uidvalidity) {
-                        bail!(
-                            "{folder} changed on the server since the last sync; run `postbode sync` first"
-                        );
-                    }
-                    postbode::rules::apply::ensure_raw(&msg, &mut ops, &store)?
-                }
-            };
+            let body = message_raw(acc, &store, &msg)?;
             if raw {
                 io::stdout().write_all(&body)?;
             } else if json {
                 println!(
                     "{}",
-                    serde_json::json!({ "message": msg, "body_text": postbode::message::body_text(&body) })
+                    serde_json::json!({ "account": acc.name, "message": msg, "body_text": postbode::message::body_text(&body) })
                 );
             } else {
                 println!(
@@ -253,6 +286,23 @@ pub fn run() -> Result<()> {
             }
             Ok(())
         }
+        Command::Mark { how, selection } => {
+            let action = match how {
+                Mark::Flag => Action::Flag,
+                Mark::Read => Action::MarkRead,
+                Mark::Unflag => Action::Unflag,
+                Mark::Unread => Action::MarkUnread,
+            };
+            cmd_act(&config, &paths, selection, action)
+        }
+        Command::Move { to, selection } => {
+            if to.trim().is_empty() {
+                bail!("--to must name a folder");
+            }
+            cmd_act(&config, &paths, selection, Action::Move(to))
+        }
+        Command::Archive { selection } => cmd_act(&config, &paths, selection, Action::Archive),
+        Command::Delete { selection } => cmd_act(&config, &paths, selection, Action::Trash),
         Command::Log {
             account,
             limit,
@@ -284,6 +334,71 @@ pub fn run() -> Result<()> {
             AccountCommand::Add => cmd_account_add(config, &paths),
         },
     }
+}
+
+/// Runs a direct action on the selected uids; `--dry-run` only reads the local store.
+fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action) -> Result<()> {
+    let acc = single_account(config, selection.account.as_deref())?;
+    let store = open_store(paths, &acc.name)?;
+    let folder = clean(&selection.folder, false);
+    if selection.dry_run {
+        let mut missing = 0;
+        for &uid in &selection.uids {
+            match store.message(&selection.folder, uid)? {
+                Some(m) => println!(
+                    "would {}  {folder}/{uid}  {}",
+                    clean(&action.label(), false),
+                    clean(m.subject.as_deref().unwrap_or(""), false)
+                ),
+                None => {
+                    eprintln!("{folder}/{uid}: not in the local store");
+                    missing += 1;
+                }
+            }
+        }
+        if missing > 0 {
+            bail!("{missing} messages are not in the local store; run `postbode sync` first");
+        }
+        return Ok(());
+    }
+    let mut ops = sync::connect(acc)?;
+    let trash = Trash::new(paths.trash_dir(&acc.name));
+    let results = postbode::actions::run(
+        &mut ops,
+        &store,
+        &trash,
+        &selection.folder,
+        &selection.uids,
+        &action,
+        sync::now(),
+    )?;
+    let mut failed = 0;
+    for (uid, result) in &results {
+        if let Err(e) = result {
+            eprintln!("{folder}/{uid}: {}", clean(&e.to_string(), false));
+            failed += 1;
+        }
+    }
+    println!(
+        "{}: {} of {} messages",
+        clean(&action.label(), false),
+        results.len() - failed,
+        results.len()
+    );
+    if failed > 0 {
+        bail!("{failed} of {} messages failed", results.len());
+    }
+    Ok(())
+}
+
+/// The full message, from the store or fetched once from the server.
+fn message_raw(account: &AccountConfig, store: &Store, msg: &Message) -> Result<Vec<u8>> {
+    if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
+        return Ok(raw);
+    }
+    let mut ops = sync::connect(account)?;
+    postbode::actions::select_synced(&mut ops, store, &msg.folder)?;
+    Ok(postbode::rules::apply::ensure_raw(msg, &mut ops, store)?)
 }
 
 fn select_accounts<'a>(config: &'a Config, name: Option<&str>) -> Result<Vec<&'a AccountConfig>> {
