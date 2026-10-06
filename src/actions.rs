@@ -104,6 +104,24 @@ pub fn fetch_bodies(
     Ok(fetched)
 }
 
+/// Downloads and indexes one message body, refusing when the folder changed on the server since the last sync.
+pub fn fetch_body(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: &str,
+    uid: u32,
+) -> Result<(), ActionError> {
+    select_synced(ops, store, folder)?;
+    let msg = store
+        .message(folder, uid)?
+        .ok_or_else(|| ActionError::NotFound {
+            folder: folder.to_string(),
+            uid,
+        })?;
+    ensure_raw(&msg, ops, store)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

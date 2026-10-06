@@ -3,9 +3,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::actions::{self, ActionError};
 use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
 use crate::mail_ops::imap::ImapOps;
@@ -14,12 +15,16 @@ use crate::message::{body_text, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply, ensure_raw};
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body};
-use crate::rules::{CompiledRule, RulesError};
+use crate::rules::{Action, CompiledRule, RulesError};
 use crate::store::{Folder, Message, Store, StoreError};
-use crate::trash::Trash;
+use crate::trash::{RestoreError, Trash};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
+    #[error(transparent)]
+    Action(#[from] ActionError),
+    #[error(transparent)]
+    Restore(#[from] RestoreError),
     #[error(transparent)]
     Mail(#[from] MailError),
     #[error(transparent)]
@@ -40,6 +45,24 @@ pub enum SyncError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    Activity {
+        account: String,
+        activity: Activity,
+    },
+    ActionDone {
+        account: String,
+        folder: String,
+        results: Vec<(u32, Result<usize, String>)>,
+    },
+    BodyReady {
+        account: String,
+        folder: String,
+        uid: u32,
+    },
+    Restored {
+        account: String,
+        folder: String,
+    },
     NewMail {
         account: String,
         folder: String,
@@ -106,6 +129,30 @@ pub enum Activity {
         reason: String,
         retry_at: i64,
     },
+}
+
+/// Work a front end asks an account's sync thread to do on its connection.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    Apply {
+        folder: String,
+        uids: Vec<u32>,
+        action: Action,
+    },
+    FetchBody {
+        folder: String,
+        uid: u32,
+    },
+    Restore {
+        file: PathBuf,
+    },
+    SyncNow,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct CommandsRun {
+    pub used_connection: bool,
+    pub wants_full_pass: bool,
 }
 
 /// Called between steps of a pass with what is happening; may run queued commands on the connection.
@@ -500,6 +547,121 @@ fn account_error(account: &AccountConfig, message: String) -> Event {
         account: account.name.clone(),
         message,
     }
+}
+
+/// Runs every queued command in arrival order. A failed command is reported and the next one runs; a lost
+/// connection ends the drain with the error, so the session reconnects.
+pub fn run_commands(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    trash: &Trash,
+    account: &AccountConfig,
+    commands: &Receiver<Command>,
+    events: &Sender<Event>,
+) -> Result<CommandsRun, SyncError> {
+    let name = || account.name.clone();
+    let mut run = CommandsRun::default();
+    while let Ok(command) = commands.try_recv() {
+        match command {
+            Command::SyncNow => run.wants_full_pass = true,
+            Command::Apply {
+                folder,
+                uids,
+                action,
+            } => {
+                run.used_connection = true;
+                let _ = events.send(Event::Activity {
+                    account: name(),
+                    activity: Activity::RunningCommand {
+                        what: describe(&action, uids.len()),
+                    },
+                });
+                let outcome = actions::run(ops, store, trash, &folder, &uids, &action, now());
+                let (results, lost) = match outcome {
+                    Ok(results) => {
+                        let lost = results
+                            .iter()
+                            .any(|(_, r)| r.as_ref().is_err_and(connection_lost));
+                        let results = results
+                            .into_iter()
+                            .map(|(uid, r)| (uid, r.map_err(|e| e.to_string())))
+                            .collect();
+                        (results, lost)
+                    }
+                    Err(e) => (
+                        uids.iter().map(|&uid| (uid, Err(e.to_string()))).collect(),
+                        connection_lost(&e),
+                    ),
+                };
+                let _ = events.send(Event::ActionDone {
+                    account: name(),
+                    folder,
+                    results,
+                });
+                if lost {
+                    return Err(MailError::Io("connection lost during command".into()).into());
+                }
+            }
+            Command::FetchBody { folder, uid } => {
+                run.used_connection = true;
+                match actions::fetch_body(ops, store, &folder, uid) {
+                    Ok(()) => {
+                        let _ = events.send(Event::BodyReady {
+                            account: name(),
+                            folder,
+                            uid,
+                        });
+                    }
+                    Err(e) if connection_lost(&e) => return Err(e.into()),
+                    Err(e) => {
+                        let _ = events.send(account_error(account, format!("{folder}/{uid}: {e}")));
+                    }
+                }
+            }
+            Command::Restore { file } => {
+                run.used_connection = true;
+                match trash.restore(ops, &file) {
+                    Ok(folder) => {
+                        run.wants_full_pass = true;
+                        let _ = events.send(Event::Restored {
+                            account: name(),
+                            folder,
+                        });
+                    }
+                    Err(RestoreError::Mail(e @ (MailError::Io(_) | MailError::Connect(_)))) => {
+                        return Err(SyncError::Mail(e));
+                    }
+                    Err(e) => {
+                        let _ = events.send(account_error(account, e.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(run)
+}
+
+fn connection_lost(e: &ActionError) -> bool {
+    let mail = match e {
+        ActionError::Mail(e) | ActionError::Apply(ApplyError::Mail(e)) => e,
+        _ => return false,
+    };
+    matches!(mail, MailError::Io(_) | MailError::Connect(_))
+}
+
+fn describe(action: &Action, count: usize) -> String {
+    let verb = match action {
+        Action::Archive => "archiving",
+        Action::Delete | Action::Trash => "deleting",
+        Action::Flag => "flagging",
+        Action::MarkRead => "marking read",
+        Action::MarkUnread => "marking unread",
+        Action::Move(_) => "moving",
+        Action::Notify | Action::Silent => "updating",
+        Action::Unflag => "unflagging",
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{verb} {count} message{plural}")
 }
 
 /// Resolves the account's password and logs in.
@@ -1752,5 +1914,152 @@ mod tests {
         );
         assert_eq!(connects, 10);
         assert_eq!(sleeps, vec![5, 10, 20, 40, 80, 160, 300, 300, 300, 5]);
+    }
+
+    fn synced() -> (RecordingOps, Store, tempfile::TempDir) {
+        let mut ops = ops_with_inbox();
+        let store = Store::open_in_memory().unwrap();
+        sync_all(&mut ops, &store).unwrap();
+        (ops, store, tempfile::tempdir().unwrap())
+    }
+
+    fn drain(
+        ops: &mut RecordingOps,
+        store: &Store,
+        trash: &Trash,
+        commands: Vec<Command>,
+    ) -> (Result<CommandsRun, SyncError>, Vec<Event>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for c in commands {
+            tx.send(c).unwrap();
+        }
+        let (events, seen) = std::sync::mpsc::channel();
+        let run = run_commands(ops, store, trash, &account(), &rx, &events);
+        (run, seen.try_iter().collect())
+    }
+
+    #[test]
+    fn apply_reports_a_result_per_uid_and_keeps_going() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let apply = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1, 99],
+            action: Action::MarkRead,
+        };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![apply, Command::SyncNow]);
+        assert_eq!(
+            run.unwrap(),
+            CommandsRun {
+                used_connection: true,
+                wants_full_pass: true
+            }
+        );
+        let done = events
+            .iter()
+            .find_map(|e| match e {
+                Event::ActionDone { results, .. } => Some(results.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(done[0], (1, Ok(1)));
+        assert!(
+            matches!(&done[1], (99, Err(e)) if e.contains("no message INBOX/99")),
+            "{done:?}"
+        );
+        assert!(store.message("INBOX", 1).unwrap().unwrap().is_seen());
+        assert!(events.contains(&Event::Activity {
+            account: "work".into(),
+            activity: Activity::RunningCommand {
+                what: "marking read 2 messages".into()
+            }
+        }));
+    }
+
+    #[test]
+    fn fetch_body_stores_the_body_and_reports_it() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let (run, events) = drain(
+            &mut ops,
+            &store,
+            &trash,
+            vec![Command::FetchBody {
+                folder: "INBOX".into(),
+                uid: 1,
+            }],
+        );
+        assert!(run.unwrap().used_connection);
+        assert!(store.raw("INBOX", 1).unwrap().is_some());
+        assert!(events.contains(&Event::BodyReady {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            uid: 1
+        }));
+    }
+
+    #[test]
+    fn restore_appends_the_backup_and_asks_for_a_full_pass() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let file = trash
+            .save("INBOX", 7, b"Subject: back\r\n\r\nhi", 100)
+            .unwrap();
+        let restore = Command::Restore { file: file.clone() };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![restore]);
+        assert!(run.unwrap().wants_full_pass);
+        assert!(!file.exists());
+        assert!(ops.calls.iter().any(|c| c.starts_with("append INBOX")));
+        assert!(events.contains(&Event::Restored {
+            account: "work".into(),
+            folder: "INBOX".into()
+        }));
+    }
+
+    #[test]
+    fn restore_refuses_a_file_outside_the_trash() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().join("trash"));
+        let outside = dir.path().join("100-INBOX-7.eml");
+        std::fs::write(&outside, b"Subject: x\r\n\r\n").unwrap();
+        let restore = Command::Restore {
+            file: outside.clone(),
+        };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![restore]);
+        assert!(run.is_ok());
+        assert!(outside.exists());
+        assert!(!ops.calls.iter().any(|c| c.starts_with("append")));
+        assert!(events.iter().any(
+            |e| matches!(e, Event::Error { message, .. } if message.contains("not a backup"))
+        ));
+    }
+
+    #[test]
+    fn a_command_for_a_vanished_message_reports_and_the_next_runs() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        store.remove_message("INBOX", 1).unwrap();
+        let commands = vec![
+            Command::FetchBody {
+                folder: "INBOX".into(),
+                uid: 1,
+            },
+            Command::FetchBody {
+                folder: "INBOX".into(),
+                uid: 2,
+            },
+        ];
+        let (run, events) = drain(&mut ops, &store, &trash, commands);
+        assert!(run.is_ok());
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Error { message, .. } if message.contains("INBOX/1")))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::BodyReady { uid: 2, .. }))
+        );
     }
 }

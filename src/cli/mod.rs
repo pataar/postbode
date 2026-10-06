@@ -731,6 +731,8 @@ fn print_event(event: &Event) {
         Event::Error { account, message } => {
             eprintln!("[{account}] error: {}", clean(message, false))
         }
+        Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
+        Event::ActionDone { .. } | Event::BodyReady { .. } | Event::Restored { .. } => {}
     }
 }
 
@@ -970,16 +972,9 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         }
         TrashCommand::Restore { file, account } => {
             let acc = single_account(config, account.as_deref())?;
-            let path = Path::new(&file);
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .context("bad file name")?;
-            let (_, folder, _) = Trash::parse_name(name).context("not a postbode trash file")?;
-            let raw = std::fs::read(path)?;
             let mut ops = sync::connect(acc)?;
-            ops.append(&folder, &raw, &[postbode::rules::engine::RESTORED_KEYWORD])?;
-            std::fs::remove_file(path)?;
+            let folder =
+                Trash::new(paths.trash_dir(&acc.name)).restore(&mut ops, Path::new(&file))?;
             println!(
                 "restored to {}; rules leave restored mail alone. Run `postbode sync` to see it",
                 clean(&folder, false)

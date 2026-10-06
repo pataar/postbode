@@ -1,10 +1,22 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use crate::mail_ops::{MailError, MailOps};
 use crate::paths::write_atomic;
+use crate::rules::engine::RESTORED_KEYWORD;
 
 pub struct Trash {
     dir: PathBuf,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    #[error("{0} is not a backup in this account's trash")]
+    NotInTrash(String),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Mail(#[from] MailError),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +77,24 @@ impl Trash {
             }
         }
         Ok(removed)
+    }
+
+    /// Appends the backup to its original folder with the restored keyword, then removes the file. Returns the folder.
+    pub fn restore(&self, ops: &mut dyn MailOps, file: &Path) -> Result<String, RestoreError> {
+        let not_in_trash = || RestoreError::NotInTrash(file.display().to_string());
+        let file = file.canonicalize().map_err(|_| not_in_trash())?;
+        let in_trash = self.dir.canonicalize().ok().as_deref() == file.parent();
+        let parsed = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(Trash::parse_name);
+        let (Some((_, folder, _)), true) = (parsed, in_trash) else {
+            return Err(not_in_trash());
+        };
+        let raw = std::fs::read(&file)?;
+        ops.append(&folder, &raw, &[RESTORED_KEYWORD])?;
+        std::fs::remove_file(&file)?;
+        Ok(folder)
     }
 
     pub fn parse_name(name: &str) -> Option<(i64, String, u32)> {
