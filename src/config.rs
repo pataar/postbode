@@ -1,5 +1,5 @@
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,9 @@ pub struct AccountConfig {
     pub trash_retention_days: u64,
     #[serde(default = "default_true")]
     pub notify: bool,
+    /// Extra trusted root certificate (PEM), for servers with a private CA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +111,13 @@ impl Config {
             if account.address.is_none() && !account.username.contains('@') {
                 return Err(ConfigError::Invalid(format!(
                     "account '{name}': set `address` because the username is not an email address"
+                )));
+            }
+            if let Some(ca_file) = &account.ca_file
+                && !ca_file.is_absolute()
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "account '{name}': ca_file must be an absolute path"
                 )));
             }
             account.identity()?;
@@ -235,6 +245,19 @@ notify = false
     fn rejects_username_without_at_and_no_address() {
         let bad = SAMPLE.replace("address = \"pieter@home.test\"\n", "");
         assert!(matches!(Config::parse(&bad), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn relative_ca_file_is_rejected() {
+        let text = "[[accounts]]\nname = \"self\"\nhost = \"localhost\"\nusername = \"me@example.com\"\npassword = { keyring = true }\nca_file = \"certs/ca.pem\"\n";
+        let err = Config::parse(text).unwrap_err().to_string();
+        assert!(err.contains("ca_file must be an absolute path"), "{err}");
+        let absolute = text.replace("certs/ca.pem", "/etc/ssl/self/ca.pem");
+        assert!(
+            Config::parse(&absolute).unwrap().accounts[0]
+                .ca_file
+                .is_some()
+        );
     }
 
     #[test]

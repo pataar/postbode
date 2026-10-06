@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -6,6 +7,7 @@ use async_imap::Session;
 use async_imap::extensions::idle::IdleResponse;
 use async_imap::types::{Fetch, Flag, NameAttribute};
 use futures_util::TryStreamExt;
+use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
 use tokio_rustls::client::TlsStream;
@@ -76,6 +78,25 @@ impl ImapOps {
     }
 }
 
+/// The public web roots, plus the account's own CA when it sets `ca_file`.
+fn root_store(ca_file: Option<&Path>) -> MailResult<rustls::RootCertStore> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let Some(path) = ca_file else {
+        return Ok(roots);
+    };
+    let invalid =
+        |reason: String| MailError::Connect(format!("ca_file {}: {reason}", path.display()));
+    let certs = CertificateDer::pem_file_iter(path)
+        .and_then(|certs| certs.collect::<Result<Vec<_>, _>>())
+        .map_err(|e| invalid(e.to_string()))?;
+    let (added, _) = roots.add_parsable_certificates(certs);
+    if added == 0 {
+        return Err(invalid("no certificate found".into()));
+    }
+    Ok(roots)
+}
+
 async fn open_session(
     account: &AccountConfig,
     secret: &Secret,
@@ -84,8 +105,7 @@ async fn open_session(
         .await
         .map_err(|e| MailError::Connect(e.to_string()))?;
     enable_keepalive(&tcp).map_err(|e| MailError::Connect(e.to_string()))?;
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let roots = root_store(account.ca_file.as_deref())?;
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
@@ -434,6 +454,39 @@ mod tests {
             sync_interval_secs: 120,
             trash_retention_days: 30,
             notify: true,
+            ca_file: None,
+        }
+    }
+
+    const TEST_CA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/dovecot/certs/ca.pem");
+
+    #[test]
+    fn root_store_adds_the_ca_file_to_the_public_roots() {
+        let public = root_store(None).unwrap().len();
+        assert_eq!(
+            root_store(Some(Path::new(TEST_CA))).unwrap().len(),
+            public + 1
+        );
+    }
+
+    #[test]
+    fn root_store_rejects_a_missing_or_empty_ca_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.pem");
+        std::fs::write(&empty, "not a certificate\n").unwrap();
+        for path in [dir.path().join("missing.pem"), empty] {
+            match root_store(Some(&path)) {
+                Err(MailError::Connect(message)) => {
+                    assert!(
+                        message.contains("ca_file") && message.contains(&*path.to_string_lossy()),
+                        "{message}"
+                    )
+                }
+                other => panic!(
+                    "{path:?}: expected a ca_file error, got {:?}",
+                    other.map(|r| r.len())
+                ),
+            }
         }
     }
 

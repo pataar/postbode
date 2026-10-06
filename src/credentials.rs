@@ -132,6 +132,7 @@ mod tests {
             sync_interval_secs: 120,
             trash_retention_days: 30,
             notify: true,
+            ca_file: None,
         }
     }
 

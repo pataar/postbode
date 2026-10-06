@@ -1002,6 +1002,7 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         sync_interval_secs: 120,
         trash_retention_days: 30,
         notify: true,
+        ca_file: None,
     };
     config.accounts.retain(|a| a.name != account.name);
     config.accounts.push(account);

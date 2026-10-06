@@ -89,6 +89,7 @@ aliases = ["p@example.org", "*@shop.example.com"]   # optional, glob on the whol
 sync_interval_secs = 120                # default 120
 trash_retention_days = 30               # default 30
 notify = true                           # default true: notify for new INBOX mail not handled by a rule
+ca_file = "/etc/ssl/private-ca.pem"     # optional, absolute path to a PEM with an extra trusted root, for a server with a private CA
 ```
 
 `address` plus `aliases` define "me" for the account. Globs use `*` only, matched case-insensitively against the full address. Later phases use the same list for the From picker in compose and to reply from the alias a mail was sent to.

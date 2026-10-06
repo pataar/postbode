@@ -32,6 +32,7 @@ notify = true
 | `sync_interval_secs` | 120 | Full sync interval. New INBOX mail arrives sooner through IMAP IDLE. |
 | `trash_retention_days` | 30 | How long deleted mail is kept as `.eml`. |
 | `notify` | true | Desktop notification for new INBOX mail no rule handled. |
+| `ca_file` | none | Absolute path to a PEM file with an extra trusted root certificate, for a server with a private CA. |
 
 ## Passwords
 
