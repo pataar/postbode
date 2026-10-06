@@ -135,6 +135,8 @@ fn delete(
     let raw = ensure_raw(msg, ops, store)?;
     let path = trash.save(&msg.folder, msg.uid, &raw, now)?;
     let mut entry = log_entry(planned, msg, now);
+    // A user delete that falls back to expunging is logged as what happened, not as a move to Trash.
+    entry.action = Action::Delete.label();
     entry.trash_file = Some(path.to_string_lossy().into_owned());
     store.log_action(&entry)?;
     ops.add_flags(msg.uid, &["\\Deleted"])?;
@@ -184,7 +186,12 @@ fn archive_folder(store: &Store) -> Result<String, ApplyError> {
     special_folder(store, "Archive")?.ok_or(ApplyError::NoArchiveFolder)
 }
 
-/// Where a user delete moves the message: the Trash folder, unless there is none or the message already sits in it.
+/// Where a user delete goes: `Some` is the Trash folder to move to; `None` means expunge with an .eml backup, because
+/// there is no Trash folder or the message already sits in it.
+pub fn trash_destination(store: &Store, msg: &Message) -> Result<Option<String>, StoreError> {
+    Ok(special_folder(store, "Trash")?.filter(|folder| *folder != msg.folder))
+}
+
 fn trash_target(
     planned: &PlannedAction,
     msg: &Message,
@@ -193,7 +200,7 @@ fn trash_target(
     if planned.action != Action::Trash {
         return Ok(None);
     }
-    Ok(special_folder(store, "Trash")?.filter(|folder| *folder != msg.folder))
+    Ok(trash_destination(store, msg)?)
 }
 
 /// When the server does not report the new uid, the local row is dropped and the next sync of the target folder re-adds it.
@@ -654,7 +661,12 @@ mod tests {
         .unwrap();
         assert!(ops.mail["INBOX"].is_empty());
         assert_eq!(trash.list().unwrap().len(), 1);
-        assert!(store.log(10).unwrap()[0].trash_file.is_some());
+        let log = store.log(10).unwrap();
+        assert!(log[0].trash_file.is_some());
+        assert_eq!(
+            log[0].action, "delete",
+            "the log says the message was expunged"
+        );
     }
 
     #[test]

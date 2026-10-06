@@ -457,8 +457,8 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         for &uid in &selection.uids {
             match store.message(&selection.folder, uid)? {
                 Some(m) => println!(
-                    "would {}  {folder}/{uid}  {}",
-                    clean(&action.label(), false),
+                    "{}  {folder}/{uid}  {}",
+                    planned_effect(&store, &m, &action)?,
                     clean(m.subject.as_deref().unwrap_or(""), false)
                 ),
                 None => {
@@ -490,9 +490,13 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
             failed += 1;
         }
     }
+    let label = match action {
+        Action::Trash => Action::Delete.label(),
+        _ => action.label(),
+    };
     println!(
         "{}: {} of {} messages",
-        clean(&action.label(), false),
+        clean(&label, false),
         results.len() - failed,
         results.len()
     );
@@ -503,6 +507,18 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
 }
 
 /// The full message, from the store or fetched once from the server.
+/// What a dry run would do to `msg`; a user delete names its outcome, because an expunge cannot be undone on the server.
+fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<String> {
+    if *action != Action::Trash {
+        return Ok(format!("would {}", clean(&action.label(), false)));
+    }
+    let effect = match postbode::rules::apply::trash_destination(store, msg)? {
+        Some(trash) => format!("would move to {}", clean(&trash, false)),
+        None => "would delete (expunge, .eml backup kept)".to_string(),
+    };
+    Ok(effect)
+}
+
 /// Fetches the bodies `search --bodies` needs; a folder that cannot be fetched is reported and skipped.
 fn fetch_missing_bodies(
     account: &AccountConfig,

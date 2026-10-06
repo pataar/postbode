@@ -306,7 +306,7 @@ fn delete_dry_run_reads_only_the_local_store() {
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "would trash  INBOX/42  Old newsletter\n"
+        "would delete (expunge, .eml backup kept)  INBOX/42  Old newsletter\n"
     );
     let out = postbode(home.path(), &["mark", "read", "42", "43", "--dry-run"]);
     assert!(!out.status.success());
@@ -314,6 +314,24 @@ fn delete_dry_run_reads_only_the_local_store() {
     assert!(
         stderr.contains("INBOX/43: not in the local store"),
         "{stderr}"
+    );
+}
+
+#[test]
+fn delete_dry_run_names_the_trash_folder() {
+    let (home, store) = seeded_home(&[message(42, "a@example.com", "Old newsletter")]);
+    store
+        .upsert_folder(&Folder {
+            name: "Trash".into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: Some("Trash".into()),
+        })
+        .unwrap();
+    let out = postbode(home.path(), &["delete", "42", "--dry-run"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "would move to Trash  INBOX/42  Old newsletter\n"
     );
 }
 
