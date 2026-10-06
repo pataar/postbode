@@ -1,6 +1,7 @@
 <p align="center"><img src="assets/logo.svg" alt="Postbode" width="400"></p>
 
 [![CI](https://github.com/pataar/postbode/actions/workflows/ci.yml/badge.svg)](https://github.com/pataar/postbode/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-postbode.pataar.nl-orange)](https://postbode.pataar.nl/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
 
 # Postbode
@@ -37,3 +38,10 @@ postbode run              # keep syncing, apply rules, notify on new mail
 Deleted mail is kept as `.eml` for 30 days: `postbode trash list` and `postbode trash restore FILE`.
 
 Postbode is licensed under MIT or Apache-2.0, at your option.
+
+## More
+
+- [Documentation](https://postbode.pataar.nl/): install, accounts, rules, agent guide and CLI reference
+- [Contributing](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md): how to report a vulnerability
+- [Changelog](CHANGELOG.md)
