@@ -117,9 +117,12 @@ pub(crate) enum UiAction {
     NextFocus,
     OpenMovePicker,
     SaveAttachment(usize),
+    SearchFocused,
+    SearchFor(String),
     SelectRow(usize),
     SelectView(View),
     SetTheme(egui::ThemePreference),
+    StartSearch,
     StepFolder(isize),
     SyncNow,
     ToggleFlag,
@@ -143,6 +146,7 @@ pub struct App {
     pub(crate) error: Option<String>,
     pub(crate) events: Receiver<Event>,
     pub(crate) focus: Focus,
+    pub(crate) focus_search: bool,
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
     pub(crate) list: ListState,
@@ -150,6 +154,7 @@ pub struct App {
     pub(crate) notifier: fn(&str, &str),
     pub(crate) paths: Paths,
     pub(crate) requested: HashSet<(usize, RowKey)>,
+    pub(crate) search: Option<String>,
     pub(crate) theme: egui::ThemePreference,
     pub(crate) theme_applied: bool,
     pub(crate) view: View,
@@ -187,6 +192,7 @@ impl App {
             error: None,
             events,
             focus: Focus::List,
+            focus_search: false,
             history: VecDeque::new(),
             history_open: false,
             list: ListState::default(),
@@ -194,6 +200,7 @@ impl App {
             notifier: crate::notify::new_mail,
             paths,
             requested: HashSet::new(),
+            search: None,
             theme: preference(config.ui.theme),
             theme_applied: false,
             view: View::Folder {
@@ -378,6 +385,10 @@ impl App {
                     self.move_picker = None;
                 } else if self.history_open {
                     self.history_open = false;
+                } else if self.search.is_some() {
+                    self.search = None;
+                    self.list = ListState::default();
+                    self.reload_view();
                 } else {
                     self.list.marked.clear();
                 }
@@ -412,6 +423,12 @@ impl App {
                 }
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
+            UiAction::SearchFocused => self.focus_search = false,
+            UiAction::SearchFor(query) => {
+                self.search = Some(query);
+                self.list.cursor = 0;
+                self.reload_view();
+            }
             UiAction::SelectRow(index) => {
                 self.list.cursor = index;
                 self.focus = Focus::List;
@@ -423,6 +440,14 @@ impl App {
                 if let Err(e) = config::save_theme(&self.paths.config_file(), theme_of(preference))
                 {
                     self.note_error(None, format!("could not save the theme: {e}"));
+                }
+            }
+            UiAction::StartSearch => {
+                if self.view_account().is_some() {
+                    self.search = Some(String::new());
+                    self.focus_search = true;
+                    self.list = ListState::default();
+                    self.reload_view();
                 }
             }
             UiAction::StepFolder(delta) => {
@@ -484,6 +509,9 @@ impl App {
             if input.consume_key(none, egui::Key::Tab) {
                 actions.push(UiAction::NextFocus);
             }
+            if typed(input, "/") {
+                actions.push(UiAction::StartSearch);
+            }
             let down = typed(input, "j") || input.consume_key(none, egui::Key::ArrowDown);
             let up = typed(input, "k") || input.consume_key(none, egui::Key::ArrowUp);
             match self.focus {
@@ -535,6 +563,7 @@ impl App {
     pub(crate) fn select_view(&mut self, view: View) {
         self.view = view;
         self.move_picker = None;
+        self.search = None;
         self.list = ListState::default();
         self.reload_view();
     }
@@ -566,9 +595,21 @@ impl App {
         let Ok(store) = &self.accounts[account].store else {
             self.list.threads.clear();
             self.list.expanded.clear();
+            self.list.hits.clear();
             self.rebuild_rows();
             return;
         };
+        if let Some(query) = &self.search {
+            self.list.hits = match store.search(query, None, list::SEARCH_LIMIT) {
+                Ok(found) => found.iter().map(Row::from_message).collect(),
+                Err(e) => {
+                    log::warn!("[{}] search failed: {e}", self.accounts[account].name);
+                    Vec::new()
+                }
+            };
+            self.rebuild_rows();
+            return;
+        }
         match store.thread_summaries(&folder, THREAD_LIMIT) {
             Ok(threads) => self.list.threads = threads,
             Err(e) => log::warn!(
@@ -714,7 +755,11 @@ impl App {
         let View::Folder { account, folder } = &self.view else {
             return;
         };
-        let mut rows = list::build_rows(folder, &self.list.threads, &self.list.expanded);
+        let mut rows = if self.search.is_some() {
+            self.list.hits.clone()
+        } else {
+            list::build_rows(folder, &self.list.threads, &self.list.expanded)
+        };
         list::apply_pending(&mut rows, &self.accounts[*account].pending);
         self.list.rows = rows;
         self.list.cursor = self.list.cursor.min(self.list.rows.len().saturating_sub(1));

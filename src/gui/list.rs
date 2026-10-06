@@ -6,12 +6,14 @@ use eframe::egui;
 
 use crate::message::clean;
 use crate::rules::Action;
-use crate::store::{MessageSummary, ThreadSummary};
+use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::app::{App, UiAction, View};
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
 pub(crate) const THREAD_LIMIT: u32 = 10_000;
+/// Results shown for one search.
+pub(crate) const SEARCH_LIMIT: u32 = 500;
 const ROW_HEIGHT: f32 = 22.0;
 
 pub(crate) type RowKey = (String, u32);
@@ -37,6 +39,25 @@ impl Row {
         (self.folder.clone(), self.uid)
     }
 
+    pub fn from_message(message: &Message) -> Row {
+        Row {
+            count: 1,
+            date: message.internaldate,
+            flagged: message
+                .flags
+                .split_whitespace()
+                .any(|flag| flag == "\\Flagged"),
+            folder: message.folder.clone(),
+            from: message.from_addr.clone().unwrap_or_default(),
+            member: false,
+            subject: message.subject.clone().unwrap_or_default(),
+            thread_id: None,
+            to: message.to_addr.clone().unwrap_or_default(),
+            uid: message.uid,
+            unread: !message.is_seen(),
+        }
+    }
+
     fn from_summary(folder: &str, message: &MessageSummary, member: bool) -> Row {
         Row {
             count: 1,
@@ -60,6 +81,7 @@ pub(crate) struct ListState {
     pub expanded: HashMap<String, Vec<MessageSummary>>,
     /// Set when a key moved the cursor, so this frame scrolls it into view.
     pub follow_cursor: bool,
+    pub hits: Vec<Row>,
     pub marked: HashSet<RowKey>,
     pub rows: Vec<Row>,
     pub threads: Vec<ThreadSummary>,
@@ -172,7 +194,12 @@ where
 }
 
 /// Unread dot, flag, sender (recipient in Sent and Drafts), subject, thread count and date, on one line.
-pub(crate) fn row_text<Tz: TimeZone>(row: &Row, recipient: bool, now: &DateTime<Tz>) -> String
+pub(crate) fn row_text<Tz: TimeZone>(
+    row: &Row,
+    recipient: bool,
+    in_search: bool,
+    now: &DateTime<Tz>,
+) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -183,6 +210,9 @@ where
     }
     if row.member {
         text.push_str("      ");
+    }
+    if in_search {
+        text.push_str(&format!("[{}] ", row.folder));
     }
     text.push_str(&format!("{who} — {}", row.subject));
     if row.count > 1 {
@@ -210,6 +240,28 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let list = &app.list;
     let recipient = app.shows_recipient();
     let now = Local::now();
+    if let Some(query) = &app.search {
+        let mut text = query.clone();
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .hint_text("Search this account")
+                .desired_width(f32::INFINITY),
+        );
+        if app.focus_search {
+            response.request_focus();
+            actions.push(UiAction::SearchFocused);
+        }
+        if response.changed() {
+            actions.push(UiAction::SearchFor(text));
+        }
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            actions.push(UiAction::SelectRow(0));
+        }
+        ui.weak(format!(
+            "{} results · mail whose body is not downloaded matches on sender, recipients and subject only",
+            list.rows.len()
+        ));
+    }
     let mut area = egui::ScrollArea::vertical().auto_shrink(false);
     if list.follow_cursor {
         let row_height = ROW_HEIGHT + ui.spacing().item_spacing.y;
@@ -220,7 +272,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         for index in range {
             let row = &list.rows[index];
             let marked = list.marked.contains(&row.key());
-            let mut text = row_text(row, recipient, &now);
+            let mut text = row_text(row, recipient, app.search.is_some(), &now);
             if marked {
                 text = format!("✔ {text}");
             }
@@ -401,7 +453,7 @@ mod tests {
             unread: true,
         };
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
-        let text = row_text(&row, false, &now);
+        let text = row_text(&row, false, false, &now);
         assert!(!text.chars().any(char::is_control), "{text:?}");
         assert!(
             text.contains("[31mred alert") && text.starts_with("• ⚑ "),
@@ -579,5 +631,62 @@ mod tests {
         let shape: Vec<(u32, bool, bool)> =
             rows.iter().map(|r| (r.uid, r.unread, r.flagged)).collect();
         assert_eq!(shape, [(2, false, false), (3, true, true)]);
+    }
+
+    #[test]
+    fn slash_searches_the_account_and_escape_returns_to_the_folder() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("INBOX", 1, "invoice march"));
+        fx.add("work", message("INBOX", 2, "lunch"));
+        fx.add("work", message("Archive", 3, "invoice april"));
+        let (mut harness, wires) = fx.harness();
+        harness.event(egui::Event::Text("/".into()));
+        harness.run();
+        harness.event(egui::Event::Text("invoice".into()));
+        harness.run();
+        let found: Vec<(String, u32)> = harness.state().list.rows.iter().map(Row::key).collect();
+        assert_eq!(
+            found,
+            [("Archive".to_string(), 3), ("INBOX".to_string(), 1)]
+        );
+        assert!(
+            harness
+                .query_by_label_contains("[Archive] Sender 3")
+                .is_some()
+        );
+        assert!(harness.query_by_label_contains("2 results").is_some());
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        harness.event(egui::Event::Text("e".into()));
+        harness.run();
+        let archive = crate::sync::Command::Apply {
+            folder: "Archive".into(),
+            uids: vec![3],
+            action: crate::rules::Action::Archive,
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), archive)]);
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(harness.state().search.is_none());
+        let uids: Vec<u32> = harness.state().list.rows.iter().map(|r| r.uid).collect();
+        assert_eq!(uids, [2, 1]);
+        assert_eq!(harness.ctx.memory(|m| m.focused()), None);
+        harness.event(egui::Event::Text("j".into()));
+        harness.run();
+        assert_eq!(harness.state().list.cursor, 1);
+    }
+
+    #[test]
+    fn shortcut_letters_typed_into_search_stay_text() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello"));
+        let (mut harness, wires) = fx.harness();
+        harness.event(egui::Event::Text("/".into()));
+        harness.run();
+        harness.event(egui::Event::Text("e#us".into()));
+        harness.run();
+        assert!(wires.sent().is_empty());
+        assert_eq!(harness.state().search.as_deref(), Some("e#us"));
     }
 }
