@@ -26,6 +26,7 @@ jobs:
       - uses: kunobi-ninja/kache-action@v1
         with:
           save-cache: ${{ github.ref == 'refs/heads/main' }}
+          cache-key-prefix: kache-lint
           pr-comment: false
       - uses: Swatinem/rust-cache@v2
         with:
@@ -54,6 +55,7 @@ jobs:
       - uses: kunobi-ninja/kache-action@v1
         with:
           save-cache: ${{ github.ref == 'refs/heads/main' }}
+          cache-key-prefix: kache-test
           pr-comment: false
       - uses: Swatinem/rust-cache@v2
         with:
