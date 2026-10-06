@@ -506,7 +506,6 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
     Ok(())
 }
 
-/// The full message, from the store or fetched once from the server.
 /// What a dry run would do to `msg`; a user delete names its outcome, because an expunge cannot be undone on the server.
 fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<String> {
     if *action != Action::Trash {
@@ -545,6 +544,7 @@ fn fetch_missing_bodies(
     Ok(())
 }
 
+/// The full message, from the store or fetched once from the server.
 fn message_raw(account: &AccountConfig, store: &Store, msg: &Message) -> Result<Vec<u8>> {
     if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
         return Ok(raw);
@@ -776,6 +776,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             dry_run,
         } => {
             let rules = compiled_rules(paths, Some(&name))?;
+            if rules.iter().any(|r| !r.rule.enabled) {
+                bail!("rule '{name}' is disabled; approve or enable it first");
+            }
             let mut failed = false;
             for acc in select_accounts(config, account.as_deref())? {
                 if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {

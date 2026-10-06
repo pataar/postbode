@@ -642,9 +642,31 @@ mod tests {
         );
         assert_eq!(ops.mail["Trash"].len(), 1);
         assert!(ops.mail["INBOX"].is_empty());
+        assert_eq!(store.message("INBOX", 5).unwrap(), None);
         assert!(!ops.calls.iter().any(|c| c.starts_with("expunge")));
         assert!(trash.list().unwrap().is_empty());
         assert_eq!(store.log(10).unwrap()[0].action, "trash");
+    }
+
+    #[test]
+    fn rule_delete_expunges_even_with_a_trash_folder() {
+        let (ops, store, trash, _dir, msg) = setup();
+        let mut ops = with_trash_folder(ops, &store);
+        apply(
+            &plan(vec![Action::Delete]),
+            &msg,
+            &mut ops,
+            &store,
+            &trash,
+            500,
+        )
+        .unwrap();
+        assert!(ops.mail["Trash"].is_empty());
+        assert!(ops.mail["INBOX"].is_empty());
+        assert!(!ops.calls.iter().any(|c| c.starts_with("move")));
+        assert!(ops.calls.iter().any(|c| c.starts_with("expunge")));
+        assert_eq!(trash.list().unwrap().len(), 1);
+        assert_eq!(store.log(10).unwrap()[0].action, "delete");
     }
 
     #[test]

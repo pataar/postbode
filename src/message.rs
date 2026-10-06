@@ -143,7 +143,10 @@ pub fn save_attachment(raw: &[u8], index: usize, dir: &Path) -> io::Result<PathB
         .write(true)
         .create_new(true)
         .open(&path)?;
-    file.write_all(part.contents())?;
+    if let Err(e) = file.write_all(part.contents()) {
+        let _ = std::fs::remove_file(&path);
+        return Err(e);
+    }
     Ok(path)
 }
 

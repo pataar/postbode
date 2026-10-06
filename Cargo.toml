@@ -46,7 +46,7 @@ apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
 
 [dev-dependencies]
-clap-markdown = "0.1"                               # docs/src/cli.md generated from the clap definitions
+clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
 tempfile = "3"                                       # temp dirs for store and paths tests
 
 [features]

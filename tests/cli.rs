@@ -336,6 +336,28 @@ fn delete_dry_run_names_the_trash_folder() {
 }
 
 #[test]
+fn apply_existing_refuses_a_disabled_rule() {
+    let (home, _store) = seeded_home(&[message(42, "a@example.com", "Your code")]);
+    std::fs::write(
+        Paths::under(home.path()).rules_file(),
+        "[[rules]]\nname = \"codes\"\nenabled = false\nmatch.subject = { contains = \"code\" }\nactions = [\"flag\"]\n",
+    )
+    .unwrap();
+    for args in [
+        &["rules", "apply-existing", "codes", "--dry-run"][..],
+        &["rules", "apply-existing", "codes"][..],
+    ] {
+        let out = postbode(home.path(), args);
+        assert!(!out.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("rule 'codes' is disabled; approve or enable it first"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn direct_actions_need_at_least_one_uid() {
     let (home, _store) = seeded_home(&[]);
     assert_eq!(postbode(home.path(), &["archive"]).status.code(), Some(2));

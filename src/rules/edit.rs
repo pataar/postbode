@@ -96,7 +96,7 @@ fn edit(
         .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name))
         .ok_or_else(|| invalid(name, "no such rule"))?;
     if let Some(orphaned) = change(rules, index)? {
-        let trailing = format!("{}{orphaned}", doc.trailing().as_str().unwrap_or(""));
+        let trailing = format!("{orphaned}{}", doc.trailing().as_str().unwrap_or(""));
         doc.set_trailing(trailing);
     }
     save(path, &doc.to_string())
@@ -246,6 +246,25 @@ mod tests {
             "{text}"
         );
         assert_eq!(parse(&text).unwrap().rules.len(), 2);
+    }
+
+    #[test]
+    fn reject_of_the_last_table_keeps_comment_order() {
+        let (_dir, path) = rules_file(
+            "# head\n[[rules]]\nname = \"keep\"\nmatch.seen = true\nactions = [\"flag\"]\n\n# above\n",
+        );
+        propose(&path, proposal("codes"), "cli").unwrap();
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("# trailing\n");
+        std::fs::write(&path, text).unwrap();
+        reject(&path, "codes").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let at = |needle: &str| text.find(needle).unwrap();
+        assert!(
+            at("# head") < at("# above") && at("# above") < at("# trailing"),
+            "{text}"
+        );
+        assert_eq!(parse(&text).unwrap().rules.len(), 1);
     }
 
     #[test]
