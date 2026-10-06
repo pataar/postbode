@@ -346,11 +346,20 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     actions
 }
 
-/// The `m` popup: type to filter the account's folders, Enter or a click moves.
+/// The `m` popup: type to filter the account's folders, Enter or a click moves. It leaves out the folder the cursor
+/// message is in: the view's, or in search the hit's own.
 pub(crate) fn show_move_picker(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let (Some(filter), View::Folder { account, folder }) = (&app.move_picker, &app.view) else {
         return actions;
+    };
+    let folder = match &app.search {
+        Some(_) => app
+            .list
+            .rows
+            .get(app.list.cursor)
+            .map_or(folder, |hit| &hit.folder),
+        None => folder,
     };
     let needle = filter.to_lowercase();
     let names: Vec<&str> = app.accounts[*account]
@@ -788,5 +797,29 @@ mod tests {
         harness.run();
         assert!(wires.sent().is_empty());
         assert_eq!(harness.state().search.as_deref(), Some("e#us"));
+    }
+
+    #[test]
+    fn the_move_picker_in_search_offers_the_inbox_for_an_archived_hit() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("Archive", 3, "invoice april"));
+        let (mut harness, wires) = fx.harness();
+        harness.event(egui::Event::Text("/".into()));
+        harness.run();
+        harness.event(egui::Event::Text("invoice".into()));
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        harness.event(egui::Event::Text("m".into()));
+        harness.run();
+        harness.key_press(egui::Key::Enter);
+        harness.run();
+        let back = crate::sync::Command::Apply {
+            folder: "Archive".into(),
+            uids: vec![3],
+            action: crate::rules::Action::Move("INBOX".into()),
+        };
+        assert_eq!(wires.sent(), [("work".to_string(), back)]);
     }
 }
