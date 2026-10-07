@@ -10,7 +10,6 @@ use super::test_support::{
 };
 use super::wire::{self, AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
 use super::{Options, Report, run};
-use crate::engine::StartState;
 use crate::paths::Paths;
 use crate::sync::{Activity, Command, Event};
 
@@ -69,21 +68,15 @@ fn a_first_message_other_than_hello_closes_the_connection() {
 }
 
 #[test]
-fn status_lists_each_account_with_its_state() {
+fn status_lists_each_account() {
     let daemon = TestDaemon::start();
     let status = status_of(&mut daemon.client());
-    let accounts: Vec<(String, StartState)> = status
+    let accounts: Vec<String> = status
         .accounts
         .into_iter()
-        .map(|AccountStatus { name, state, .. }| (name, state))
+        .map(|AccountStatus { name, .. }| name)
         .collect();
-    assert_eq!(
-        accounts,
-        [
-            ("work".to_string(), StartState::Running),
-            ("play".to_string(), StartState::Running)
-        ]
-    );
+    assert_eq!(accounts, ["work", "play"]);
     assert_eq!(status.pid, std::process::id());
     assert_eq!(status.version, wire::VERSION);
     assert_eq!(status.clients, 1);
@@ -198,15 +191,6 @@ fn a_refused_second_daemon_leaves_the_log_alone() {
 }
 
 #[test]
-fn a_failed_account_refuses_commands_with_its_reason() {
-    let state = Some(StartState::Failed("no threads left".into()));
-    assert_eq!(
-        super::refusal("work", state, None),
-        Some("no threads left".to_string())
-    );
-}
-
-#[test]
 fn a_command_in_flight_at_shutdown_gets_exactly_one_reply() {
     let mut daemon = TestDaemon::start();
     let mut client = daemon.client();
@@ -308,10 +292,7 @@ fn a_config_change_starts_an_added_account() {
         .unwrap();
 
     status_until(&mut daemon.client(), |status| {
-        status
-            .accounts
-            .iter()
-            .any(|account| account.name == "new" && account.state == StartState::Running)
+        status.accounts.iter().any(|account| account.name == "new")
     });
 }
 
@@ -370,7 +351,6 @@ fn wire_messages_round_trip() {
                 clients: 1,
                 accounts: vec![AccountStatus {
                     name: "work".into(),
-                    state: StartState::Failed("bad".into()),
                     activity: Some(Activity::Idle { since: 7 }),
                 }],
             })),
@@ -457,7 +437,7 @@ mod client {
     use super::super::client::{NO_REPLY, connect_as};
     use super::super::test_support::{TestDaemon, WAIT, options, recording_connector};
     use super::super::wire::{self, DaemonMessage};
-    use crate::engine::{Connector, StartState};
+    use crate::engine::Connector;
     use crate::mail_ops::{MailOps, RecordingOps};
     use crate::paths::Paths;
     use crate::store::Store;
@@ -650,7 +630,6 @@ mod client {
         let status = client.status().unwrap();
         assert_eq!(status.accounts.len(), 1);
         assert_eq!(status.accounts[0].name, "work");
-        assert_eq!(status.accounts[0].state, StartState::Running);
     }
 
     #[test]

@@ -1,7 +1,6 @@
 //! The messages clients and the daemon exchange, one JSON object per line; these types are the protocol.
 use serde::{Deserialize, Serialize};
 
-use crate::engine::StartState;
 use crate::sync::{Activity, Command, Event};
 
 pub const PROTOCOL: u32 = 1;
@@ -72,7 +71,6 @@ pub struct Status {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AccountStatus {
     pub name: String,
-    pub state: StartState,
     pub activity: Option<Activity>,
 }
 

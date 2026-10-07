@@ -1,7 +1,6 @@
 //! The right column: headers, the text body with its links, and attachments.
 use eframe::egui;
 
-use crate::engine::StartState;
 use crate::message::clean;
 use crate::sync::Activity;
 
@@ -137,13 +136,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
 }
 
 fn missing_text(account: &Account) -> String {
-    if let StartState::Failed(reason) = &account.state {
-        format!(
-            "Not downloaded; {} could not start: {}.",
-            account.name,
-            clean(reason, false)
-        )
-    } else if matches!(account.activity, Some(Activity::Offline { .. })) {
+    if matches!(account.activity, Some(Activity::Offline { .. })) {
         format!("Not downloaded; loads when {} reconnects.", account.name)
     } else {
         "Loading…".into()
@@ -460,22 +453,6 @@ mod tests {
         assert!(
             harness
                 .query_by_label("Not downloaded; loads when work reconnects.")
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn a_failed_account_says_why_the_body_is_missing() {
-        let fx = Fixture::new(&["work"]);
-        let mut m = message("INBOX", 1, "later");
-        m.body_text = None;
-        fx.add("work", m);
-        let (mut harness, _wires) = fx.harness();
-        harness.state_mut().accounts[0].state = StartState::Failed("no keyring".into());
-        harness.run();
-        assert!(
-            harness
-                .query_by_label("Not downloaded; work could not start: no keyring.")
                 .is_some()
         );
     }

@@ -20,7 +20,6 @@ use super::lock;
 use super::wire::{
     self, AccountStatus, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status, VERSION,
 };
-use crate::engine::StartState;
 use crate::paths::{self, Paths};
 use crate::store::{Message, Store};
 use crate::sync::{Command, Event};
@@ -424,7 +423,6 @@ fn memory_status(accounts: &[String]) -> Status {
             .iter()
             .map(|name| AccountStatus {
                 name: name.clone(),
-                state: StartState::Running,
                 activity: None,
             })
             .collect(),

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, anyhow, bail};
 
 use crate::config::Config;
-use crate::engine::{self, Connector, Engine, StartState};
+use crate::engine::{self, Connector, Engine};
 use crate::message::clean;
 use crate::paths::{self, Paths};
 use crate::store::Store;
@@ -570,10 +570,9 @@ fn status(shared: &Shared) -> Status {
         clients: hub.clients.len(),
         accounts: accounts
             .into_iter()
-            .map(|(name, state)| AccountStatus {
+            .map(|name| AccountStatus {
                 activity: hub.activity.get(&name).cloned(),
                 name,
-                state,
             })
             .collect(),
     }
@@ -582,17 +581,14 @@ fn status(shared: &Shared) -> Status {
 /// Refuses the command at once when its account cannot run it, and otherwise hands it to the engine.
 fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Command) {
     // None once `stop` took the engine.
-    let state = lock(&shared.engine).as_ref().map(|engine| {
-        engine
-            .accounts()
-            .into_iter()
-            .find_map(|(name, state)| (name == account).then_some(state))
-    });
+    let known = lock(&shared.engine)
+        .as_ref()
+        .map(|engine| engine.accounts().iter().any(|name| name == account));
     let request = {
         let mut hub = lock(&shared.hub);
-        let refused = match state {
+        let refused = match known {
             None => Some("the daemon is stopping".to_string()),
-            Some(state) => refusal(account, state, hub.activity.get(account)),
+            Some(known) => refusal(account, known, hub.activity.get(account)),
         };
         if let Some(refusal) = refused {
             hub.reply(client, id, Outcome::Error(refusal));
@@ -619,17 +615,12 @@ fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Co
 }
 
 /// Why a command for `account` cannot run now, if it cannot.
-fn refusal(
-    account: &str,
-    state: Option<StartState>,
-    activity: Option<&Activity>,
-) -> Option<String> {
-    match (state, activity) {
-        (None, _) => Some(format!("no account named '{account}'")),
-        (Some(StartState::Failed(reason)), _) => Some(reason),
-        (Some(StartState::Running), Some(Activity::Offline { reason, retry_at })) => {
+fn refusal(account: &str, known: bool, activity: Option<&Activity>) -> Option<String> {
+    match (known, activity) {
+        (false, _) => Some(format!("no account named '{account}'")),
+        (true, Some(Activity::Offline { reason, retry_at })) => {
             Some(sync::offline_message(account, reason, *retry_at))
         }
-        (Some(StartState::Running), _) => None,
+        (true, _) => None,
     }
 }

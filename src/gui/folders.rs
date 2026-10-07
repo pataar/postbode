@@ -1,7 +1,6 @@
 //! The left column: one tree per account, then the Rules, Activity and Trash entries.
 use eframe::egui;
 
-use crate::engine::StartState;
 use crate::message::clean;
 use crate::store::Folder;
 
@@ -17,15 +16,6 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                     ui.spinner();
                 }
             });
-            match &account.state {
-                StartState::Failed(e) => {
-                    ui.colored_label(
-                        ui.visuals().error_fg_color,
-                        format!("could not start: {}", clean(e, false)),
-                    );
-                }
-                StartState::Running => {}
-            }
             if let Err(e) = &account.store {
                 ui.colored_label(ui.visuals().error_fg_color, clean(e, false));
             }

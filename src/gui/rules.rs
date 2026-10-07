@@ -268,7 +268,6 @@ mod tests {
     use eframe::egui;
     use egui_kittest::kittest::Queryable;
 
-    use crate::engine::StartState;
     use crate::gui::app::View;
     use crate::gui::test_support::Fixture;
     use crate::store::LogEntry;
@@ -487,19 +486,6 @@ mod tests {
                 .iter()
                 .any(|line| line.text == "work: restored to INBOX")
         );
-    }
-
-    #[test]
-    fn restore_on_a_failed_account_sends_nothing() {
-        let fx = Fixture::new(&["work"]);
-        backup(&fx);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().accounts[0].state = StartState::Failed("no keyring".into());
-        harness.state_mut().select_view(View::Trash);
-        harness.run();
-        harness.get_by_label("Restore").click();
-        harness.run();
-        assert!(wires.sent().is_empty());
     }
 
     #[test]

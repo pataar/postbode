@@ -7,18 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
-use serde::{Deserialize, Serialize};
-
 use crate::config::{AccountConfig, Config};
 use crate::mail_ops::MailOps;
 use crate::paths::Paths;
 use crate::sync::{self, Command, Event, Job, RequestId, SyncError};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum StartState {
-    Running,
-    Failed(String),
-}
 
 pub type Connector =
     Arc<dyn Fn(&AccountConfig) -> Result<Box<dyn MailOps>, SyncError> + Send + Sync>;
@@ -30,7 +22,6 @@ pub fn imap_connector() -> Connector {
 
 struct AccountThread {
     config: AccountConfig,
-    state: StartState,
     commands: Option<Sender<Job>>,
     wake: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
@@ -38,10 +29,9 @@ struct AccountThread {
 }
 
 impl AccountThread {
-    fn not_started(config: AccountConfig, state: StartState) -> AccountThread {
+    fn not_started(config: AccountConfig) -> AccountThread {
         AccountThread {
             config,
-            state,
             commands: None,
             wake: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -68,11 +58,11 @@ struct Spawner {
 }
 
 impl Spawner {
-    /// Spawns the account's sync thread; a spawn failure is recorded as its state.
+    /// Spawns the account's sync thread; one that cannot spawn is reported once and stays without a thread.
     fn spawn(&self, config: &AccountConfig) -> AccountThread {
         let name = &config.name;
         let (commands_tx, commands) = mpsc::channel();
-        let mut thread = AccountThread::not_started(config.clone(), StartState::Running);
+        let mut thread = AccountThread::not_started(config.clone());
         let spawned = std::thread::Builder::new()
             .name(format!("sync-{name}"))
             .spawn({
@@ -97,10 +87,15 @@ impl Spawner {
             Ok(handle) => {
                 thread.commands = Some(commands_tx);
                 thread.handle = Some(handle);
-                thread
             }
-            Err(e) => AccountThread::not_started(config.clone(), StartState::Failed(e.to_string())),
+            Err(e) => {
+                let _ = self.events.send(Event::Error {
+                    account: name.clone(),
+                    message: format!("could not start its sync thread: {e}"),
+                });
+            }
         }
+        thread
     }
 }
 
@@ -180,10 +175,10 @@ impl Engine {
         self.threads.len() == self.wanted.len()
     }
 
-    pub fn accounts(&self) -> Vec<(String, StartState)> {
+    pub fn accounts(&self) -> Vec<String> {
         self.threads
             .iter()
-            .map(|thread| (thread.config.name.clone(), thread.state.clone()))
+            .map(|thread| thread.config.name.clone())
             .collect()
     }
 
@@ -273,13 +268,7 @@ mod tests {
         let (first, _first_events) = Engine::start(&config, &paths);
         let (second, _second_events) = Engine::start(&config, &paths);
         for engine in [&first, &second] {
-            assert_eq!(
-                engine.accounts(),
-                [
-                    ("home".to_string(), StartState::Running),
-                    ("work".to_string(), StartState::Running)
-                ]
-            );
+            assert_eq!(engine.accounts(), ["home", "work"]);
         }
     }
 
@@ -291,10 +280,7 @@ mod tests {
             ..Default::default()
         };
         let (engine, events) = Engine::start(&config, &Paths::under(dir.path()));
-        assert_eq!(
-            engine.accounts(),
-            [("work".to_string(), StartState::Running)]
-        );
+        assert_eq!(engine.accounts(), ["work"]);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -380,14 +366,6 @@ mod tests {
         }
     }
 
-    fn names_of(engine: &Engine) -> Vec<String> {
-        engine
-            .accounts()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect()
-    }
-
     /// Starts what `apply_config` left waiting, for up to 5 s.
     fn settle(engine: &mut Engine) {
         let deadline = std::time::Instant::now() + WAIT;
@@ -456,15 +434,15 @@ mod tests {
         engine.apply_config(&config);
         settle(&mut engine);
         assert_eq!(connected.recv_timeout(WAIT).unwrap(), "b");
-        assert_eq!(names_of(&engine), ["a", "b"]);
+        assert_eq!(engine.accounts(), ["a", "b"]);
 
         engine.apply_config(&config_of(&["a"]));
-        assert_eq!(names_of(&engine), ["a"]);
+        assert_eq!(engine.accounts(), ["a"]);
         assert!(!engine.send("b", 1, Command::SyncNow));
 
         engine.apply_config(&config_of(&["a", "c"]));
         assert_eq!(connected.recv_timeout(WAIT).unwrap(), "c");
-        assert_eq!(names_of(&engine), ["a", "c"]);
+        assert_eq!(engine.accounts(), ["a", "c"]);
         drop(engine);
         assert_eq!(
             connected.try_iter().collect::<Vec<_>>(),

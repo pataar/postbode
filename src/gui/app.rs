@@ -10,7 +10,6 @@ use crate::config::{self, Config, Theme};
 use crate::daemon::Client;
 use crate::daemon::client::NewerDaemon;
 use crate::daemon::wire::AccountStatus;
-use crate::engine::StartState;
 use crate::message::{self, Attachment, clean};
 use crate::paths::Paths;
 use crate::rules::{self as rule_file, Action, RulesError};
@@ -87,18 +86,16 @@ pub(crate) struct Account {
     /// Edits of sent commands per row, oldest first; each `ActionDone` removes the oldest of its uids.
     pub pending: HashMap<RowKey, Vec<Optimistic>>,
     pub queued: usize,
-    pub state: StartState,
     pub store: Result<Store, String>,
 }
 
 impl Account {
     /// True while the sync thread works, for the spinner beside the account.
     pub fn busy(&self) -> bool {
-        self.state == StartState::Running
-            && !matches!(
-                self.activity,
-                None | Some(Activity::Idle { .. } | Activity::Offline { .. })
-            )
+        !matches!(
+            self.activity,
+            None | Some(Activity::Idle { .. } | Activity::Offline { .. })
+        )
     }
 
     pub fn reload_folders(&mut self) {
@@ -229,28 +226,21 @@ impl App {
     ) -> App {
         let accounts = states
             .into_iter()
-            .map(
-                |AccountStatus {
-                     activity,
-                     name,
-                     state,
-                 }| {
-                    let store = Store::open(&paths.mail_db(&name))
-                        .map_err(|e| format!("could not open the store: {e}"));
-                    let mut account = Account {
-                        activity,
-                        error: None,
-                        folders: Vec::new(),
-                        name,
-                        pending: HashMap::new(),
-                        queued: 0,
-                        state,
-                        store,
-                    };
-                    account.reload_folders();
-                    account
-                },
-            )
+            .map(|AccountStatus { activity, name }| {
+                let store = Store::open(&paths.mail_db(&name))
+                    .map_err(|e| format!("could not open the store: {e}"));
+                let mut account = Account {
+                    activity,
+                    error: None,
+                    folders: Vec::new(),
+                    name,
+                    pending: HashMap::new(),
+                    queued: 0,
+                    store,
+                };
+                account.reload_folders();
+                account
+            })
             .collect();
         let rules_path = paths.rules_file();
         let rules = RulesState::load(&rules_path, Vec::new());
@@ -449,7 +439,6 @@ impl App {
         for account in &mut self.accounts {
             if let Some(status) = states.iter().find(|status| status.name == account.name) {
                 account.activity = status.activity.clone();
-                account.state = status.state.clone();
             }
             if account.error.as_deref() == Some(DAEMON_LOST) {
                 account.error = None;
@@ -637,10 +626,7 @@ impl App {
                 }
             }
             UiAction::OpenMovePicker => {
-                if let Some(account) = self.view_account()
-                    && !self.list.rows.is_empty()
-                    && self.ensure_can_act(account)
-                {
+                if self.view_account().is_some() && !self.list.rows.is_empty() {
                     self.move_picker = Some(String::new());
                 }
             }
@@ -649,7 +635,7 @@ impl App {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
             }
             UiAction::Restore(account, file) => {
-                if self.ensure_can_act(account) && !self.send(account, Command::Restore { file }) {
+                if !self.send(account, Command::Restore { file }) {
                     self.note_error(Some(account), DAEMON_LOST.into());
                 }
             }
@@ -954,10 +940,7 @@ impl App {
     fn load_body(&mut self, account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
         let (stored, attachments) = self.read_stored(account, &key);
         let missing = stored.as_ref().is_some_and(|m| m.body_text.is_none());
-        if missing
-            && self.accounts[account].state == StartState::Running
-            && self.requested.insert((account, key.clone()))
-        {
+        if missing && self.requested.insert((account, key.clone())) {
             self.send(
                 account,
                 Command::FetchBody {
@@ -998,7 +981,7 @@ impl App {
             })
         });
         let seen = last_edit.unwrap_or_else(|| body.message.as_ref().is_none_or(Message::is_seen));
-        if seen || body.read_sent || account.state != StartState::Running {
+        if seen || body.read_sent {
             return;
         }
         let waited = now - body.shown_at;
@@ -1064,7 +1047,7 @@ impl App {
             return;
         };
         let targets = self.targets(account);
-        if targets.is_empty() || !self.ensure_can_act(account) {
+        if targets.is_empty() {
             return;
         }
         if matches!(action, Action::MarkRead | Action::MarkUnread)
@@ -1115,18 +1098,6 @@ impl App {
 
     pub(crate) fn send(&self, account: usize, command: Command) -> bool {
         self.client.send(&self.accounts[account].name, command)
-    }
-
-    /// False, with the reason on the status line, when the account's sync did not start.
-    pub(crate) fn ensure_can_act(&mut self, account: usize) -> bool {
-        let reason = match &self.accounts[account].state {
-            StartState::Running => return true,
-            StartState::Failed(reason) => {
-                format!("could not start: {reason}; actions are off here")
-            }
-        };
-        self.note_error(Some(account), reason);
-        false
     }
 
     /// Notices edits to rules.toml and config.toml.
@@ -1188,9 +1159,7 @@ impl App {
 
     pub(crate) fn sync_all(&mut self) {
         for index in 0..self.accounts.len() {
-            if self.accounts[index].state == StartState::Running {
-                self.send(index, Command::SyncNow);
-            }
+            self.send(index, Command::SyncNow);
         }
     }
 
@@ -1369,7 +1338,6 @@ mod tests {
     use super::*;
     use crate::daemon::Client;
     use crate::daemon::wire::AccountStatus;
-    use crate::engine::StartState;
     use crate::gui::test_support::{Fixture, message};
     use crate::rules::Action;
     use crate::sync::{Command, Event};
@@ -1556,21 +1524,6 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_account_says_why_actions_are_off() {
-        let fx = Fixture::new(&["work"]);
-        inbox(&fx, &[1]);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().accounts[0].state = StartState::Failed("no keyring".into());
-        press(&mut harness, "e");
-        assert!(wires.sent().is_empty());
-        assert!(
-            harness
-                .query_by_label_contains("could not start: no keyring; actions are off here")
-                .is_some()
-        );
-    }
-
-    #[test]
     fn switching_views_closes_the_move_picker() {
         let fx = Fixture::new(&["work"]);
         fx.folder("work", "Archive", Some("Archive"));
@@ -1666,7 +1619,6 @@ mod tests {
     fn idle(name: &str) -> AccountStatus {
         AccountStatus {
             name: name.into(),
-            state: StartState::Running,
             activity: Some(Activity::Idle {
                 since: 1_790_000_000,
             }),
@@ -1706,7 +1658,6 @@ mod tests {
                 .query_by_label(&format!("work: {DAEMON_LOST}"))
                 .is_some()
         );
-        harness.state_mut().accounts[0].state = StartState::Failed("gone".into());
         let mut unread = message("INBOX", 2, "while away");
         unread.flags = String::new();
         fx.add("work", unread);

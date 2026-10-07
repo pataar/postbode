@@ -10,7 +10,6 @@ use postbode::config::{AccountConfig, Config, Identity, PasswordSource};
 use postbode::credentials::{self, Secret};
 use postbode::daemon::Client;
 use postbode::daemon::wire::{AccountStatus, Status};
-use postbode::engine::StartState;
 use postbode::mail_ops::MailOps;
 use postbode::message::clean;
 use postbode::paths::Paths;
@@ -730,12 +729,9 @@ fn print_status(status: &Status) {
 
 fn account_line(account: &AccountStatus) -> String {
     let name = &account.name;
-    match &account.state {
-        StartState::Running => match &account.activity {
-            Some(activity) => format!("{name}  running  {}", activity_summary(activity)),
-            None => format!("{name}  running"),
-        },
-        StartState::Failed(reason) => format!("{name}  failed: {}", clean(reason, false)),
+    match &account.activity {
+        Some(activity) => format!("{name}  running  {}", activity_summary(activity)),
+        None => format!("{name}  running"),
     }
 }
 

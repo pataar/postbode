@@ -81,7 +81,7 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 
 **Framing.**
 - One JSON object per line, UTF-8, in both directions.
-- `Command`, `Event`, `Activity` and `StartState` derive `Serialize` and `Deserialize` in serde's default externally tagged form. `Action` already does.
+- `Command`, `Event` and `Activity` derive `Serialize` and `Deserialize` in serde's default externally tagged form. `Action` already does.
 - The Rust types in `daemon::wire` are the protocol; there is no separate schema.
 
 **Client to daemon.**
@@ -99,7 +99,7 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 {"reply":{"id":7,"outcome":{"ok":"done"}}}
 {"reply":{"id":8,"outcome":{"ok":{"event":{"ActionDone":{"account":"work","folder":"INBOX","results":[[42,{"Ok":1}]],"request":3}}}}}}
 {"reply":{"id":8,"outcome":{"error":"work is offline (no route to host); retrying at 14:02"}}}
-{"reply":{"id":9,"outcome":{"ok":{"status":{"pid":4242,"version":"0.2.0","uptime_secs":61,"clients":2,"accounts":[{"name":"work","state":"Running","activity":{"Idle":{"since":1791374400}}}]}}}}}
+{"reply":{"id":9,"outcome":{"ok":{"status":{"pid":4242,"version":"0.2.0","uptime_secs":61,"clients":2,"accounts":[{"name":"work","activity":{"Idle":{"since":1791374400}}}]}}}}}
 {"event":{"NewMail":{"account":"work","folder":"INBOX","uid":43,"from":"alice@example.com","subject":"Hi"}}}
 ```
 
@@ -130,7 +130,7 @@ A reply carries the client's own `id`; the `request` inside an event is the daem
 
 **Immediate error replies.**
 - unknown account: `no account named 'x'`;
-- an account whose thread failed to start: its `StartState::Failed` reason;
+- an account whose sync thread could not be spawned: `x is not running` (the spawn failure itself arrives as an `Error` event);
 - an account that is offline: its reason and next retry time.
 
 Commands already queued when an account goes offline are failed with the same text.

@@ -2,7 +2,6 @@
 use chrono::{Local, TimeZone};
 use eframe::egui;
 
-use crate::engine::StartState;
 use crate::message::clean;
 use crate::sync::Activity;
 
@@ -39,13 +38,12 @@ pub(crate) fn activity_text(activity: &Activity) -> String {
     }
 }
 
-/// The account's status line: its error, why it is not running, or its latest activity; plus queued commands.
+/// The account's status line: its error or its latest activity; plus queued commands.
 pub(crate) fn account_line(account: &Account) -> String {
-    let state = match (&account.error, &account.state, &account.activity) {
-        (Some(error), _, _) => error.clone(),
-        (None, StartState::Failed(e), _) => format!("could not start: {}", clean(e, false)),
-        (None, StartState::Running, Some(activity)) => activity_text(activity),
-        (None, StartState::Running, None) => "starting…".into(),
+    let state = match (&account.error, &account.activity) {
+        (Some(error), _) => error.clone(),
+        (None, Some(activity)) => activity_text(activity),
+        (None, None) => "starting…".into(),
     };
     let mut line = format!("{}: {state}", account.name);
     if account.queued > 0 {
@@ -106,9 +104,9 @@ fn line_color(
     error_color: egui::Color32,
     palette: &theme::Palette,
 ) -> Option<egui::Color32> {
-    match (&account.error, &account.state, &account.activity) {
-        (Some(_), _, _) => Some(error_color),
-        (None, StartState::Running, Some(Activity::Idle { .. })) => Some(palette.success),
+    match (&account.error, &account.activity) {
+        (Some(_), _) => Some(error_color),
+        (None, Some(Activity::Idle { .. })) => Some(palette.success),
         _ => None,
     }
 }
