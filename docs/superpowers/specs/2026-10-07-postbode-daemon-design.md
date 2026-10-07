@@ -179,7 +179,7 @@ Commands already queued when an account goes offline are failed with the same te
   - It then runs `launchctl bootstrap gui/<uid> <plist>`.
   - `remove` runs `launchctl bootout` and deletes the file.
 - **Linux:**
-  - `install` writes `~/.config/systemd/user/postbode.service` (`ExecStart=<binary> run`, `Restart=on-failure`).
+  - `install` writes `~/.config/systemd/user/postbode.service` (`ExecStart=<binary> run`, `Restart=always`, `RestartSec=10`), so the service comes back after `daemon stop` or an upgrade, like `KeepAlive`.
   - It then runs `systemctl --user daemon-reload` and `systemctl --user enable --now postbode`.
   - `remove` runs `disable --now` and deletes the file.
 - **Common:**

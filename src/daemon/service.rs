@@ -276,7 +276,7 @@ pub fn unit(exe: &Path) -> String {
         .replace('"', "\\\"")
         .replace('%', "%%");
     format!(
-        "[Unit]\nDescription=Postbode mail sync\n\n[Service]\nExecStart=\"{exe}\" run\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Postbode mail sync\n\n[Service]\nExecStart=\"{exe}\" run\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
     )
 }
 
@@ -311,11 +311,10 @@ mod tests {
     }
 
     #[test]
-    fn the_systemd_unit_restarts_on_failure() {
+    fn the_systemd_unit_always_restarts() {
         let text = unit(Path::new("/home/me/.cargo/bin/postbode"));
         assert!(text.contains("ExecStart=\"/home/me/.cargo/bin/postbode\" run"));
-        assert!(text.contains("Restart=on-failure"));
-        assert!(text.contains("RestartSec=10"));
+        assert!(text.contains("Restart=always\nRestartSec=10\n"));
         assert!(text.contains("WantedBy=default.target"));
     }
 
