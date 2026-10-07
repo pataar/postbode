@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::UnixStream;
@@ -120,6 +120,24 @@ impl Client {
         Ok(connect_as(paths, VERSION, false)?)
     }
 
+    /// Connects to whatever daemon answers, of any version; None when nothing does.
+    pub fn connect_any_version(paths: &Paths) -> anyhow::Result<Option<Client>> {
+        match connect_as(paths, VERSION, true) {
+            Ok(client) => Ok(Some(client)),
+            Err(ConnectError::Down(e))
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::NotFound
+                        | io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Connects, starting this binary as the daemon when none answers, and restarting a daemon of another version.
     pub fn connect_or_start(paths: &Paths) -> anyhow::Result<Client> {
         let exe = std::env::current_exe().context("finding this postbode")?;
@@ -173,6 +191,22 @@ impl Client {
             Transport::Socket(stream) => stream,
         };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let message = ClientMessage::Command {
+            id,
+            account: account.into(),
+            command,
+        };
+        let line = match wire::line(&message) {
+            Ok(line) => line,
+            Err(e) => {
+                lock(&self.inbox).publish(Event::CommandFailed {
+                    account: account.into(),
+                    request: 0,
+                    message: encode_failure(&e),
+                });
+                return true;
+            }
+        };
         {
             let mut inbox = lock(&self.inbox);
             if inbox.closed {
@@ -180,12 +214,7 @@ impl Client {
             }
             inbox.sent.insert(id, account.into());
         }
-        let message = ClientMessage::Command {
-            id,
-            account: account.into(),
-            command,
-        };
-        let written = wire::write_line(&mut *lock(stream), &message).is_ok();
+        let written = lock(stream).write_all(line.as_bytes()).is_ok();
         if !written {
             lock(&self.inbox).sent.remove(&id);
         }
@@ -276,6 +305,7 @@ impl Client {
             bail!("in-memory client has no daemon");
         };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let line = wire::line(&with_id(id)).map_err(|e| anyhow!(encode_failure(&e)))?;
         let (waiter, reply) = mpsc::channel();
         {
             let mut inbox = lock(&self.inbox);
@@ -284,7 +314,7 @@ impl Client {
             }
             inbox.waiters.insert(id, waiter);
         }
-        if wire::write_line(&mut *lock(stream), &with_id(id)).is_err() {
+        if lock(stream).write_all(line.as_bytes()).is_err() {
             lock(&self.inbox).waiters.remove(&id);
             return Err(self.stopped());
         }
@@ -310,6 +340,10 @@ impl Drop for Client {
             let _ = lock(stream).shutdown(Shutdown::Both);
         }
     }
+}
+
+fn encode_failure(error: &io::Error) -> String {
+    format!("could not encode the request: {error}")
 }
 
 fn memory_status(accounts: &[String]) -> Status {

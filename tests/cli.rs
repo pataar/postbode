@@ -816,3 +816,71 @@ fn sync_through_an_offline_account_fails_with_the_offline_reason() {
         "{stderr}"
     );
 }
+
+/// Answers like a daemon of another version: hello, status and shutdown, which removes its socket.
+fn serve_stale_daemon(paths: &Paths) -> std::thread::JoinHandle<()> {
+    use postbode::daemon::wire::{
+        self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status,
+    };
+    use std::io::{BufRead, BufReader};
+
+    std::fs::create_dir_all(&paths.state_dir).unwrap();
+    let socket = paths.daemon_socket();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+                let reply = match serde_json::from_str(&line.unwrap()).unwrap() {
+                    ClientMessage::Hello { .. } => DaemonMessage::Hello {
+                        protocol: PROTOCOL,
+                        version: "0.0.0-old".into(),
+                        pid: 4242,
+                    },
+                    ClientMessage::Status { id } => DaemonMessage::Reply {
+                        id,
+                        outcome: Outcome::Ok(Payload::Status(Status {
+                            pid: 4242,
+                            version: "0.0.0-old".into(),
+                            uptime_secs: 0,
+                            clients: 1,
+                            accounts: Vec::new(),
+                        })),
+                    },
+                    ClientMessage::Shutdown { id } => {
+                        std::fs::remove_file(&socket).unwrap();
+                        let done = DaemonMessage::Reply {
+                            id,
+                            outcome: Outcome::Ok(Payload::Done),
+                        };
+                        wire::write_line(&mut stream, &done).unwrap();
+                        return;
+                    }
+                    other => panic!("unexpected {other:?}"),
+                };
+                wire::write_line(&mut stream, &reply).unwrap();
+            }
+        }
+    })
+}
+
+#[test]
+fn daemon_status_and_stop_reach_a_daemon_of_another_version() {
+    let (home, _store) = seeded_home(&[]);
+    let paths = Paths::under(home.path());
+    let stale = serve_stale_daemon(&paths);
+    let out = postbode(home.path(), &["daemon", "status"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("pid 4242, version 0.0.0-old, up "),
+        "{stdout}"
+    );
+    let out = postbode(home.path(), &["daemon", "stop"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stale.join().unwrap();
+    assert!(!paths.daemon_socket().exists());
+}

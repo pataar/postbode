@@ -586,16 +586,19 @@ fn fetch_bodies(
     account: &str,
     folder: Option<&str>,
 ) -> Result<()> {
-    if client.is_none() {
-        *client = Some(Client::connect_or_start(paths)?);
-    }
-    if let Some(client) = client {
-        let fetch = sync::Command::FetchBodies {
-            folder: folder.map(str::to_string),
-        };
-        client.request(account, fetch)?;
-    }
+    let fetch = sync::Command::FetchBodies {
+        folder: folder.map(str::to_string),
+    };
+    daemon_client(client, paths)?.request(account, fetch)?;
     Ok(())
+}
+
+/// The daemon connection in `slot`, made on first use.
+fn daemon_client<'a>(slot: &'a mut Option<Client>, paths: &Paths) -> Result<&'a Client> {
+    match slot {
+        Some(client) => Ok(client),
+        None => Ok(slot.insert(Client::connect_or_start(paths)?)),
+    }
 }
 
 /// The message's raw bytes; only a message whose body is not stored yet starts the daemon.
@@ -660,13 +663,9 @@ fn sync_account(client: &Client, name: &str) -> bool {
 }
 
 fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
-    let client = match Client::connect(paths) {
-        Ok(client) => client,
-        Err(e) => {
-            log::debug!("{e:#}");
-            println!("no daemon running");
-            return Ok(());
-        }
+    let Some(client) = Client::connect_any_version(paths)? else {
+        println!("no daemon running");
+        return Ok(());
     };
     match command {
         DaemonCommand::Status => {
@@ -962,6 +961,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 bail!("rule '{name}' is disabled; approve or enable it first");
             }
             let mut failed = false;
+            let mut client = None;
             for acc in select_accounts(config, account.as_deref())? {
                 if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {
                     continue;
@@ -973,7 +973,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                     continue;
                 }
                 let command = sync::Command::ApplyRule { name: name.clone() };
-                let reply = Client::connect_or_start(paths)?.request(&acc.name, command)?;
+                let reply = daemon_client(&mut client, paths)?.request(&acc.name, command)?;
                 let Event::RuleApplied {
                     evaluated,
                     actions,
