@@ -29,7 +29,7 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 | Reads | Clients read the SQLite stores directly (WAL allows many readers) | Reads over the socket |
 | Transport | JSON lines over a 0600 Unix socket, one thread per client, no new dependency | JSON-RPC via rmcp; tarpc or tonic |
 | Correlation | Request ids travel with each command to the account thread; completion events carry them back | FIFO matching per account |
-| Versions | `hello` exchanges protocol and crate version; any mismatch restarts the daemon from the client's binary | Backward-compatible protocol versions |
+| Versions | `hello` exchanges protocol and crate version; a client replaces an older daemon, or one of another protocol and the same version, with its own binary, and refuses a newer one | Backward-compatible protocol versions |
 | Notifications | The daemon alone sends them | GUI and daemon both |
 | Attribution | `Apply` carries `by` (`cli`, `gui`, `mcp:<client>`) into the action log | Logging everything as `cli` |
 
@@ -73,7 +73,8 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 - An invalid rules.toml never stops the daemon or its start: each account runs its last good rules, or none, and sends one `Event::Error` per bad load.
 
 **Upgrades.**
-- If `hello` shows a different protocol or crate version, the client sends `shutdown`, waits for the socket to close, and auto-starts its own binary.
+- If `hello` shows an older crate version (dotted numbers compared; a pre-release or unparsable version sorts as older), or the same version with another protocol, the client sends `shutdown`, waits for the socket to close, and auto-starts its own binary.
+- If it shows a newer crate version, the client leaves the daemon running and fails with `the daemon is version <theirs>, newer than this postbode (<ours>); restart this program`. The GUI shows that on its status line and keeps retrying every 5 s; MCP returns it as the call's error. So an old window or MCP server left open after an upgrade never stops the new daemon.
 - A service-run daemon is restarted by launchd or systemd on the new binary.
 
 ## 5. Wire protocol
@@ -205,7 +206,7 @@ Commands already queued when an account goes offline are failed with the same te
   - unknown, failed and offline account errors;
   - request id round-trip;
   - a subscriber seeing another client's `ActionDone`;
-  - the second daemon refused, a stale socket removed, idle exit with a short timeout, and a version mismatch triggering a restart;
+  - the second daemon refused, a stale socket removed, idle exit with a short timeout, an older daemon replaced and a newer one left running;
   - a too-long socket path refused.
 - **Live Dovecot.**
   - `postbode archive` auto-starts a daemon, archives, and the daemon exits after the idle timeout.

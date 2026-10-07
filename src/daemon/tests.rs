@@ -612,6 +612,20 @@ mod client {
     }
 
     #[test]
+    fn versions_compare_by_their_dotted_numbers_and_anything_else_is_older() {
+        use super::super::client::is_newer;
+        assert!(is_newer("0.3.0", "0.2.9"));
+        assert!(is_newer("0.2.10", "0.2.9"));
+        assert!(is_newer("1.0.0", "0.99.99"));
+        assert!(is_newer("0.2.0", "0.2.0-rc.1"));
+        assert!(is_newer("0.1.0", "garbage"));
+        assert!(!is_newer("0.2.0", "0.2.0"));
+        assert!(!is_newer("0.2.9", "0.3.0"));
+        assert!(!is_newer("0.2.0-rc.1", "0.2.0"));
+        assert!(!is_newer("garbage", "0.1.0"));
+    }
+
+    #[test]
     fn an_in_memory_client_hands_over_commands_and_takes_injected_events() {
         let (client, commands, inject) = Client::in_memory(&["work"]);
         let events = client.subscribe().unwrap();

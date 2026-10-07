@@ -8,6 +8,7 @@ use eframe::egui;
 
 use crate::config::{self, Config, Theme};
 use crate::daemon::Client;
+use crate::daemon::client::NewerDaemon;
 use crate::daemon::wire::AccountStatus;
 use crate::engine::StartState;
 use crate::message::{self, Attachment, clean};
@@ -26,6 +27,9 @@ use super::theme;
 
 /// The status line while the daemon is gone.
 pub(crate) const DAEMON_LOST: &str = "background sync stopped — reconnecting";
+
+/// How `NewerDaemon` reads on the status line, which a reconnect clears.
+const NEWER_DAEMON: &str = "the daemon is version ";
 
 /// Lines kept for the history window.
 const HISTORY: usize = 50;
@@ -400,6 +404,12 @@ impl App {
             Ok(Err(e)) => {
                 log::warn!("could not reach the daemon: {e:#}");
                 self.reconnecting = None;
+                if let Some(newer) = e.downcast_ref::<NewerDaemon>() {
+                    let text = newer.to_string();
+                    if self.error.as_deref() != Some(text.as_str()) {
+                        self.note_error(None, text);
+                    }
+                }
             }
             Ok(Ok(connection)) => {
                 self.reconnecting = None;
@@ -428,7 +438,11 @@ impl App {
         self.client = client;
         self.events = events;
         self.daemon_lost = false;
-        if self.error.as_deref() == Some(DAEMON_LOST) {
+        if self
+            .error
+            .as_deref()
+            .is_some_and(|error| error == DAEMON_LOST || error.starts_with(NEWER_DAEMON))
+        {
             self.error = None;
         }
         self.requested.clear();
@@ -1710,6 +1724,37 @@ mod tests {
             .try_iter()
             .collect();
         assert_eq!(sent, [apply(&[1], Action::Archive)]);
+    }
+
+    #[test]
+    fn a_newer_daemon_is_named_on_the_status_line_and_retried() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().reconnect = |_| {
+            Err(crate::daemon::client::NewerDaemon {
+                theirs: "9.0.0".into(),
+                ours: "0.1.0".into(),
+            }
+            .into())
+        };
+        drop(wires);
+        harness.run();
+        let newer =
+            "the daemon is version 9.0.0, newer than this postbode (0.1.0); restart this program";
+        let deadline = Instant::now() + Duration::from_secs(5);
+        harness.input_mut().time = Some(10.0);
+        while harness.query_by_label(newer).is_none() && Instant::now() < deadline {
+            harness.step();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(harness.query_by_label(newer).is_some());
+        assert!(harness.state().daemon_lost);
+        harness.input_mut().time = Some(20.0);
+        harness.step();
+        assert!(
+            harness.state().reconnecting.is_some(),
+            "it tries again 5 s later"
+        );
     }
 
     #[test]

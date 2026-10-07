@@ -45,6 +45,25 @@ impl fmt::Display for Stopped {
 
 impl std::error::Error for Stopped {}
 
+/// A daemon of a newer postbode than this one: this program has to restart, and the daemon keeps running.
+#[derive(Debug)]
+pub struct NewerDaemon {
+    pub theirs: String,
+    pub ours: String,
+}
+
+impl fmt::Display for NewerDaemon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the daemon is version {}, newer than this postbode ({}); restart this program",
+            self.theirs, self.ours
+        )
+    }
+}
+
+impl std::error::Error for NewerDaemon {}
+
 pub struct Client {
     transport: Transport,
     inbox: Arc<Mutex<Inbox>>,
@@ -108,6 +127,8 @@ pub(super) enum ConnectError {
     /// The daemon speaks another protocol or is another version; `connection` is the one that saw its hello.
     Mismatch {
         reason: String,
+        /// The daemon's version, when its hello was understood.
+        theirs: Option<String>,
         connection: BufReader<UnixStream>,
     },
 }
@@ -151,7 +172,8 @@ impl Client {
         }
     }
 
-    /// Connects, starting this binary as the daemon when none answers, and restarting a daemon of another version.
+    /// Connects, starting this binary as the daemon when none answers, and replacing a daemon of an older version or
+    /// another protocol; a newer daemon is an error, so an old window never kills its upgrade.
     pub fn connect_or_start(paths: &Paths) -> anyhow::Result<Client> {
         let exe = std::env::current_exe().context("finding this postbode")?;
         Client::connect_or_start_with(paths, &exe, VERSION)
@@ -164,7 +186,18 @@ impl Client {
     ) -> anyhow::Result<Client> {
         match connect_as(paths, version, false) {
             Ok(client) => return Ok(client),
-            Err(ConnectError::Mismatch { reason, connection }) => {
+            Err(ConnectError::Mismatch {
+                theirs: Some(theirs),
+                ..
+            }) if is_newer(&theirs, version) => {
+                bail!(NewerDaemon {
+                    theirs,
+                    ours: version.into()
+                })
+            }
+            Err(ConnectError::Mismatch {
+                reason, connection, ..
+            }) => {
                 log::info!("{reason}; restarting it");
                 stop_daemon(paths, connection);
             }
@@ -439,7 +472,7 @@ fn handshake(
     if reader.read_line(&mut line).map_err(ConnectError::Down)? == 0 {
         return Err(ConnectError::Down(io::ErrorKind::UnexpectedEof.into()));
     }
-    let reason = match serde_json::from_str(&line) {
+    let (reason, theirs) = match serde_json::from_str(&line) {
         Ok(DaemonMessage::Hello {
             protocol,
             version: theirs,
@@ -452,15 +485,28 @@ fn handshake(
             protocol,
             version: theirs,
             ..
-        }) => {
-            format!("daemon is version {theirs} (protocol {protocol}); this postbode is {version}")
-        }
-        _ => format!("the daemon's hello was not understood; this postbode is {version}"),
+        }) => (
+            format!("daemon is version {theirs} (protocol {protocol}); this postbode is {version}"),
+            Some(theirs),
+        ),
+        _ => (
+            format!("the daemon's hello was not understood; this postbode is {version}"),
+            None,
+        ),
     };
     Err(ConnectError::Mismatch {
         reason,
+        theirs,
         connection: reader,
     })
+}
+
+/// Whether version `theirs` is newer than `ours`, comparing dotted numbers; a pre-release or garbage sorts as older.
+pub(super) fn is_newer(theirs: &str, ours: &str) -> bool {
+    fn parts(version: &str) -> Option<Vec<u64>> {
+        version.split('.').map(|part| part.parse().ok()).collect()
+    }
+    parts(theirs) > parts(ours)
 }
 
 fn read_messages(reader: &mut BufReader<UnixStream>, inbox: &Mutex<Inbox>) {

@@ -111,16 +111,34 @@ fn two_clients_starting_at_once_share_one_daemon() {
 }
 
 #[test]
-fn a_daemon_of_another_version_is_replaced() {
+fn an_older_daemon_is_replaced() {
     let (_home, paths) = home();
     let old = start(&paths);
     let old_pid = old.status().unwrap().pid;
-    let new = Client::connect_or_start_with(&paths, exe(), "0.0.0-old").unwrap();
+    let new = Client::connect_or_start_with(&paths, exe(), "999.0.0").unwrap();
     let new_pid = new.status().unwrap().pid;
     assert_ne!(new_pid, old_pid);
     wait_until("the old daemon", || !alive(old_pid));
     drop(old);
     stop(new, &paths);
+}
+
+#[test]
+fn a_newer_daemon_is_left_running_and_named() {
+    let (_home, paths) = home();
+    let daemon = start(&paths);
+    let pid = daemon.status().unwrap().pid;
+    let Err(error) = Client::connect_or_start_with(&paths, exe(), "0.0.0-old") else {
+        panic!("an older client took over a newer daemon");
+    };
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "the daemon is version {VERSION}, newer than this postbode (0.0.0-old); restart this program"
+        )
+    );
+    assert_eq!(daemon.status().unwrap().pid, pid);
+    stop(daemon, &paths);
 }
 
 #[test]
