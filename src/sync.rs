@@ -2205,8 +2205,12 @@ mod tests {
             |_| stop.store(true, Ordering::Relaxed),
         );
         let events: Vec<Event> = rx.try_iter().collect();
+        let answers: Vec<&Event> = events
+            .iter()
+            .filter(|e| e.request_ids().contains(&1))
+            .collect();
         assert!(
-            events.iter().any(|e| matches!(e, Event::CommandFailed { request: 1, message, .. } if message.starts_with("work is offline (crashed: add_flags panicked)"))),
+            matches!(answers.as_slice(), [Event::CommandFailed { message, .. }] if message.starts_with("work is offline (crashed: add_flags panicked)")),
             "{events:?}"
         );
     }
