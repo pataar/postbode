@@ -32,6 +32,6 @@ One line per account says what its sync is doing: connecting, which folder, how 
 
 **Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Trash** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
 
-Changes to `config.toml` need a restart; the window says so.
+The daemon applies changes to `config.toml` by itself; the window's account list catches up when you reopen it, and the window says so.
 
 Bodies show as text, and only `http`, `https` and `mailto` links are clickable. HTML rendering and sending mail come later.

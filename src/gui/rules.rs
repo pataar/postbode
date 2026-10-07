@@ -385,7 +385,7 @@ mod tests {
         poll(&mut harness);
         assert!(
             harness
-                .query_by_label("config.toml changed — restart Postbode to apply")
+                .query_by_label("config.toml changed — reopen the window to show it")
                 .is_some()
         );
     }
@@ -399,7 +399,7 @@ mod tests {
         poll(&mut harness);
         assert!(
             harness
-                .query_by_label_contains("restart Postbode")
+                .query_by_label_contains("reopen the window")
                 .is_none()
         );
     }

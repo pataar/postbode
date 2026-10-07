@@ -8,6 +8,7 @@ use eframe::egui;
 
 use crate::config::{self, Config, Theme};
 use crate::daemon::Client;
+use crate::daemon::wire::AccountStatus;
 use crate::engine::StartState;
 use crate::message::{self, Attachment, clean};
 use crate::paths::Paths;
@@ -38,8 +39,8 @@ const READ_DELAY: f64 = 1.0;
 /// Seconds between attempts to reach the daemon again.
 const RECONNECT: f64 = 5.0;
 
-/// A daemon client, its event subscription, and each account's state when it connected.
-pub(crate) type Connection = (Client, Receiver<Event>, Vec<(String, StartState)>);
+/// A daemon client, its event subscription, and each account's state and activity when it connected.
+pub(crate) type Connection = (Client, Receiver<Event>, Vec<AccountStatus>);
 
 /// Connects to the daemon, starting it when none answers.
 pub(crate) fn connect(paths: &Paths) -> anyhow::Result<Connection> {
@@ -49,12 +50,7 @@ pub(crate) fn connect(paths: &Paths) -> anyhow::Result<Connection> {
 /// Subscribes before asking for the states, so no event between the two is lost.
 pub(crate) fn session(client: Client) -> anyhow::Result<Connection> {
     let events = client.subscribe()?;
-    let states = client
-        .status()?
-        .accounts
-        .into_iter()
-        .map(|account| (account.name, account.state))
-        .collect();
+    let states = client.status()?.accounts;
     Ok((client, events, states))
 }
 
@@ -185,9 +181,9 @@ pub struct App {
     pub(crate) accounts: Vec<Account>,
     pub(crate) activity_log: Vec<(String, LogEntry)>,
     pub(crate) body: Option<BodyState>,
+    pub(crate) client: Client,
     pub(crate) config_changed: bool,
     pub(crate) config_mtime: Option<SystemTime>,
-    pub(crate) client: Client,
     /// Set when the event stream ended; cleared once a reconnect succeeds.
     pub(crate) daemon_lost: bool,
     pub(crate) downloads: PathBuf,
@@ -225,26 +221,32 @@ impl App {
         paths: Paths,
         client: Client,
         events: Receiver<Event>,
-        states: Vec<(String, StartState)>,
+        states: Vec<AccountStatus>,
     ) -> App {
         let accounts = states
             .into_iter()
-            .map(|(name, state)| {
-                let store = Store::open(&paths.mail_db(&name))
-                    .map_err(|e| format!("could not open the store: {e}"));
-                let mut account = Account {
-                    activity: None,
-                    error: None,
-                    folders: Vec::new(),
-                    name,
-                    pending: HashMap::new(),
-                    queued: 0,
-                    state,
-                    store,
-                };
-                account.reload_folders();
-                account
-            })
+            .map(
+                |AccountStatus {
+                     activity,
+                     name,
+                     state,
+                 }| {
+                    let store = Store::open(&paths.mail_db(&name))
+                        .map_err(|e| format!("could not open the store: {e}"));
+                    let mut account = Account {
+                        activity,
+                        error: None,
+                        folders: Vec::new(),
+                        name,
+                        pending: HashMap::new(),
+                        queued: 0,
+                        state,
+                        store,
+                    };
+                    account.reload_folders();
+                    account
+                },
+            )
             .collect();
         let rules_path = paths.rules_file();
         let rules = RulesState::load(&rules_path, Vec::new());
@@ -253,8 +255,8 @@ impl App {
             accounts,
             activity_log: Vec::new(),
             body: None,
-            config_changed: false,
             client,
+            config_changed: false,
             config_mtime,
             daemon_lost: false,
             downloads: downloads_dir(),
@@ -325,7 +327,7 @@ impl App {
             egui::Panel::top("banner").show(ui, |ui| {
                 ui.colored_label(
                     ui.visuals().warn_fg_color,
-                    "config.toml changed — restart Postbode to apply",
+                    "config.toml changed — reopen the window to show it",
                 );
             });
         }
@@ -420,7 +422,8 @@ impl App {
         attempt
     }
 
-    /// Commands sent before the loss may never be answered, so their edits go and the view reloads from the store.
+    /// Commands sent before the loss may never be answered, so their edits go and the view reloads from the store, which
+    /// the daemon may have written meanwhile.
     fn reconnected(&mut self, (client, events, states): Connection) {
         self.client = client;
         self.events = events;
@@ -430,11 +433,16 @@ impl App {
         }
         self.requested.clear();
         for account in &mut self.accounts {
-            if let Some((_, state)) = states.iter().find(|(name, _)| *name == account.name) {
-                account.state = state.clone();
+            if let Some(status) = states.iter().find(|status| status.name == account.name) {
+                account.activity = status.activity.clone();
+                account.state = status.state.clone();
+            }
+            if account.error.as_deref() == Some(DAEMON_LOST) {
+                account.error = None;
             }
             account.pending.clear();
             account.queued = 0;
+            account.reload_folders();
         }
         self.push_history("background sync reconnected".into());
         self.view_dirty = true;
@@ -620,10 +628,7 @@ impl App {
             }
             UiAction::Restore(account, file) => {
                 if self.ensure_can_act(account) && !self.send(account, Command::Restore { file }) {
-                    self.note_error(
-                        Some(account),
-                        "the sync thread has stopped; restart Postbode".into(),
-                    );
+                    self.note_error(Some(account), DAEMON_LOST.into());
                 }
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
@@ -1337,12 +1342,14 @@ pub(crate) fn theme_of(preference: egui::ThemePreference) -> Theme {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::daemon::Client;
+    use crate::daemon::wire::AccountStatus;
     use crate::engine::StartState;
     use crate::gui::test_support::{Fixture, message};
     use crate::rules::Action;
@@ -1633,19 +1640,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_reconnect_replaces_the_client_and_clears_the_line() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().reconnect = |_| {
-            let (client, _commands, events) = Client::in_memory(&["work"]);
-            // The test keeps no handle on the new daemon, and a dropped sender would read as another loss.
-            std::mem::forget(events);
-            session(client)
-        };
-        drop(wires.events);
-        harness.run();
-        assert!(harness.state().daemon_lost);
+    /// The daemon end of the client a reconnect hands over; one per test binary, as `reconnect` is a plain `fn`.
+    static RECONNECTED: Mutex<Option<Receiver<(String, Command)>>> = Mutex::new(None);
+
+    fn idle(name: &str) -> AccountStatus {
+        AccountStatus {
+            name: name.into(),
+            state: StartState::Running,
+            activity: Some(Activity::Idle {
+                since: 1_790_000_000,
+            }),
+        }
+    }
+
+    /// Steps frames past the 5 s retry until the reconnect landed.
+    fn reconnect(harness: &mut egui_kittest::Harness<'_, App>) {
         harness.input_mut().time = Some(10.0);
         let deadline = Instant::now() + Duration::from_secs(5);
         while harness.state().daemon_lost && Instant::now() < deadline {
@@ -1654,10 +1663,67 @@ mod tests {
         }
         harness.run();
         assert!(!harness.state().daemon_lost);
+    }
+
+    #[test]
+    fn a_reconnect_replaces_the_client_and_refreshes_the_accounts() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1]);
+        let (mut harness, wires) = fx.harness();
+        harness.state_mut().reconnect = |_| {
+            let (client, commands, events) = Client::in_memory(&["work"]);
+            *RECONNECTED.lock().unwrap() = Some(commands);
+            // A dropped sender would read as another loss.
+            std::mem::forget(events);
+            let (client, events, _) = session(client)?;
+            Ok((client, events, vec![idle("work")]))
+        };
+        drop(wires);
+        harness.run();
+        press(&mut harness, "e");
         assert!(
             harness
-                .query_by_label("background sync stopped — reconnecting")
-                .is_none()
+                .query_by_label(&format!("work: {DAEMON_LOST}"))
+                .is_some()
+        );
+        harness.state_mut().accounts[0].state = StartState::Failed("gone".into());
+        let mut unread = message("INBOX", 2, "while away");
+        unread.flags = String::new();
+        fx.add("work", unread);
+        reconnect(&mut harness);
+        assert!(harness.query_by_label_contains(DAEMON_LOST).is_none());
+        let line = format!("work: up to date · {}", status::clock(1_790_000_000));
+        assert!(harness.query_by_label(&line).is_some());
+        assert!(harness.query_by_label("INBOX (1)").is_some());
+        press(&mut harness, "e");
+        let sent: Vec<_> = RECONNECTED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .try_iter()
+            .collect();
+        assert_eq!(sent, [apply(&[1], Action::Archive)]);
+    }
+
+    #[test]
+    fn the_window_opens_with_the_daemons_activity() {
+        let fx = Fixture::new(&["work"]);
+        let config = Config::load(&fx.paths.config_file()).unwrap();
+        let (client, _commands, _events) = Client::in_memory(&["work"]);
+        let events = client.subscribe().unwrap();
+        let app = App::new(
+            &config,
+            fx.paths.clone(),
+            client,
+            events,
+            vec![idle("work")],
+        );
+        assert_eq!(
+            app.accounts[0].activity,
+            Some(Activity::Idle {
+                since: 1_790_000_000
+            })
         );
     }
 
