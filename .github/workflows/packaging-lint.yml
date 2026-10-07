@@ -1,0 +1,26 @@
+name: Packaging lint
+
+on:
+  push:
+    branches: [main]
+    paths: ["packaging/**", "assets/**", ".github/workflows/**"]
+  pull_request:
+    paths: ["packaging/**", "assets/**", ".github/workflows/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y desktop-file-utils shellcheck
+      - run: desktop-file-validate packaging/linux/*.desktop
+      - run: shellcheck packaging/*.sh packaging/*/*.sh
