@@ -203,7 +203,7 @@ fn trash_target(
     Ok(trash_destination(store, msg)?)
 }
 
-/// When the server does not report the new uid, the local row is dropped and the next sync of the target folder re-adds it.
+/// The new uid is not known, so the local row goes and the next sync of the target folder adds it.
 fn move_to(
     current: &Message,
     target: &str,
@@ -215,7 +215,7 @@ fn move_to(
     if !known && let Err(e) = ops.create_folder(target) {
         log::debug!("{target}: create failed ({e}), trying the move anyway");
     }
-    let new_uid = ops.move_message(current.uid, target)?;
+    ops.move_message(current.uid, target)?;
     if !known {
         store.upsert_folder(&Folder {
             name: target.to_string(),
@@ -224,7 +224,7 @@ fn move_to(
             special_use: None,
         })?;
     }
-    store.move_message_row(&current.folder, current.uid, target, new_uid)?;
+    store.remove_message(&current.folder, current.uid)?;
     Ok(())
 }
 
