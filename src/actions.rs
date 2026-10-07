@@ -1,5 +1,5 @@
 //! Direct actions on chosen messages: mark, move, archive and delete, through the same `apply` as rules, plus the
-//! dry-run, rule preview and raw-message helpers the CLI, the window and the MCP server share.
+//! dry-run and rule preview helpers the CLI, the window and the MCP server share.
 use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps};
 use crate::message::clean;
@@ -9,7 +9,7 @@ use crate::rules::{Action, CompiledRule};
 use crate::store::{Message, Store, StoreError};
 use crate::trash::Trash;
 
-/// The rule name the CLI and the window log direct actions under.
+/// The rule name the CLI logs direct actions under.
 pub const RULE_NAME: &str = "cli";
 
 #[derive(Debug, thiserror::Error)]

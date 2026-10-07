@@ -174,7 +174,7 @@ pub enum Activity {
     },
 }
 
-/// Work a front end asks an account's sync thread to do on its connection.
+/// Work the daemon asks an account's sync thread to do on its connection, on a client's behalf.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     /// `by` is logged as the action's rule name.

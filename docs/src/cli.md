@@ -55,7 +55,7 @@ A fast, simple mail client with automatic mailbox rules
 
 * `run` — Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
 * `daemon` — Inspect or stop the daemon that syncs your accounts; other commands start it when needed
-* `gui` — Open the mail window; syncs every account like `run`
+* `gui` — Open the mail window; starts the daemon when needed
 * `service` — Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
 * `sync` — Sync once, apply rules, exit
 * `attachment` — List or save a message's attachments
@@ -115,7 +115,7 @@ Stop the daemon; it starts again when a command needs it
 
 ## `postbode gui`
 
-Open the mail window; syncs every account like `run`
+Open the mail window; starts the daemon when needed
 
 **Usage:** `postbode gui`
 

@@ -64,7 +64,7 @@ enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
-    /// Open the mail window; syncs every account like `run`
+    /// Open the mail window; starts the daemon when needed
     Gui,
     /// Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
     Service {
