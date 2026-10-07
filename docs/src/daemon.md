@@ -14,7 +14,7 @@ To keep mail syncing while no window is open, run the daemon at login:
 postbode service install
 ```
 
-This writes a launchd agent (`~/Library/LaunchAgents/nl.pataar.postbode.plist`) on macOS or a systemd user unit (`~/.config/systemd/user/postbode.service`) on Linux, and starts it. A daemon that was already running is stopped first, so the service's takes over. Running the command again is safe. `--dry-run` shows the file and the commands and changes nothing. `postbode service remove` stops the service and deletes the file. The service runs the postbode binary from the path it was installed from; after moving or reinstalling postbode, run `postbode service install` again.
+This writes a launchd agent (`~/Library/LaunchAgents/nl.pataar.postbode.plist`) on macOS or a systemd user unit (`~/.config/systemd/user/postbode.service`) on Linux, and starts it. A daemon that was already running is stopped first, so the service's daemon takes over. Running the command again is safe. `--dry-run` shows the file and the commands and changes nothing. `postbode service remove` stops the service and deletes the file. The service runs the postbode binary from the path it was installed from; after moving or reinstalling postbode, run `postbode service install` again.
 
 ## Status and stopping
 
