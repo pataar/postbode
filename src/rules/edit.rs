@@ -5,8 +5,9 @@ use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Value};
 
-use crate::paths::{create_private_dir, write_atomic};
+use crate::paths::{Paths, create_private_dir, write_atomic};
 use crate::rules::{Rule, RuleFile, RulesError, compile, parse};
+use crate::store::Store;
 
 /// Appends `rule` disabled and attributed to `by`, so it only acts once a human approves it.
 pub fn propose(path: &Path, mut rule: Rule, by: &str) -> Result<(), RulesError> {
@@ -48,6 +49,21 @@ pub fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
         write_enabled(table, true);
         Ok(None)
     })
+}
+
+/// Approves `name` and restarts its clock in each account's store, so it acts only on mail that arrives from now on,
+/// even where an older clock of the rule survived.
+pub fn approve_from_now(
+    paths: &Paths,
+    accounts: &[String],
+    name: &str,
+    now: i64,
+) -> Result<(), RulesError> {
+    approve(&paths.rules_file(), name)?;
+    for account in accounts {
+        Store::open_account(paths, account)?.restart_rule_clock(name, now)?;
+    }
+    Ok(())
 }
 
 fn write_enabled(table: &mut toml_edit::Table, enabled: bool) {

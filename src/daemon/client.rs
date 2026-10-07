@@ -21,8 +21,9 @@ use super::wire::{
     self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status, VERSION,
 };
 use crate::paths::{self, Paths};
+use crate::rules::Action;
 use crate::store::{Message, Store};
-use crate::sync::{Command, Event, RequestId};
+use crate::sync::{Command, Event, EventResults, RequestId};
 
 pub const NO_REPLY: &str =
     "no reply from the daemon within 120 s; the command may still run, see `postbode log`";
@@ -247,6 +248,35 @@ impl LazyClient {
         let result = client.request(account, command);
         self.forget_if_stopped(&client, &result);
         pick(result?).map_err(|reply| anyhow!("unexpected reply from the daemon: {reply:?}"))
+    }
+
+    /// Runs a direct action through the daemon; the outcome per uid.
+    pub fn apply(
+        &self,
+        account: &str,
+        folder: &str,
+        uids: &[u32],
+        action: &Action,
+        by: &str,
+    ) -> anyhow::Result<EventResults> {
+        let command = Command::Apply {
+            folder: folder.into(),
+            uids: uids.to_vec(),
+            action: action.clone(),
+            by: by.into(),
+        };
+        self.request(account, command, |reply| match reply {
+            Event::ActionDone { results, .. } => Ok(results),
+            other => Err(other),
+        })
+    }
+
+    /// Appends a trashed `.eml` back into its folder through the daemon; the folder it went to.
+    pub fn restore(&self, account: &str, file: PathBuf) -> anyhow::Result<String> {
+        self.request(account, Command::Restore { file }, |reply| match reply {
+            Event::Restored { folder, .. } => Ok(folder),
+            other => Err(other),
+        })
     }
 
     /// The message's full raw bytes: from the store, or fetched through the daemon once; a stored body needs no daemon.
