@@ -319,8 +319,27 @@ fn cli_actions_are_logged_as_cli_through_the_daemon() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let store = Store::open(&Paths::under(home.path()).mail_db(&account.name)).unwrap();
+    let paths = Paths::under(home.path());
+    let store = Store::open(&paths.mail_db(&account.name)).unwrap();
     assert_eq!(store.log(1).unwrap()[0].rule_name, "cli");
+    let pid = std::fs::read_to_string(paths.daemon_lock()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while paths.daemon_socket().exists() || alive(pid.trim()) {
+        assert!(
+            Instant::now() < deadline,
+            "the auto-started daemon (pid {pid}) did not idle out"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
 }
 
 #[test]
