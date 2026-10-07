@@ -604,12 +604,16 @@ mod client {
             expected
         );
 
-        client.request("work", Command::SyncNow).unwrap();
+        // Only this pass's Synced ends the wait: the other account's first pass may finish late on a loaded machine.
+        let Event::Synced { requests, .. } = client.request("work", Command::SyncNow).unwrap()
+        else {
+            panic!("SyncNow was not answered by Synced");
+        };
         let mut fetches = 0;
         loop {
             match events.recv_timeout(WAIT).unwrap() {
                 Event::BodyReady { .. } => fetches += 1,
-                Event::Synced { .. } => break,
+                Event::Synced { requests: done, .. } if done == requests => break,
                 _ => {}
             }
         }
