@@ -65,6 +65,10 @@ tempfile = "3"                                       # temp dirs for store and p
 name = "sync_model"
 required-features = ["testing"]                      # drives sync against RecordingOps
 
+[[test]]
+name = "imap_live"
+required-features = ["testing"]                      # drives sync::run_once and sync_all against Dovecot
+
 [lints.rust]
 unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way
 
@@ -80,7 +84,7 @@ dbg_macro = "warn"                                   # debug output stays out of
 default = ["gui", "mcp"]
 gui = ["dep:eframe"]                                 # `postbode gui`; off builds the CLI alone
 mcp = ["dep:rmcp"]                                   # `postbode mcp`; off builds without the MCP server
-testing = []                                         # exposes RecordingOps to integration tests
+testing = []                                         # exposes RecordingOps and the one-shot sync steps to integration tests
 
 [profile.dev.package."*"]
 opt-level = 2

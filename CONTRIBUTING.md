@@ -46,7 +46,7 @@ If it finds a panic, add the input as a named test next to the fix.
 
 ```sh
 docker compose -f tests/dovecot/compose.yml up -d
-POSTBODE_TEST_IMAP_HOST=localhost cargo test --test imap_live
+POSTBODE_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 ```
 
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither.
