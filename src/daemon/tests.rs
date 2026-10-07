@@ -684,3 +684,56 @@ fn new_mail_notifies_even_on_an_account_with_notify_off() {
         [("bob@example.com".to_string(), "hi".to_string())]
     );
 }
+
+/// Connections take `delay`, so an account thread is busy for that long and an engine stop waits for it.
+fn slow_connector(delay: Duration) -> crate::engine::Connector {
+    std::sync::Arc::new(move |_| {
+        std::thread::sleep(delay);
+        Ok(
+            Box::new(crate::mail_ops::RecordingOps::new().with_folder("INBOX", None))
+                as Box<dyn crate::mail_ops::MailOps>,
+        )
+    })
+}
+
+#[test]
+fn a_command_while_stopping_says_the_daemon_is_stopping() {
+    let shared = super::Shared {
+        engine: std::sync::Mutex::new(None),
+        hub: std::sync::Mutex::new(super::Hub::new()),
+    };
+    let (out, lines) = std::sync::mpsc::channel();
+    let conn = super::ClientConn {
+        out,
+        subscribed: false,
+        writer: std::thread::spawn(|| {}),
+    };
+    shared.hub.lock().unwrap().clients.insert(1, conn);
+    super::submit(&shared, 1, 7, "work", Command::SyncNow);
+    let line = lines.recv_timeout(WAIT).unwrap();
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&line).unwrap(),
+        DaemonMessage::Reply {
+            id: 7,
+            outcome: Outcome::Error("the daemon is stopping".into()),
+        }
+    );
+}
+
+#[test]
+fn connecting_while_the_daemon_stops_fails_at_once() {
+    let mut daemon = TestDaemon::start_with(options(slow_connector(Duration::from_secs(3)), None));
+    assert_eq!(
+        daemon.client().request(ClientMessage::Shutdown { id: 1 }),
+        Outcome::Ok(Payload::Done)
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while std::os::unix::net::UnixStream::connect(daemon.paths.daemon_socket()).is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon still takes connections while it stops"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    daemon.finished().unwrap();
+}

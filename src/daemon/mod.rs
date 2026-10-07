@@ -257,6 +257,8 @@ fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Res
             move || route_events(&shared, events, options.report, notify)
         })?;
     let connections = accept_until_done(&shared, &listener, &mut watch, options.idle_exit);
+    // Connects fail at once from here on instead of waiting out the hello timeout; the socket file and lock remain.
+    drop(listener);
     stop(&shared, router, connections);
     Ok(())
 }
@@ -581,7 +583,8 @@ fn status(shared: &Shared) -> Status {
 
 /// Refuses the command at once when its account cannot run it, and otherwise hands it to the engine.
 fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Command) {
-    let state = lock(&shared.engine).as_ref().and_then(|engine| {
+    // None once `stop` took the engine.
+    let state = lock(&shared.engine).as_ref().map(|engine| {
         engine
             .accounts()
             .into_iter()
@@ -589,7 +592,11 @@ fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Co
     });
     let request = {
         let mut hub = lock(&shared.hub);
-        if let Some(refusal) = refusal(account, state, hub.activity.get(account)) {
+        let refused = match state {
+            None => Some("the daemon is stopping".to_string()),
+            Some(state) => refusal(account, state, hub.activity.get(account)),
+        };
+        if let Some(refusal) = refused {
             hub.reply(client, id, Outcome::Error(refusal));
             return;
         }
