@@ -1,13 +1,11 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
-use std::sync::{Arc, Mutex};
-
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
 use crate::actions;
 use crate::config::{AccountConfig, Config};
 use crate::daemon::Client;
-use crate::daemon::client::Stopped;
+use crate::daemon::client::LazyClient;
 use crate::message;
 use crate::output;
 use crate::paths::Paths;
@@ -22,15 +20,14 @@ pub struct Backend {
     /// Every configured account, visible or not: an approved rule's clock restarts in all of them.
     all_accounts: Vec<String>,
     accounts: Vec<AccountConfig>,
-    /// Made on first need; shared so a long request does not hold up other tool calls.
-    client: Mutex<Option<Arc<Client>>>,
+    daemon: LazyClient,
     paths: Paths,
 }
 
 impl Backend {
     /// The accounts in `only`, or all of them; an unknown name, or no account at all, is an error.
     pub fn new(config: &Config, paths: &Paths, only: &[String]) -> Result<Backend> {
-        Backend::build(config, paths, only, None)
+        Backend::build(config, paths, only, LazyClient::new(paths))
     }
 
     /// Like `new`, over a daemon connection the caller made.
@@ -40,14 +37,14 @@ impl Backend {
         only: &[String],
         client: Client,
     ) -> Result<Backend> {
-        Backend::build(config, paths, only, Some(Arc::new(client)))
+        Backend::build(config, paths, only, LazyClient::with_client(paths, client))
     }
 
     fn build(
         config: &Config,
         paths: &Paths,
         only: &[String],
-        client: Option<Arc<Client>>,
+        daemon: LazyClient,
     ) -> Result<Backend> {
         if config.accounts.is_empty() {
             bail!("no accounts configured; run `postbode account add`");
@@ -63,55 +60,9 @@ impl Backend {
                 .filter(|a| only.is_empty() || only.contains(&a.name))
                 .cloned()
                 .collect(),
-            client: Mutex::new(client),
+            daemon,
             paths: paths.clone(),
         })
-    }
-
-    /// The daemon connection, started and connected on first use and again once its daemon hung up.
-    fn client(&self) -> Result<Arc<Client>> {
-        let mut slot = self.client.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(client) = slot.as_ref().filter(|client| !client.is_closed()) {
-            return Ok(client.clone());
-        }
-        let client = Arc::new(Client::connect_or_start(&self.paths)?);
-        *slot = Some(client.clone());
-        Ok(client)
-    }
-
-    /// Drops `client` when its daemon is gone, so the next call reconnects.
-    fn forget_if_stopped<T>(&self, client: &Arc<Client>, result: &Result<T>) {
-        let stopped = result
-            .as_ref()
-            .is_err_and(|e| e.chain().any(|cause| cause.is::<Stopped>()));
-        let mut slot = self.client.lock().unwrap_or_else(|e| e.into_inner());
-        if stopped && slot.as_ref().is_some_and(|held| Arc::ptr_eq(held, client)) {
-            *slot = None;
-        }
-    }
-
-    /// The daemon's reply to `command`, as far as `pick` takes it; any other reply is an error.
-    fn request<T>(
-        &self,
-        account: &str,
-        command: Command,
-        pick: impl FnOnce(Event) -> Result<T, Event>,
-    ) -> Result<T> {
-        let client = self.client()?;
-        let result = client.request(account, command);
-        self.forget_if_stopped(&client, &result);
-        pick(result?).map_err(|reply| anyhow!("unexpected reply from the daemon: {reply:?}"))
-    }
-
-    /// The message's raw bytes; only a body not stored yet needs the daemon.
-    fn raw(&self, account: &str, store: &Store, msg: &Message) -> Result<Vec<u8>> {
-        if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
-            return Ok(raw);
-        }
-        let client = self.client()?;
-        let result = client.raw_message(account, store, msg);
-        self.forget_if_stopped(&client, &result);
-        result
     }
 
     /// The named visible account, or every visible one.
@@ -227,13 +178,13 @@ impl Backend {
     /// The message row and its plain body text, fetched once if not stored yet.
     pub fn show(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<(Value, String)> {
         let (acc, store, msg) = self.message(account, folder, uid)?;
-        let raw = self.raw(&acc.name, &store, &msg)?;
+        let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
         Ok((message_row(&acc.name, &msg)?, message::body_text(&raw)))
     }
 
     pub fn attachments(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<Vec<Value>> {
         let (acc, store, msg) = self.message(account, folder, uid)?;
-        let raw = self.raw(&acc.name, &store, &msg)?;
+        let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
         message::attachments(&raw)
             .iter()
             .map(|a| Ok(output::with_account(&acc.name, a)?))
@@ -301,10 +252,12 @@ impl Backend {
             action: action.clone(),
             by: by.into(),
         };
-        let results = self.request(&acc.name, command, |reply| match reply {
-            Event::ActionDone { results, .. } => Ok(results),
-            other => Err(other),
-        })?;
+        let results = self
+            .daemon
+            .request(&acc.name, command, |reply| match reply {
+                Event::ActionDone { results, .. } => Ok(results),
+                other => Err(other),
+            })?;
         let failed: Vec<Value> = results
             .iter()
             .filter_map(|(uid, result)| {
@@ -341,14 +294,15 @@ impl Backend {
                 json!({ "account": acc.name, "file": file, "dry_run": true, "would": format!("restore to {folder}") }),
             );
         }
-        let folder = self.request(
-            &acc.name,
-            Command::Restore { file: path },
-            |reply| match reply {
-                Event::Restored { folder, .. } => Ok(folder),
-                other => Err(other),
-            },
-        )?;
+        let folder =
+            self.daemon.request(
+                &acc.name,
+                Command::Restore { file: path },
+                |reply| match reply {
+                    Event::Restored { folder, .. } => Ok(folder),
+                    other => Err(other),
+                },
+            )?;
         Ok(json!({ "account": acc.name, "restored_to": folder }))
     }
 
@@ -356,15 +310,17 @@ impl Backend {
     pub fn sync(&self, account: Option<&str>) -> Result<Vec<Value>> {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
-            let synced = self.request(&acc.name, Command::SyncNow, |reply| match reply {
-                Event::Synced {
-                    new_messages,
-                    actions,
-                    errors,
-                    ..
-                } => Ok((new_messages, actions, errors)),
-                other => Err(other),
-            });
+            let synced = self
+                .daemon
+                .request(&acc.name, Command::SyncNow, |reply| match reply {
+                    Event::Synced {
+                        new_messages,
+                        actions,
+                        errors,
+                        ..
+                    } => Ok((new_messages, actions, errors)),
+                    other => Err(other),
+                });
             rows.push(match synced {
                 Ok((new_messages, actions, errors)) => json!({ "account": acc.name, "new_messages": new_messages, "actions": actions, "errors": errors }),
                 Err(e) => json!({ "account": acc.name, "error": format!("{e:#}") }),

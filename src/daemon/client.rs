@@ -147,6 +147,85 @@ impl From<ConnectError> for anyhow::Error {
     }
 }
 
+/// The daemon connection a CLI command or the MCP server makes on first use, and again once its daemon hung up.
+pub struct LazyClient {
+    paths: Paths,
+    /// Shared, so a long request does not hold up other callers.
+    slot: Mutex<Option<Arc<Client>>>,
+}
+
+impl LazyClient {
+    pub fn new(paths: &Paths) -> LazyClient {
+        LazyClient {
+            paths: paths.clone(),
+            slot: Mutex::new(None),
+        }
+    }
+
+    /// Starts out with a connection the caller made.
+    pub fn with_client(paths: &Paths, client: Client) -> LazyClient {
+        LazyClient {
+            paths: paths.clone(),
+            slot: Mutex::new(Some(Arc::new(client))),
+        }
+    }
+
+    /// The connection, starting the daemon when none answers.
+    pub fn client(&self) -> anyhow::Result<Arc<Client>> {
+        let mut slot = lock(&self.slot);
+        if let Some(client) = slot.as_ref().filter(|client| !client.is_closed()) {
+            return Ok(client.clone());
+        }
+        let client = Arc::new(Client::connect_or_start(&self.paths)?);
+        *slot = Some(client.clone());
+        Ok(client)
+    }
+
+    /// The daemon's reply to `command`, as far as `pick` takes it; any other reply is an error.
+    pub fn request<T>(
+        &self,
+        account: &str,
+        command: Command,
+        pick: impl FnOnce(Event) -> Result<T, Event>,
+    ) -> anyhow::Result<T> {
+        let client = self.client()?;
+        let result = client.request(account, command);
+        self.forget_if_stopped(&client, &result);
+        pick(result?).map_err(|reply| anyhow!("unexpected reply from the daemon: {reply:?}"))
+    }
+
+    /// The message's full raw bytes: from the store, or fetched through the daemon once; a stored body needs no daemon.
+    pub fn raw_message(
+        &self,
+        account: &str,
+        store: &Store,
+        msg: &Message,
+    ) -> anyhow::Result<Vec<u8>> {
+        if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
+            return Ok(raw);
+        }
+        let fetch = Command::FetchBody {
+            folder: msg.folder.clone(),
+            uid: msg.uid,
+        };
+        self.request(account, fetch, Ok)?;
+        store
+            .raw(&msg.folder, msg.uid)?
+            .ok_or_else(|| anyhow!("no body for {}/{} after fetching", msg.folder, msg.uid))
+    }
+
+    /// Drops `client` when its daemon is gone, so the next call reconnects.
+    fn forget_if_stopped<T>(&self, client: &Arc<Client>, result: &anyhow::Result<T>) {
+        let stopped = result
+            .as_ref()
+            .is_err_and(|e| e.chain().any(|cause| cause.is::<Stopped>()));
+        let mut slot = lock(&self.slot);
+        if stopped && slot.as_ref().is_some_and(|held| Arc::ptr_eq(held, client)) {
+            *slot = None;
+        }
+    }
+}
+
 impl Client {
     /// Connects to a running daemon; Err when none answers or it is another version.
     pub fn connect(paths: &Paths) -> anyhow::Result<Client> {
@@ -320,26 +399,6 @@ impl Client {
             std::thread::sleep(Duration::from_millis(50));
         }
         Ok(pid)
-    }
-
-    /// The message's full raw bytes: from the store, or fetched through the daemon once.
-    pub fn raw_message(
-        &self,
-        account: &str,
-        store: &Store,
-        msg: &Message,
-    ) -> anyhow::Result<Vec<u8>> {
-        if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
-            return Ok(raw);
-        }
-        let fetch = Command::FetchBody {
-            folder: msg.folder.clone(),
-            uid: msg.uid,
-        };
-        self.request(account, fetch)?;
-        store
-            .raw(&msg.folder, msg.uid)?
-            .ok_or_else(|| anyhow!("no body for {}/{} after fetching", msg.folder, msg.uid))
     }
 
     /// A client with no daemon behind it: commands appear on the returned receiver, events are injected by the test.

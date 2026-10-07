@@ -431,7 +431,7 @@ mod client {
     use std::time::Duration;
 
     use super::super::Client;
-    use super::super::client::{NO_REPLY, connect_as};
+    use super::super::client::{LazyClient, NO_REPLY, connect_as};
     use super::super::test_support::{TestDaemon, WAIT, options, recording_connector};
     use super::super::wire::{self, DaemonMessage};
     use crate::engine::Connector;
@@ -542,7 +542,8 @@ mod client {
     #[test]
     fn raw_message_fetches_once_through_the_daemon() {
         let daemon = TestDaemon::start_with(options(one_message_connector(), None));
-        let client = Client::connect(&daemon.paths).unwrap();
+        let lazy = LazyClient::with_client(&daemon.paths, Client::connect(&daemon.paths).unwrap());
+        let client = lazy.client().unwrap();
         client.request("work", Command::SyncNow).unwrap();
         let store = Store::open(&daemon.paths.mail_db("work")).unwrap();
         let message = store.message("INBOX", 1).unwrap().unwrap();
@@ -551,11 +552,11 @@ mod client {
 
         let expected = b"From: bob@example.com\r\nSubject: hi\r\n\r\nthe body\r\n".to_vec();
         assert_eq!(
-            client.raw_message("work", &store, &message).unwrap(),
+            lazy.raw_message("work", &store, &message).unwrap(),
             expected
         );
         assert_eq!(
-            client.raw_message("work", &store, &message).unwrap(),
+            lazy.raw_message("work", &store, &message).unwrap(),
             expected
         );
 

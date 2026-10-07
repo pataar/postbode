@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 use postbode::config::{AccountConfig, Config, Identity, PasswordSource};
 use postbode::credentials::{self, Secret};
 use postbode::daemon::Client;
+use postbode::daemon::client::LazyClient;
 use postbode::daemon::wire::{AccountStatus, Status};
 use postbode::mail_ops::MailOps;
 use postbode::message::clean;
@@ -408,7 +409,7 @@ pub fn run() -> Result<()> {
             limit,
             json,
         } => {
-            let mut client = None;
+            let daemon = LazyClient::new(&paths);
             for acc in select_accounts(&config, account.as_deref())? {
                 let store = open_store(&paths, &acc.name)?;
                 if bodies && lacks_bodies(&store, folder.as_deref())? {
@@ -416,8 +417,7 @@ pub fn run() -> Result<()> {
                         "{}: fetching missing bodies; this can take a while on a large folder",
                         acc.name
                     );
-                    if let Err(e) = fetch_bodies(&mut client, &paths, &acc.name, folder.as_deref())
-                    {
+                    if let Err(e) = fetch_bodies(&daemon, &acc.name, folder.as_deref()) {
                         eprintln!(
                             "{}: {}; searching the bodies already stored",
                             acc.name,
@@ -447,7 +447,7 @@ pub fn run() -> Result<()> {
             let msg = store
                 .message(&folder, uid)?
                 .with_context(|| format!("no message {folder}/{uid}"))?;
-            let body = raw_message(&paths, &acc.name, &store, &msg)?;
+            let body = LazyClient::new(&paths).raw_message(&acc.name, &store, &msg)?;
             if raw {
                 io::stdout().write_all(&body)?;
             } else if json {
@@ -556,10 +556,10 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         action: action.clone(),
         by: postbode::actions::RULE_NAME.into(),
     };
-    let reply = Client::connect_or_start(paths)?.request(&acc.name, command)?;
-    let Event::ActionDone { results, .. } = reply else {
-        bail!("unexpected reply from the daemon: {reply:?}");
-    };
+    let results = LazyClient::new(paths).request(&acc.name, command, |reply| match reply {
+        Event::ActionDone { results, .. } => Ok(results),
+        other => Err(other),
+    })?;
     let mut failed = 0;
     for (uid, result) in &results {
         if let Err(message) = result {
@@ -600,34 +600,13 @@ fn lacks_bodies(store: &Store, folder: Option<&str>) -> Result<bool> {
     Ok(false)
 }
 
-/// Asks the daemon to fetch the missing bodies, connecting on the first call only.
-fn fetch_bodies(
-    client: &mut Option<Client>,
-    paths: &Paths,
-    account: &str,
-    folder: Option<&str>,
-) -> Result<()> {
+/// Asks the daemon to fetch the missing bodies.
+fn fetch_bodies(daemon: &LazyClient, account: &str, folder: Option<&str>) -> Result<()> {
     let fetch = sync::Command::FetchBodies {
         folder: folder.map(str::to_string),
     };
-    daemon_client(client, paths)?.request(account, fetch)?;
+    daemon.request(account, fetch, Ok)?;
     Ok(())
-}
-
-/// The daemon connection in `slot`, made on first use.
-fn daemon_client<'a>(slot: &'a mut Option<Client>, paths: &Paths) -> Result<&'a Client> {
-    match slot {
-        Some(client) => Ok(client),
-        None => Ok(slot.insert(Client::connect_or_start(paths)?)),
-    }
-}
-
-/// The message's raw bytes; only a message whose body is not stored yet starts the daemon.
-fn raw_message(paths: &Paths, account: &str, store: &Store, msg: &Message) -> Result<Vec<u8>> {
-    if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
-        return Ok(raw);
-    }
-    Client::connect_or_start(paths)?.raw_message(account, store, msg)
 }
 
 fn cmd_sync(config: &Config, paths: &Paths, account: Option<&str>) -> Result<()> {
@@ -787,7 +766,7 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
     let msg = store
         .message(folder, uid)?
         .with_context(|| format!("no message {}/{uid}", clean(folder, false)))?;
-    let raw = raw_message(paths, &acc.name, &store, &msg)?;
+    let raw = LazyClient::new(paths).raw_message(&acc.name, &store, &msg)?;
     match command {
         AttachmentCommand::List { json, .. } => {
             for a in postbode::message::attachments(&raw) {
@@ -975,7 +954,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 bail!("rule '{name}' is disabled; approve or enable it first");
             }
             let mut failed = false;
-            let mut client = None;
+            let daemon = LazyClient::new(paths);
             for acc in select_accounts(config, account.as_deref())? {
                 if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {
                     continue;
@@ -987,16 +966,16 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                     continue;
                 }
                 let command = sync::Command::ApplyRule { name: name.clone() };
-                let reply = daemon_client(&mut client, paths)?.request(&acc.name, command)?;
-                let Event::RuleApplied {
-                    evaluated,
-                    actions,
-                    errors,
-                    ..
-                } = reply
-                else {
-                    bail!("unexpected reply from the daemon: {reply:?}");
-                };
+                let (evaluated, actions, errors) =
+                    daemon.request(&acc.name, command, |reply| match reply {
+                        Event::RuleApplied {
+                            evaluated,
+                            actions,
+                            errors,
+                            ..
+                        } => Ok((evaluated, actions, errors)),
+                        other => Err(other),
+                    })?;
                 failed |= !errors.is_empty();
                 for message in errors {
                     postbode::daemon::report(&Event::Error {
@@ -1133,10 +1112,11 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
             let command = sync::Command::Restore {
                 file: std::path::absolute(&file)?,
             };
-            let reply = Client::connect_or_start(paths)?.request(&acc.name, command)?;
-            let Event::Restored { folder, .. } = reply else {
-                bail!("unexpected reply from the daemon: {reply:?}");
-            };
+            let folder =
+                LazyClient::new(paths).request(&acc.name, command, |reply| match reply {
+                    Event::Restored { folder, .. } => Ok(folder),
+                    other => Err(other),
+                })?;
             println!(
                 "restored to {}; rules leave restored mail alone. Run `postbode sync` to see it",
                 clean(&folder, false)
