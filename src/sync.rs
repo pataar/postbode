@@ -934,12 +934,11 @@ impl<'a> AccountSync<'a> {
         paths: &Paths,
         events: &Sender<Event>,
     ) -> Result<AccountSync<'a>, SyncError> {
-        paths.ensure_account(&account.name)?;
         let mut sync = AccountSync {
+            store: Store::open_account(paths, &account.name)?,
             account,
             trash: Trash::new(paths.trash_dir(&account.name)),
             identity: account.identity()?,
-            store: Store::open(&paths.mail_db(&account.name))?,
             rules_path: paths.rules_file(),
             rules: Vec::new(),
             rules_error: None,

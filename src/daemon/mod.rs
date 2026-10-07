@@ -262,7 +262,7 @@ fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Res
 /// that fails to open fails again in its account's thread, which reports it.
 fn migrate_stores(config: &Config, paths: &Paths) {
     for account in &config.accounts {
-        if let Err(e) = Store::open(&paths.mail_db(&account.name)) {
+        if let Err(e) = Store::open_account(paths, &account.name) {
             log::warn!("[{}] could not open the store: {e}", account.name);
         }
     }

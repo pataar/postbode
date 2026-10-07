@@ -88,8 +88,7 @@ impl Backend {
     }
 
     fn store(&self, account: &AccountConfig) -> Result<Store> {
-        self.paths.ensure_account(&account.name)?;
-        Ok(Store::open(&self.paths.mail_db(&account.name))?)
+        Ok(Store::open_account(&self.paths, &account.name)?)
     }
 
     fn message(
@@ -422,8 +421,7 @@ impl Backend {
         self.ensure_rule_visible(name, true)?;
         rules::edit::approve(&self.paths.rules_file(), name)?;
         for account in &self.all_accounts {
-            self.paths.ensure_account(account)?;
-            Store::open(&self.paths.mail_db(account))?.restart_rule_clock(name, sync::now())?;
+            Store::open_account(&self.paths, account)?.restart_rule_clock(name, sync::now())?;
         }
         Ok(json!({ "rule": name, "enabled": true }))
     }

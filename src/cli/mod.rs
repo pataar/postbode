@@ -355,7 +355,7 @@ pub fn run() -> Result<()> {
         Command::Rules { command } => cmd_rules(command, &config, &paths),
         Command::Folders { account, json } => {
             for acc in select_accounts(&config, account.as_deref())? {
-                let store = open_store(&paths, &acc.name)?;
+                let store = Store::open_account(&paths, &acc.name)?;
                 for f in store.folders()? {
                     let total = store.message_count(&f.name)?;
                     let unread = store.unread_count(&f.name)?;
@@ -376,7 +376,7 @@ pub fn run() -> Result<()> {
             threads,
         } => {
             for acc in select_accounts(&config, account.as_deref())? {
-                let store = open_store(&paths, &acc.name)?;
+                let store = Store::open_account(&paths, &acc.name)?;
                 if threads {
                     for thread in store.threads(&folder, limit)? {
                         for (m, depth) in thread.iter().zip(postbode::output::depths(&thread)) {
@@ -411,7 +411,7 @@ pub fn run() -> Result<()> {
         } => {
             let daemon = LazyClient::new(&paths);
             for acc in select_accounts(&config, account.as_deref())? {
-                let store = open_store(&paths, &acc.name)?;
+                let store = Store::open_account(&paths, &acc.name)?;
                 if bodies && lacks_bodies(&store, folder.as_deref())? {
                     eprintln!(
                         "{}: fetching missing bodies; this can take a while on a large folder",
@@ -443,7 +443,7 @@ pub fn run() -> Result<()> {
             json,
         } => {
             let acc = single_account(&config, account.as_deref())?;
-            let store = open_store(&paths, &acc.name)?;
+            let store = Store::open_account(&paths, &acc.name)?;
             let msg = store
                 .message(&folder, uid)?
                 .with_context(|| format!("no message {folder}/{uid}"))?;
@@ -489,7 +489,7 @@ pub fn run() -> Result<()> {
             json,
         } => {
             for acc in select_accounts(&config, account.as_deref())? {
-                let store = open_store(&paths, &acc.name)?;
+                let store = Store::open_account(&paths, &acc.name)?;
                 for e in store.log(limit)? {
                     if json {
                         println!("{}", postbode::output::with_account(&acc.name, &e)?);
@@ -528,7 +528,7 @@ pub fn run() -> Result<()> {
 /// Runs a direct action on the selected uids; `--dry-run` only reads the local store.
 fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action) -> Result<()> {
     let acc = single_account(config, selection.account.as_deref())?;
-    let store = open_store(paths, &acc.name)?;
+    let store = Store::open_account(paths, &acc.name)?;
     let folder = clean(&selection.folder, false);
     if selection.dry_run {
         let mut missing = 0;
@@ -762,7 +762,7 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
         } => (*uid, account.as_deref(), folder.as_str()),
     };
     let acc = single_account(config, account)?;
-    let store = open_store(paths, &acc.name)?;
+    let store = Store::open_account(paths, &acc.name)?;
     let msg = store
         .message(folder, uid)?
         .with_context(|| format!("no message {}/{uid}", clean(folder, false)))?;
@@ -812,11 +812,6 @@ fn single_account<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Acco
         (None, 0) => bail!("no accounts configured; run `postbode account add`"),
         (None, _) => bail!("several accounts configured; pass --account"),
     }
-}
-
-fn open_store(paths: &Paths, account: &str) -> Result<Store> {
-    paths.ensure_account(account)?;
-    Ok(Store::open(&paths.mail_db(account))?)
 }
 
 fn format_time(timestamp: i64) -> String {
@@ -959,7 +954,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {
                     continue;
                 }
-                let store = open_store(paths, &acc.name)?;
+                let store = Store::open_account(paths, &acc.name)?;
                 let identity = acc.identity()?;
                 if dry_run {
                     print_planned_actions(&rules, &store, acc, &identity)?;
@@ -1007,7 +1002,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 rules
             };
             for acc in select_accounts(config, account.as_deref())? {
-                let store = open_store(paths, &acc.name)?;
+                let store = Store::open_account(paths, &acc.name)?;
                 print_planned_actions(&rules, &store, acc, &acc.identity()?)?;
             }
             Ok(())
@@ -1030,7 +1025,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         RulesCommand::Approve { name } => {
             postbode::rules::edit::approve(&paths.rules_file(), &name)?;
             for acc in &config.accounts {
-                open_store(paths, &acc.name)?.restart_rule_clock(&name, sync::now())?;
+                Store::open_account(paths, &acc.name)?.restart_rule_clock(&name, sync::now())?;
             }
             println!(
                 "enabled '{}'; it acts on mail that arrives from now on",

@@ -227,7 +227,7 @@ impl App {
         let accounts = states
             .into_iter()
             .map(|AccountStatus { activity, name }| {
-                let store = Store::open(&paths.mail_db(&name))
+                let store = Store::open_account(&paths, &name)
                     .map_err(|e| format!("could not open the store: {e}"));
                 let mut account = Account {
                     activity,

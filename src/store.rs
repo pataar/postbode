@@ -6,6 +6,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use rusqlite_migration::Migrations;
 use serde::{Deserialize, Serialize};
 
+use crate::paths::Paths;
+
 static MIGRATIONS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -174,6 +176,12 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         Store::init(conn)
+    }
+
+    /// The account's store, in its private directory.
+    pub fn open_account(paths: &Paths, account: &str) -> Result<Store, StoreError> {
+        paths.ensure_account(account)?;
+        Store::open(&paths.mail_db(account))
     }
 
     pub fn open_in_memory() -> Result<Store, StoreError> {
@@ -602,6 +610,16 @@ fn quote_words(query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_account_makes_the_account_directory_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        Store::open_account(&paths, "work").unwrap();
+        let meta = std::fs::metadata(paths.account_dir("work")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
 
     fn msg(folder: &str, uid: u32, internaldate: i64) -> Message {
         Message {
