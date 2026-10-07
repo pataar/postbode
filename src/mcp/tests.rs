@@ -916,7 +916,7 @@ async fn a_narrowed_backend_syncs_its_account_only_and_refuses_the_other() {
 }
 
 #[test]
-fn a_backend_reconnects_after_the_daemon_stopped() {
+fn a_backends_first_call_after_the_daemon_stopped_reconnects() {
     let mut first = TestDaemon::start();
     let paths = first.paths.clone();
     let backend = Backend::new(&Config::load(&paths.config_file()).unwrap(), &paths, &[]).unwrap();
@@ -929,10 +929,6 @@ fn a_backend_reconnects_after_the_daemon_stopped() {
     );
     Client::connect(&paths).unwrap().shutdown().unwrap();
     first.finished().unwrap();
-    for row in backend.sync(Some("work")).unwrap() {
-        let error = row["error"].as_str().unwrap();
-        assert!(error.starts_with("the daemon stopped"), "{error}");
-    }
     let _second = TestDaemon::serve(
         tempfile::tempdir().unwrap(),
         paths,

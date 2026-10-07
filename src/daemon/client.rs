@@ -173,6 +173,11 @@ impl Client {
         start_daemon(paths, exe, version)
     }
 
+    /// True once the daemon hung up; a holder should connect again.
+    pub fn is_closed(&self) -> bool {
+        lock(&self.inbox).closed
+    }
+
     /// Sends and waits up to 120 s for the reply.
     pub fn request(&self, account: &str, command: Command) -> anyhow::Result<Event> {
         self.request_within(account, command, REPLY_TIMEOUT)

@@ -68,10 +68,10 @@ impl Backend {
         })
     }
 
-    /// The daemon connection, started and connected on first use.
+    /// The daemon connection, started and connected on first use and again once its daemon hung up.
     fn client(&self) -> Result<Arc<Client>> {
         let mut slot = self.client.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(client) = &*slot {
+        if let Some(client) = slot.as_ref().filter(|client| !client.is_closed()) {
             return Ok(client.clone());
         }
         let client = Arc::new(Client::connect_or_start(&self.paths)?);
