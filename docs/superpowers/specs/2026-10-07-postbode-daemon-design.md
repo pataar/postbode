@@ -131,6 +131,7 @@ A reply carries the client's own `id`; the `request` inside an event is the daem
 **Immediate error replies.**
 - unknown account: `no account named 'x'`;
 - an account whose sync thread could not be spawned: `x is not running` (the spawn failure itself arrives as an `Error` event);
+- an account between threads after a config change, while its old thread finishes: `x is restarting`;
 - an account that is offline: its reason and next retry time.
 
 Commands already queued when an account goes offline are failed with the same text.
