@@ -891,8 +891,8 @@ async fn archive_goes_through_the_daemon_attributed_to_the_client() {
 #[tokio::test]
 async fn show_fetches_a_missing_body_through_the_daemon() {
     let fx = fixture_with_daemon(&["work"], connector_with_mail());
-    let client = connect(&fx, "read:bodies", &[]).await;
-    call(&client, "sync", json!({})).await;
+    let client = connect(&fx, "read, read:bodies", &[]).await;
+    rows(&call(&client, "sync", json!({})).await);
     assert!(fx.store("work").raw("INBOX", 1).unwrap().is_none());
     let shown = call(&client, "show", json!({ "uid": 1 })).await;
     let body = shown.structured_content.unwrap()["body"].to_string();
