@@ -289,7 +289,7 @@ Not automated: pixels, real windowing, notifications. Reported as ran on macOS, 
 ## 11. Later
 
 - Compose and send (phase 4), with the OS integration and bundle. Launching from an `.app` needs either a `postbode-gui` binary target or "no args and no terminal opens the GUI".
-- HTML bodies through `wry`, replacing `body.rs`.
+- HTML bodies: designed in `2026-10-07-postbode-html-design.md`, rendered by Blitz inside the body panel (`wry` was dropped).
 - Fonts beyond egui's defaults: CJK and other scripts render as boxes until system fonts are loaded at startup; egui has no right-to-left shaping.
 - Apply a rule to existing mail from the GUI, with a dry-run count and confirmation.
 - Account setup in the GUI; live reload of `config.toml`.
