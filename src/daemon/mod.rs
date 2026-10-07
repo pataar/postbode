@@ -37,12 +37,30 @@ const FLUSH_GRACE: Duration = Duration::from_secs(1);
 const LOG_LIMIT: u64 = 1_048_576;
 const POLL: Duration = Duration::from_millis(200);
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Report {
+    All,
+    /// Keeps senders and subjects out of a log file.
+    Errors,
+    Nothing,
+}
+
+impl Report {
+    fn includes(self, event: &Event) -> bool {
+        match self {
+            Report::All => true,
+            Report::Errors => matches!(event, Event::CommandFailed { .. } | Event::Error { .. }),
+            Report::Nothing => false,
+        }
+    }
+}
+
 pub struct Options {
     /// Exit after this long without a connected client; None never idles out.
     pub idle_exit: Option<Duration>,
     pub connect: Connector,
-    /// Prints `[account] …` report lines to stdout, for the foreground `postbode run`.
-    pub report: bool,
+    /// Which `[account] …` lines to print; stdout and stderr go to daemon.log when auto-started.
+    pub report: Report,
     /// Sends desktop notifications; tests turn it off.
     pub notify: bool,
 }
@@ -52,7 +70,7 @@ impl Options {
         Options {
             idle_exit: None,
             connect: engine::imap_connector(),
-            report: true,
+            report: Report::All,
             notify: true,
         }
     }
@@ -60,6 +78,7 @@ impl Options {
     pub fn auto_started(idle: Duration) -> Options {
         Options {
             idle_exit: Some(idle),
+            report: Report::Errors,
             ..Options::foreground()
         }
     }
@@ -365,11 +384,11 @@ fn stop(shared: &Shared, router: JoinHandle<()>, connections: Vec<Connection>) {
 fn route_events(
     shared: &Shared,
     events: Receiver<Event>,
-    report_events: bool,
+    report_events: Report,
     notify: impl Fn(&str, &str),
 ) {
     for event in events {
-        if report_events {
+        if report_events.includes(&event) {
             report(&event);
         }
         // The sync sends NewMail only for mail that should notify, rules included.

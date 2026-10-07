@@ -9,7 +9,7 @@ use super::test_support::{
     write_config,
 };
 use super::wire::{self, AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
-use super::{Options, run};
+use super::{Options, Report, run};
 use crate::engine::StartState;
 use crate::paths::Paths;
 use crate::sync::{Activity, Command, Event};
@@ -403,10 +403,46 @@ fn wire_messages_round_trip() {
 fn options_presets_match_their_use() {
     let foreground = Options::foreground();
     assert_eq!(foreground.idle_exit, None);
-    assert!(foreground.report && foreground.notify);
+    assert_eq!(foreground.report, Report::All);
+    assert!(foreground.notify);
     let auto = Options::auto_started(Duration::from_secs(60));
     assert_eq!(auto.idle_exit, Some(Duration::from_secs(60)));
-    assert!(auto.report && auto.notify);
+    assert_eq!(auto.report, Report::Errors);
+    assert!(auto.notify);
+}
+
+#[test]
+fn reporting_errors_leaves_senders_and_subjects_out_of_the_log() {
+    let new_mail = Event::NewMail {
+        account: "work".into(),
+        folder: "INBOX".into(),
+        uid: 1,
+        from: "bob@example.com".into(),
+        subject: "hi".into(),
+    };
+    let synced = Event::Synced {
+        account: "work".into(),
+        new_messages: 1,
+        actions: 0,
+        requests: vec![],
+    };
+    let error = Event::Error {
+        account: "work".into(),
+        message: "INBOX: gone".into(),
+    };
+    let failed = Event::CommandFailed {
+        account: "work".into(),
+        request: 1,
+        message: "no".into(),
+    };
+    for event in [&new_mail, &synced, &error, &failed] {
+        assert!(Report::All.includes(event), "{event:?}");
+        assert!(!Report::Nothing.includes(event), "{event:?}");
+    }
+    assert!(!Report::Errors.includes(&new_mail));
+    assert!(!Report::Errors.includes(&synced));
+    assert!(Report::Errors.includes(&error));
+    assert!(Report::Errors.includes(&failed));
 }
 
 mod client {
@@ -637,7 +673,7 @@ fn new_mail_notifies_even_on_an_account_with_notify_off() {
         .unwrap();
     drop(events);
     let notified = std::sync::Mutex::new(Vec::new());
-    super::route_events(&shared, received, false, |from, subject| {
+    super::route_events(&shared, received, Report::Nothing, |from, subject| {
         notified
             .lock()
             .unwrap()
