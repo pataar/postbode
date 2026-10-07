@@ -11,14 +11,13 @@ mod status;
 mod test_support;
 mod theme;
 
-use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use eframe::egui;
 
 use crate::config::Config;
 use crate::paths::Paths;
-use crate::sync::Event;
 
 pub use app::App;
 
@@ -31,7 +30,17 @@ const APP_ID: &str = "io.github.pataar.postbode";
 
 /// Opens the window and returns when it closes.
 pub fn run(config: &Config, paths: &Paths) -> Result<()> {
-    let (client, events, states) = app::connect(paths)?;
+    // Events can arrive before the window has a context; they wait in the channel for its first frame.
+    let window: Arc<OnceLock<egui::Context>> = Arc::default();
+    let wake = {
+        let window = window.clone();
+        Box::new(move || {
+            if let Some(ctx) = window.get() {
+                ctx.request_repaint();
+            }
+        })
+    };
+    let (client, events, states) = app::connect(paths, wake)?;
     let (config, paths) = (config.clone(), paths.clone());
     // ICON is embedded at compile time and decoded by `the_icon_is_a_square_png_with_transparent_corners`.
     #[allow(clippy::expect_used)]
@@ -49,29 +58,11 @@ pub fn run(config: &Config, paths: &Paths) -> Result<()> {
         "Postbode",
         options,
         Box::new(move |cc| {
-            let events = forward(events, cc.egui_ctx.clone())?;
+            let _ = window.set(cc.egui_ctx.clone());
             Ok(Box::new(App::new(&config, paths, client, events, states)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("the window failed: {e}"))
-}
-
-/// Passes the daemon's events on and repaints for each, so an idle window still shows them; the returned receiver
-/// disconnects when the daemon's does.
-fn forward(events: Receiver<Event>, ctx: egui::Context) -> std::io::Result<Receiver<Event>> {
-    let (forward, received) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("gui-events".into())
-        .spawn(move || {
-            for event in events {
-                if forward.send(event).is_err() {
-                    break;
-                }
-                ctx.request_repaint();
-            }
-            ctx.request_repaint();
-        })?;
-    Ok(received)
 }
 
 #[cfg(test)]

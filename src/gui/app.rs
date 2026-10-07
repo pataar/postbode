@@ -18,7 +18,6 @@ use crate::sync::{self, Activity, Command, Event};
 
 use super::body;
 use super::folders;
-use super::forward;
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
 use super::rules::{self, RulesState, TrashRow};
 use super::status;
@@ -45,14 +44,17 @@ const RECONNECT: f64 = 5.0;
 /// A daemon client, its event subscription, and each account's state and activity when it connected.
 pub(crate) type Connection = (Client, Receiver<Event>, Vec<AccountStatus>);
 
+/// Called after each daemon event and once the daemon hung up, so an idle window still shows them.
+pub(crate) type Waker = Box<dyn Fn() + Send>;
+
 /// Connects to the daemon, starting it when none answers.
-pub(crate) fn connect(paths: &Paths) -> anyhow::Result<Connection> {
-    session(Client::connect_or_start(paths)?)
+pub(crate) fn connect(paths: &Paths, wake: Waker) -> anyhow::Result<Connection> {
+    session(Client::connect_or_start(paths)?, wake)
 }
 
 /// Subscribes before asking for the states, so no event between the two is lost.
-pub(crate) fn session(client: Client) -> anyhow::Result<Connection> {
-    let events = client.subscribe()?;
+pub(crate) fn session(client: Client, wake: Waker) -> anyhow::Result<Connection> {
+    let events = client.subscribe_waking(wake)?;
     let states = client.status()?.accounts;
     Ok((client, events, states))
 }
@@ -204,7 +206,7 @@ pub struct App {
     pub(crate) paths: Paths,
     /// Set by the user's own navigation; the next body `sync_body` loads is armed.
     pub(crate) pending_arm: bool,
-    pub(crate) reconnect: fn(&Paths) -> anyhow::Result<Connection>,
+    pub(crate) reconnect: fn(&Paths, Waker) -> anyhow::Result<Connection>,
     /// The result of the reconnect attempt in flight; at most one runs.
     pub(crate) reconnecting: Option<Receiver<anyhow::Result<Connection>>>,
     pub(crate) requested: HashSet<(usize, RowKey)>,
@@ -415,9 +417,8 @@ impl App {
         let (done, attempt) = mpsc::channel();
         let (reconnect, paths, ctx) = (self.reconnect, self.paths.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let connection = reconnect(&paths).and_then(|(client, events, states)| {
-                Ok((client, forward(events, ctx.clone())?, states))
-            });
+            let waker = ctx.clone();
+            let connection = reconnect(&paths, Box::new(move || waker.request_repaint()));
             let _ = done.send(connection);
             ctx.request_repaint();
         });
@@ -1643,12 +1644,12 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         inbox(&fx, &[1]);
         let (mut harness, wires) = fx.harness();
-        harness.state_mut().reconnect = |_| {
+        harness.state_mut().reconnect = |_, _| {
             let (client, commands, events) = Client::in_memory(&["work"]);
             *RECONNECTED.lock().unwrap() = Some(commands);
             // A dropped sender would read as another loss.
             std::mem::forget(events);
-            let (client, events, _) = session(client)?;
+            let (client, events, _) = session(client, Box::new(|| {}))?;
             Ok((client, events, vec![idle("work")]))
         };
         drop(wires);
@@ -1682,7 +1683,7 @@ mod tests {
     fn a_newer_daemon_is_named_on_the_status_line_and_retried() {
         let fx = Fixture::new(&["work"]);
         let (mut harness, wires) = fx.harness();
-        harness.state_mut().reconnect = |_| {
+        harness.state_mut().reconnect = |_, _| {
             Err(crate::daemon::client::NewerDaemon {
                 theirs: "9.0.0".into(),
                 ours: "0.1.0".into(),

@@ -86,9 +86,9 @@ impl Fixture {
         let config = Config::load(&self.paths.config_file()).unwrap();
         let names: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
         let (client, commands, events) = Client::in_memory(&names);
-        let (client, received, states) = session(client).unwrap();
+        let (client, received, states) = session(client, Box::new(|| {})).unwrap();
         let mut app = App::new(&config, self.paths.clone(), client, received, states);
-        app.reconnect = |_| Err(anyhow::anyhow!("no daemon in tests"));
+        app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.downloads = self.paths.cache_dir.join("downloads");
         std::fs::create_dir_all(&app.downloads).unwrap();
         let harness = Harness::builder()

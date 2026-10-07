@@ -86,6 +86,8 @@ struct Inbox {
     /// The account of each `send` still unanswered, so a refusal can name it.
     sent: HashMap<u64, String>,
     subscriber: Option<Sender<Event>>,
+    /// Called after each event the subscriber gets, and once the daemon hung up.
+    wake: Option<Box<dyn Fn() + Send>>,
     waiters: HashMap<u64, Sender<Outcome>>,
 }
 
@@ -121,19 +123,27 @@ impl Inbox {
     }
 
     fn publish(&mut self, event: Event) {
-        if let Some(subscriber) = &self.subscriber
-            && subscriber.send(event).is_err()
-        {
+        let Some(subscriber) = &self.subscriber else {
+            return;
+        };
+        if subscriber.send(event).is_err() {
             self.subscriber = None;
+            self.wake = None;
+        } else if let Some(wake) = &self.wake {
+            wake();
         }
     }
 
     /// Dropping the senders wakes every waiter with "the daemon stopped" and ends the subscription.
     fn close(&mut self) {
+        let wake = self.wake.take();
         *self = Inbox {
             closed: true,
             ..Inbox::default()
         };
+        if let Some(wake) = wake {
+            wake();
+        }
     }
 }
 
@@ -379,6 +389,14 @@ impl Client {
 
     /// Every broadcast event from now on, plus refusals of `send`. Call once.
     pub fn subscribe(&self) -> anyhow::Result<Receiver<Event>> {
+        self.subscribe_waking(|| {})
+    }
+
+    /// As `subscribe`, calling `wake` after each event and once the daemon hung up, so a window can repaint.
+    pub fn subscribe_waking(
+        &self,
+        wake: impl Fn() + Send + 'static,
+    ) -> anyhow::Result<Receiver<Event>> {
         if let Transport::Memory { events, .. } = &self.transport {
             return lock(events)
                 .take()
@@ -391,9 +409,12 @@ impl Client {
                 bail!("already subscribed");
             }
             inbox.subscriber = Some(subscriber);
+            inbox.wake = Some(Box::new(wake));
         }
         if let Err(e) = self.call(|id| ClientMessage::Subscribe { id }, Some(REPLY_TIMEOUT)) {
-            lock(&self.inbox).subscriber = None;
+            let mut inbox = lock(&self.inbox);
+            inbox.subscriber = None;
+            inbox.wake = None;
             return Err(e);
         }
         Ok(events)
