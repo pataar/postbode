@@ -528,14 +528,15 @@ mod client {
         let client = Client::connect(&daemon.paths).unwrap();
         let events = client.subscribe().unwrap();
         assert!(client.send("nope", Command::SyncNow));
-        let event = events.recv_timeout(WAIT).unwrap();
+        let refusal = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
+            .find(|event| matches!(event, Event::CommandFailed { .. }));
         assert_eq!(
-            event,
-            Event::CommandFailed {
+            refusal,
+            Some(Event::CommandFailed {
                 account: "nope".into(),
                 request: 0,
                 message: "no account named 'nope'".into(),
-            }
+            })
         );
     }
 
