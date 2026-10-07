@@ -943,11 +943,8 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                         other => Err(other),
                     })?;
                 failed |= !errors.is_empty();
-                for message in errors {
-                    postbode::daemon::report(&Event::Error {
-                        account: acc.name.clone(),
-                        message,
-                    });
+                for message in &errors {
+                    postbode::daemon::report_error(&acc.name, message);
                 }
                 println!("{}: {actions} actions on {evaluated} messages", acc.name);
             }
