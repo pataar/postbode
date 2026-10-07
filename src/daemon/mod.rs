@@ -20,11 +20,14 @@ use crate::paths::{self, Paths};
 use crate::sync::{self, Activity, Command, Event, RequestId};
 use wire::{AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
 
+pub mod client;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 pub mod wire;
+
+pub use client::Client;
 
 const CONFIG_POLL: Duration = Duration::from_secs(2);
 /// How long exit waits for clients to take their last replies before closing their connections.

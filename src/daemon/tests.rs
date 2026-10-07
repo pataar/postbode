@@ -413,3 +413,213 @@ fn options_presets_match_their_use() {
     assert_eq!(auto.idle_exit, Some(Duration::from_secs(60)));
     assert!(auto.report && auto.notify);
 }
+
+mod client {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::super::Client;
+    use super::super::client::{NO_REPLY, connect_as};
+    use super::super::test_support::{TestDaemon, WAIT, options, recording_connector};
+    use super::super::wire::{self, DaemonMessage};
+    use crate::engine::{Connector, StartState};
+    use crate::mail_ops::{MailOps, RecordingOps};
+    use crate::paths::Paths;
+    use crate::store::Store;
+    use crate::sync::{Command, Event};
+
+    /// Each connection takes a second, so commands queue behind it.
+    fn slow_connector() -> Connector {
+        Arc::new(|_| {
+            std::thread::sleep(Duration::from_secs(1));
+            Ok(Box::new(RecordingOps::new().with_folder("INBOX", None)) as Box<dyn MailOps>)
+        })
+    }
+
+    /// A server holding one message in INBOX whose body only the server has.
+    fn one_message_connector() -> Connector {
+        Arc::new(|_| {
+            let mut ops = RecordingOps::new().with_folder("INBOX", None);
+            ops.add_mail(
+                "INBOX",
+                1,
+                0,
+                "From: bob@example.com\r\nSubject: hi\r\n\r\n",
+                Some("From: bob@example.com\r\nSubject: hi\r\n\r\nthe body\r\n"),
+            );
+            Ok(Box::new(ops) as Box<dyn MailOps>)
+        })
+    }
+
+    #[test]
+    fn request_returns_the_completion_event() {
+        let daemon = TestDaemon::start();
+        let client = Client::connect(&daemon.paths).unwrap();
+        let event = client.request("work", Command::SyncNow).unwrap();
+        assert!(matches!(event, Event::Synced { .. }), "{event:?}");
+    }
+
+    #[test]
+    fn request_errors_with_the_daemons_refusal() {
+        let daemon = TestDaemon::start();
+        let client = Client::connect(&daemon.paths).unwrap();
+        let error = client.request("nope", Command::SyncNow).unwrap_err();
+        assert!(error.to_string().contains("no account named"), "{error}");
+    }
+
+    #[test]
+    fn a_timeout_says_the_command_may_still_run() {
+        let daemon = TestDaemon::start_with(options(slow_connector(), None));
+        let client = Client::connect(&daemon.paths).unwrap();
+        let error = client
+            .request_within("work", Command::SyncNow, Duration::from_millis(50))
+            .unwrap_err();
+        assert_eq!(error.to_string(), NO_REPLY);
+        assert_eq!(
+            NO_REPLY,
+            "no reply from the daemon within 120 s; the command may still run, see `postbode log`"
+        );
+    }
+
+    #[test]
+    fn the_daemon_going_away_mid_request_names_the_log() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::under(home.path());
+        std::fs::create_dir_all(&paths.state_dir).unwrap();
+        let listener = UnixListener::bind(paths.daemon_socket()).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+            lines.next();
+            let hello = DaemonMessage::Hello {
+                protocol: wire::PROTOCOL,
+                version: wire::VERSION.into(),
+                pid: 1,
+            };
+            wire::write_line(&mut stream, &hello).unwrap();
+            stream.flush().unwrap();
+            lines.next();
+        });
+        let client = Client::connect(&paths).unwrap();
+        let error = client.request("work", Command::SyncNow).unwrap_err();
+        daemon.join().unwrap();
+        assert_eq!(
+            error.to_string(),
+            format!("the daemon stopped; see {}", paths.daemon_log().display())
+        );
+        assert!(error.to_string().ends_with("daemon.log"));
+    }
+
+    #[test]
+    fn send_refusals_arrive_as_command_failed_events() {
+        let daemon = TestDaemon::start();
+        let client = Client::connect(&daemon.paths).unwrap();
+        let events = client.subscribe().unwrap();
+        assert!(client.send("nope", Command::SyncNow));
+        let event = events.recv_timeout(WAIT).unwrap();
+        assert_eq!(
+            event,
+            Event::CommandFailed {
+                account: "nope".into(),
+                request: 0,
+                message: "no account named 'nope'".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn raw_message_fetches_once_through_the_daemon() {
+        let daemon = TestDaemon::start_with(options(one_message_connector(), None));
+        let client = Client::connect(&daemon.paths).unwrap();
+        client.request("work", Command::SyncNow).unwrap();
+        let store = Store::open(&daemon.paths.mail_db("work")).unwrap();
+        let message = store.message("INBOX", 1).unwrap().unwrap();
+        assert_eq!(store.raw("INBOX", 1).unwrap(), None);
+        let events = client.subscribe().unwrap();
+
+        let expected = b"From: bob@example.com\r\nSubject: hi\r\n\r\nthe body\r\n".to_vec();
+        assert_eq!(
+            client.raw_message("work", &store, &message).unwrap(),
+            expected
+        );
+        assert_eq!(
+            client.raw_message("work", &store, &message).unwrap(),
+            expected
+        );
+
+        client.request("work", Command::SyncNow).unwrap();
+        let mut fetches = 0;
+        loop {
+            match events.recv_timeout(WAIT).unwrap() {
+                Event::BodyReady { .. } => fetches += 1,
+                Event::Synced { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(fetches, 1);
+    }
+
+    #[test]
+    fn connect_refuses_a_daemon_of_another_version() {
+        let daemon = TestDaemon::start();
+        let Err(error) = connect_as(&daemon.paths, "0.0.0", false) else {
+            panic!("a daemon of another version was accepted");
+        };
+        let error = anyhow::Error::from(error).to_string();
+        assert_eq!(
+            error,
+            format!(
+                "daemon is version {} (protocol {}); this postbode is 0.0.0",
+                wire::VERSION,
+                wire::PROTOCOL
+            )
+        );
+    }
+
+    #[test]
+    fn an_in_memory_client_hands_over_commands_and_takes_injected_events() {
+        let (client, commands, inject) = Client::in_memory(&["work"]);
+        let events = client.subscribe().unwrap();
+        assert!(client.send("work", Command::SyncNow));
+        assert_eq!(
+            commands.try_recv().unwrap(),
+            ("work".to_string(), Command::SyncNow)
+        );
+        let event = Event::Error {
+            account: "work".into(),
+            message: "x".into(),
+        };
+        inject.send(event.clone()).unwrap();
+        assert_eq!(events.recv_timeout(WAIT).unwrap(), event);
+        assert_eq!(
+            client
+                .request("work", Command::SyncNow)
+                .unwrap_err()
+                .to_string(),
+            "in-memory client has no daemon"
+        );
+        let status = client.status().unwrap();
+        assert_eq!(status.accounts.len(), 1);
+        assert_eq!(status.accounts[0].name, "work");
+        assert_eq!(status.accounts[0].state, StartState::Running);
+    }
+
+    #[test]
+    fn a_dropped_client_leaves_the_daemon() {
+        let daemon = TestDaemon::start_with(options(recording_connector(), None));
+        let client = Client::connect(&daemon.paths).unwrap();
+        let watcher = Client::connect(&daemon.paths).unwrap();
+        assert_eq!(watcher.status().unwrap().clients, 2);
+        drop(client);
+        let deadline = std::time::Instant::now() + WAIT;
+        while watcher.status().unwrap().clients != 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the client never left"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
