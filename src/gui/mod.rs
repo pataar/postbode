@@ -25,6 +25,10 @@ pub use app::App;
 /// The window icon: `assets/icon.svg` rendered to PNG by `packaging/icons.sh`.
 const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 
+/// The Wayland app id and X11 WM class; the Linux desktop entry and icons are named after it, so the compositor can
+/// match the window to them.
+const APP_ID: &str = "io.github.pataar.postbode";
+
 /// Opens the window and returns when it closes.
 pub fn run(config: &Config, paths: &Paths) -> Result<()> {
     let (client, events, states) = app::connect(paths)?;
@@ -36,6 +40,7 @@ pub fn run(config: &Config, paths: &Paths) -> Result<()> {
             .with_icon(
                 eframe::icon_data::from_png_bytes(ICON).expect("assets/icon.png is a valid PNG"),
             )
+            .with_app_id(APP_ID)
             .with_inner_size([1280.0, 800.0])
             .with_title("Postbode"),
         ..Default::default()
@@ -76,5 +81,17 @@ mod tests {
         let icon = eframe::icon_data::from_png_bytes(super::ICON).unwrap();
         assert_eq!((icon.width, icon.height), (512, 512));
         assert_eq!(icon.rgba[3], 0, "the top-left pixel must be transparent");
+    }
+
+    #[test]
+    fn the_desktop_entry_names_the_app_id() {
+        let entry = include_str!("../../packaging/linux/io.github.pataar.postbode.desktop");
+        for key in ["Icon", "StartupWMClass"] {
+            let line = format!("{key}={}", super::APP_ID);
+            assert!(
+                entry.lines().any(|l| l == line),
+                "the desktop entry lacks {line}"
+            );
+        }
     }
 }
