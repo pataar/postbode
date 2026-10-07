@@ -4,7 +4,7 @@ use crate::mail_ops::{MailError, MailOps};
 use crate::message::body_text;
 use crate::rules::Action;
 use crate::rules::engine::{Plan, PlannedAction};
-use crate::store::{Folder, LogEntry, Message, Store, StoreError};
+use crate::store::{Folder, LogEntry, Message, Store, StoreError, has_flag};
 use crate::trash::Trash;
 
 #[derive(Debug, thiserror::Error)]
@@ -74,7 +74,7 @@ pub fn apply(
             Action::Unflag => ("\\Flagged", false),
             _ => continue,
         };
-        if has_flag(&current, flag) == wanted {
+        if has_flag(&current.flags, flag) == wanted {
             continue;
         }
         store.log_action(&log_entry(planned, msg, now))?;
@@ -143,10 +143,6 @@ fn delete(
     ops.expunge(msg.uid)?;
     store.remove_message(&msg.folder, msg.uid)?;
     Ok(())
-}
-
-fn has_flag(msg: &Message, flag: &str) -> bool {
-    msg.flags.split(' ').any(|f| f == flag)
 }
 
 fn set_flag(

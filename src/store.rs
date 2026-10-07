@@ -55,7 +55,7 @@ pub struct Message {
 }
 
 /// Whether the space-separated `flags` contain `flag`.
-fn has_flag(flags: &str, flag: &str) -> bool {
+pub(crate) fn has_flag(flags: &str, flag: &str) -> bool {
     flags.split_whitespace().any(|f| f == flag)
 }
 

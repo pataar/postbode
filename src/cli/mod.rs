@@ -1122,17 +1122,10 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         PasswordSource::Keyring { keyring: true }
     };
     let account = AccountConfig {
-        name,
-        host,
         port,
-        username,
-        password,
         address,
-        aliases: vec![],
-        sync_interval_secs: 120,
-        trash_retention_days: 30,
-        notify: true,
         ca_file,
+        ..AccountConfig::new(&name, &host, &username, password)
     };
     config.accounts.retain(|a| a.name != account.name);
     config.accounts.push(account);
