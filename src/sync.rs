@@ -1117,20 +1117,13 @@ pub fn run_loop_with(
                     account: account.name.clone(),
                     message: e.to_string(),
                 });
+                let (reason, retry_at) = (e.to_string(), now() + backoff.as_secs() as i64);
+                let offline = offline_message(&account.name, &reason, retry_at);
                 let _ = events.send(Event::Activity {
                     account: account.name.clone(),
-                    activity: Activity::Offline {
-                        reason: e.to_string(),
-                        retry_at: now() + backoff.as_secs() as i64,
-                    },
+                    activity: Activity::Offline { reason, retry_at },
                 });
-                fail_requests(
-                    &account,
-                    &events,
-                    &commands,
-                    &mut sync_requests,
-                    &e.to_string(),
-                );
+                fail_requests(&account, &events, &commands, &mut sync_requests, &offline);
                 sleep(backoff);
                 backoff = (backoff * 2).min(Duration::from_secs(300));
             }
@@ -1138,6 +1131,17 @@ pub fn run_loop_with(
     }
     let stopped = format!("{} stopped", account.name);
     fail_requests(&account, &events, &commands, &mut sync_requests, &stopped);
+}
+
+/// Why an offline account cannot run a command: `<account> is offline (<reason>); retrying at <HH:MM>`, local time.
+pub fn offline_message(account: &str, reason: &str, retry_at: i64) -> String {
+    use chrono::TimeZone;
+    let clock = chrono::Local
+        .timestamp_opt(retry_at, 0)
+        .single()
+        .map(|time| time.format("%H:%M").to_string())
+        .unwrap_or_default();
+    format!("{account} is offline ({reason}); retrying at {clock}")
 }
 
 /// Fails the held `SyncNow` requests and every queued job, so each request still gets its one answer.
@@ -3339,7 +3343,8 @@ mod tests {
         let events: Vec<Event> = rx.try_iter().collect();
         assert!(
             events.iter().any(|e| matches!(e,
-                Event::CommandFailed { request: 5, message, .. } if message.contains("refused"))),
+                Event::CommandFailed { request: 5, message, .. }
+                    if message.starts_with("work is offline (could not connect: refused); retrying at "))),
             "{events:?}"
         );
     }

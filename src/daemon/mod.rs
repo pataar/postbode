@@ -12,13 +12,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, anyhow, bail};
-use chrono::TimeZone;
 
 use crate::config::Config;
 use crate::engine::{self, Connector, Engine, StartState};
 use crate::message::clean;
 use crate::paths::{self, Paths};
-use crate::sync::{Activity, Command, Event, RequestId};
+use crate::sync::{self, Activity, Command, Event, RequestId};
 use wire::{AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
 
 #[cfg(test)]
@@ -65,8 +64,8 @@ impl Options {
 pub fn run(paths: &Paths, options: Options) -> anyhow::Result<()> {
     // The private state directory guards the socket between `bind` and its chmod.
     paths::create_private_dir(&paths.state_dir)?;
-    truncate_large_log(&paths.daemon_log())?;
     let _lock = take_daemon_lock(&paths.daemon_lock())?;
+    truncate_large_log(&paths.daemon_log())?;
     let socket = paths.daemon_socket();
     let listener = bind_private(&socket)?;
     let served = serve(paths, options, listener);
@@ -605,18 +604,9 @@ fn refusal(
             "{account} is synced by another Postbode process{}",
             pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
         )),
-        (Some(StartState::Running), Some(Activity::Offline { reason, retry_at })) => Some(format!(
-            "{account} is offline ({reason}); retrying at {}",
-            clock(*retry_at)
-        )),
+        (Some(StartState::Running), Some(Activity::Offline { reason, retry_at })) => {
+            Some(sync::offline_message(account, reason, *retry_at))
+        }
         (Some(StartState::Running), _) => None,
     }
-}
-
-fn clock(timestamp: i64) -> String {
-    chrono::Local
-        .timestamp_opt(timestamp, 0)
-        .single()
-        .map(|time| time.format("%H:%M").to_string())
-        .unwrap_or_default()
 }

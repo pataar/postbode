@@ -179,6 +179,79 @@ fn a_second_daemon_on_the_same_home_exits_already_running() {
 }
 
 #[test]
+fn a_refused_second_daemon_leaves_the_log_alone() {
+    let daemon = TestDaemon::start();
+    let log = daemon.paths.daemon_log();
+    fs::write(&log, vec![b'x'; 2 * 1_048_576]).unwrap();
+    run(&daemon.paths, options(recording_connector(), None)).unwrap_err();
+    assert_eq!(fs::metadata(&log).unwrap().len(), 2 * 1_048_576);
+}
+
+#[test]
+fn a_failed_account_refuses_commands_with_its_reason() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    write_config(&paths);
+    fs::create_dir_all(paths.state_dir.join("accounts")).unwrap();
+    fs::write(paths.account_dir("work"), "not a directory").unwrap();
+    let daemon = TestDaemon::serve(home, paths, options(recording_connector(), None));
+    let mut client = daemon.client();
+    let state = status_of(&mut client)
+        .accounts
+        .into_iter()
+        .find(|account| account.name == "work")
+        .unwrap()
+        .state;
+    let StartState::Failed(reason) = state else {
+        panic!("work started: {state:?}");
+    };
+    assert_eq!(
+        client.request(command(4, "work", Command::SyncNow)),
+        Outcome::Error(reason)
+    );
+}
+
+#[test]
+fn a_command_in_flight_at_shutdown_gets_exactly_one_reply() {
+    let mut daemon = TestDaemon::start();
+    let mut client = daemon.client();
+    client.send(&command(1, "work", Command::SyncNow));
+    client.send(&ClientMessage::Shutdown { id: 2 });
+    let mut replies = Vec::new();
+    while let Some(message) = client.recv() {
+        if let DaemonMessage::Reply { id, outcome } = message {
+            replies.push((id, outcome));
+        }
+    }
+    daemon.finished().unwrap();
+    replies.sort_by_key(|(id, _)| *id);
+    let [(1, answer), (2, Outcome::Ok(Payload::Done))] = replies.as_slice() else {
+        panic!("expected one reply to each request: {replies:?}");
+    };
+    assert!(
+        matches!(answer, Outcome::Ok(Payload::Event(Event::Synced { .. })))
+            || *answer == Outcome::Error("work stopped".into()),
+        "{answer:?}"
+    );
+}
+
+#[test]
+fn a_client_leaving_with_requests_in_flight_leaves_the_daemon_serving() {
+    let daemon = TestDaemon::start();
+    let mut leaving = daemon.client();
+    leaving.send(&command(1, "work", Command::SyncNow));
+    leaving.send(&command(2, "play", Command::SyncNow));
+    drop(leaving);
+    let mut staying = daemon.client();
+    let outcome = staying.request(command(1, "work", Command::SyncNow));
+    assert!(
+        matches!(outcome, Outcome::Ok(Payload::Event(Event::Synced { .. }))),
+        "{outcome:?}"
+    );
+    status_until(&mut staying, |status| status.clients == 1);
+}
+
+#[test]
 fn a_stale_socket_file_is_replaced() {
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::under(home.path());
