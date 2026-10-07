@@ -9,8 +9,11 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `credentials` keyring or password command; `Secret` has no Debug
 - `engine` one sync thread per account, the per-account lock, commands in and events out; what `run` and the GUI use
 - `gui` the egui window (feature `gui`, on by default): `app` holds state and is the only code that changes it, the view modules draw and return `UiAction`s; tests use `test_support::Fixture` with `egui_kittest`
+- `help` help texts shared by the CLI and the MCP tool descriptions
+- `mcp` the MCP server (feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or IMAP, `install` registers hosts
 - `message` header parsing, thread id, body text
 - `notify` desktop notifications for new mail
+- `output` JSON rows shared by `--json` and MCP results
 - `store` one SQLite file per account; migrations in `migrations/`
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
 - `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake

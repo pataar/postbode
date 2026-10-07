@@ -594,7 +594,16 @@ pub fn run_commands(
                         what: describe(&action, uids.len()),
                     },
                 });
-                let outcome = actions::run(ops, store, trash, &folder, &uids, &action, now());
+                let outcome = actions::run(
+                    ops,
+                    store,
+                    trash,
+                    &folder,
+                    &uids,
+                    &action,
+                    actions::RULE_NAME,
+                    now(),
+                );
                 let (results, lost) = match outcome {
                     Ok(results) => split_lost(results),
                     Err(e) => (

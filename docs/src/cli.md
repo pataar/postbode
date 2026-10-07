@@ -36,6 +36,8 @@ This document contains the help content for the `postbode` command-line program.
 * [`postbode account`↴](#postbode-account)
 * [`postbode account add`↴](#postbode-account-add)
 * [`postbode guide`↴](#postbode-guide)
+* [`postbode mcp`↴](#postbode-mcp)
+* [`postbode mcp install`↴](#postbode-mcp-install)
 
 ## `postbode`
 
@@ -62,6 +64,7 @@ A fast, simple mail client with automatic mailbox rules
 * `trash` — Deleted mail kept for the retention period
 * `account` — Manage accounts
 * `guide` — Print the agent guide: how an LLM should drive Postbode
+* `mcp` — Serve Postbode to an agent host over MCP on stdio; hosts start this, see `postbode mcp install`
 
 
 
@@ -520,6 +523,50 @@ Interactively add an IMAP account and test the login
 Print the agent guide: how an LLM should drive Postbode
 
 **Usage:** `postbode guide`
+
+
+
+## `postbode mcp`
+
+Serve Postbode to an agent host over MCP on stdio; hosts start this, see `postbode mcp install`
+
+**Usage:** `postbode mcp [OPTIONS]
+       mcp <COMMAND>`
+
+###### **Subcommands:**
+
+* `install` — Register `postbode mcp` with an agent host; re-run it to change the scopes
+
+###### **Options:**
+
+* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+
+  Default value: `read,rules:propose`
+* `--account <ACCOUNT>` — Only this account; repeatable; default every account
+
+
+
+## `postbode mcp install`
+
+Register `postbode mcp` with an agent host; re-run it to change the scopes
+
+**Usage:** `postbode mcp install [OPTIONS] <TARGET>`
+
+###### **Arguments:**
+
+* `<TARGET>`
+
+  Possible values: `claude-code`, `claude-desktop`, `json`
+
+
+###### **Options:**
+
+* `--scopes <SCOPES>` — Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+
+  Default value: `read,rules:propose`
+* `--account <ACCOUNT>` — Only this account; repeatable; default every account
+* `--remove` — Take the entry out again
+* `--dry-run` — Print the change and write nothing
 
 
 

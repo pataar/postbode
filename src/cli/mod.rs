@@ -11,7 +11,7 @@ use postbode::engine::{Engine, StartState};
 use postbode::mail_ops::MailOps;
 use postbode::message::clean;
 use postbode::paths::Paths;
-use postbode::rules::engine::{Context, Mode, evaluate};
+use postbode::rules::engine::Mode;
 use postbode::rules::{Action, CompiledRule, Rule, RuleFile};
 use postbode::store::{Message, Store};
 use postbode::sync::{self, Event};
@@ -71,14 +71,14 @@ enum Command {
         #[command(subcommand)]
         command: RulesCommand,
     },
-    /// List folders with message and unread counts
+    #[command(about = postbode::help::FOLDERS)]
     Folders {
         #[arg(long)]
         account: Option<String>,
         #[arg(long)]
         json: bool,
     },
-    /// List recent messages, newest first
+    #[command(about = postbode::help::LIST)]
     List {
         #[arg(long)]
         account: Option<String>,
@@ -92,7 +92,7 @@ enum Command {
         #[arg(long)]
         threads: bool,
     },
-    /// Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first
+    #[command(about = postbode::help::SEARCH)]
     Search {
         query: String,
         #[arg(long)]
@@ -107,7 +107,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Show one message
+    #[command(about = postbode::help::SHOW)]
     Show {
         uid: u32,
         #[arg(long)]
@@ -120,31 +120,31 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Mark messages read or unread, flagged or unflagged
+    #[command(about = postbode::help::MARK)]
     Mark {
         #[arg(value_enum)]
         how: Mark,
         #[command(flatten)]
         selection: Selection,
     },
-    /// Move messages to another folder, creating it if needed
+    #[command(about = postbode::help::MOVE)]
     Move {
         #[arg(long)]
         to: String,
         #[command(flatten)]
         selection: Selection,
     },
-    /// Move messages to the Archive folder
+    #[command(about = postbode::help::ARCHIVE)]
     Archive {
         #[command(flatten)]
         selection: Selection,
     },
-    /// Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup
+    #[command(about = postbode::help::DELETE)]
     Delete {
         #[command(flatten)]
         selection: Selection,
     },
-    /// Show what rules did, newest first
+    #[command(about = postbode::help::LOG)]
     Log {
         #[arg(long)]
         account: Option<String>,
@@ -165,11 +165,51 @@ enum Command {
     },
     /// Print the agent guide: how an LLM should drive Postbode
     Guide,
+    /// Serve Postbode to an agent host over MCP on stdio; hosts start this, see `postbode mcp install`
+    #[command(args_conflicts_with_subcommands = true)]
+    Mcp {
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+        #[arg(long, default_value = postbode::help::MCP_DEFAULT_SCOPES)]
+        scopes: String,
+        /// Only this account; repeatable; default every account
+        #[arg(long)]
+        account: Vec<String>,
+        #[command(subcommand)]
+        command: Option<McpCommand>,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    /// Register `postbode mcp` with an agent host; re-run it to change the scopes
+    Install {
+        #[arg(value_enum)]
+        target: InstallTarget,
+        /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
+        #[arg(long, default_value = postbode::help::MCP_DEFAULT_SCOPES)]
+        scopes: String,
+        /// Only this account; repeatable; default every account
+        #[arg(long)]
+        account: Vec<String>,
+        /// Take the entry out again
+        #[arg(long)]
+        remove: bool,
+        /// Print the change and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum InstallTarget {
+    ClaudeCode,
+    ClaudeDesktop,
+    Json,
 }
 
 #[derive(Subcommand)]
 enum AttachmentCommand {
-    /// Index, type, size and name of each attachment
+    #[command(about = postbode::help::ATTACHMENT_LIST)]
     List {
         uid: u32,
         #[arg(long)]
@@ -194,7 +234,7 @@ enum AttachmentCommand {
 
 #[derive(Subcommand)]
 enum RulesCommand {
-    /// Validate rules.toml
+    #[command(about = postbode::help::RULES_CHECK)]
     Check,
     /// Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
     Test {
@@ -206,7 +246,7 @@ enum RulesCommand {
         #[arg(long)]
         stdin: bool,
     },
-    /// JSON Schema for rules.toml; a proposal is one entry of `rules`
+    #[command(about = postbode::help::RULES_SCHEMA)]
     Schema,
     /// Read one rule as JSON on stdin and add it disabled, for a human to approve
     Propose {
@@ -214,11 +254,11 @@ enum RulesCommand {
         #[arg(long)]
         by: Option<String>,
     },
-    /// Enable a disabled rule, such as a proposal
+    #[command(about = postbode::help::RULES_APPROVE)]
     Approve { name: String },
-    /// Remove a pending proposal
+    #[command(about = postbode::help::RULES_REJECT)]
     Reject { name: String },
-    /// Names, enabled state and who proposed them
+    #[command(about = postbode::help::RULES_LIST)]
     List {
         #[arg(long)]
         json: bool,
@@ -239,7 +279,7 @@ enum TrashCommand {
         #[arg(long)]
         account: Option<String>,
     },
-    /// Append a trashed .eml back into its original folder
+    #[command(about = postbode::help::TRASH_RESTORE)]
     Restore {
         file: String,
         #[arg(long)]
@@ -296,10 +336,7 @@ pub fn run() -> Result<()> {
                     let total = store.message_count(&f.name)?;
                     let unread = store.unread_count(&f.name)?;
                     if json {
-                        println!(
-                            "{}",
-                            serde_json::json!({ "account": acc.name, "folder": f.name, "total": total, "unread": unread, "special_use": f.special_use })
-                        );
+                        println!("{}", postbode::output::folder(&acc.name, &f, total, unread));
                     } else {
                         println!("{}\t{}\t{total}\t{unread}", acc.name, clean(&f.name, false));
                     }
@@ -318,13 +355,11 @@ pub fn run() -> Result<()> {
                 let store = open_store(&paths, &acc.name)?;
                 if threads {
                     for thread in store.threads(&folder, limit)? {
-                        let base = thread.iter().map(Message::thread_depth).min().unwrap_or(0);
-                        for m in &thread {
-                            let depth = (m.thread_depth() - base).min(4);
+                        for (m, depth) in thread.iter().zip(postbode::output::depths(&thread)) {
                             if json {
                                 let mut value = serde_json::to_value(m)?;
                                 value["depth"] = depth.into();
-                                println!("{}", json_line(&acc.name, &value)?);
+                                println!("{}", postbode::output::with_account(&acc.name, &value)?);
                             } else {
                                 println!("{}", message_line(&acc.name, m, depth));
                             }
@@ -334,7 +369,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in store.messages(&folder, limit)? {
                     if json {
-                        println!("{}", json_line(&acc.name, &m)?);
+                        println!("{}", postbode::output::with_account(&acc.name, &m)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -357,7 +392,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in store.search(&query, folder.as_deref(), limit)? {
                     if json {
-                        println!("{}", json_line(&acc.name, &m)?);
+                        println!("{}", postbode::output::with_account(&acc.name, &m)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -377,7 +412,7 @@ pub fn run() -> Result<()> {
             let msg = store
                 .message(&folder, uid)?
                 .with_context(|| format!("no message {folder}/{uid}"))?;
-            let body = message_raw(acc, &store, &msg)?;
+            let body = postbode::actions::message_raw(acc, &store, &msg)?;
             if raw {
                 io::stdout().write_all(&body)?;
             } else if json {
@@ -422,7 +457,7 @@ pub fn run() -> Result<()> {
                 let store = open_store(&paths, &acc.name)?;
                 for e in store.log(limit)? {
                     if json {
-                        println!("{}", json_line(&acc.name, &e)?);
+                        println!("{}", postbode::output::with_account(&acc.name, &e)?);
                     } else {
                         println!(
                             "{}  {}  {:<20} {:<12} {}/{}  {}",
@@ -447,6 +482,11 @@ pub fn run() -> Result<()> {
             print!("{}", include_str!("../../docs/src/agent-guide.md"));
             Ok(())
         }
+        Command::Mcp {
+            scopes,
+            account,
+            command,
+        } => cmd_mcp(&config, &paths, &scopes, &account, command),
     }
 }
 
@@ -461,7 +501,7 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
             match store.message(&selection.folder, uid)? {
                 Some(m) => println!(
                     "{}  {folder}/{uid}  {}",
-                    planned_effect(&store, &m, &action)?,
+                    postbode::actions::planned_effect(&store, &m, &action)?,
                     clean(m.subject.as_deref().unwrap_or(""), false)
                 ),
                 None => {
@@ -484,6 +524,7 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         &selection.folder,
         &selection.uids,
         &action,
+        postbode::actions::RULE_NAME,
         sync::now(),
     )?;
     let mut failed = 0;
@@ -507,18 +548,6 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         bail!("{failed} of {} messages failed", results.len());
     }
     Ok(())
-}
-
-/// What a dry run would do to `msg`; a user delete names its outcome, because an expunge cannot be undone on the server.
-fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<String> {
-    if *action != Action::Trash {
-        return Ok(format!("would {}", clean(&action.label(), false)));
-    }
-    let effect = match postbode::rules::apply::trash_destination(store, msg)? {
-        Some(trash) => format!("would move to {}", clean(&trash, false)),
-        None => "would delete (expunge, .eml backup kept)".to_string(),
-    };
-    Ok(effect)
 }
 
 /// Fetches the bodies `search --bodies` needs; without a connection the search uses the bodies already stored, and a folder that cannot be fetched is reported and skipped.
@@ -570,16 +599,6 @@ fn fetch_missing_bodies(
     Ok(())
 }
 
-/// The full message, from the store or fetched once from the server.
-fn message_raw(account: &AccountConfig, store: &Store, msg: &Message) -> Result<Vec<u8>> {
-    if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
-        return Ok(raw);
-    }
-    let mut ops = sync::connect(account)?;
-    postbode::actions::select_synced(&mut ops, store, &msg.folder)?;
-    Ok(postbode::rules::apply::ensure_raw(msg, &mut ops, store)?)
-}
-
 fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) -> Result<()> {
     let (uid, account, folder) = match &command {
         AttachmentCommand::List {
@@ -600,12 +619,12 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
     let msg = store
         .message(folder, uid)?
         .with_context(|| format!("no message {}/{uid}", clean(folder, false)))?;
-    let raw = message_raw(acc, &store, &msg)?;
+    let raw = postbode::actions::message_raw(acc, &store, &msg)?;
     match command {
         AttachmentCommand::List { json, .. } => {
             for a in postbode::message::attachments(&raw) {
                 if json {
-                    println!("{}", json_line(&acc.name, &a)?);
+                    println!("{}", postbode::output::with_account(&acc.name, &a)?);
                 } else {
                     println!(
                         "{}  {}  {}  {}",
@@ -672,15 +691,6 @@ fn message_line(account: &str, m: &Message, depth: usize) -> String {
     )
 }
 
-/// The row as one JSON line carrying its account, the shape the MCP tools will return.
-fn json_line(account: &str, row: &impl serde::Serialize) -> Result<String> {
-    let mut value = serde_json::to_value(row)?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert("account".into(), account.into());
-    }
-    Ok(value.to_string())
-}
-
 fn truncate(s: &str, width: usize) -> String {
     let mut out: String = s.chars().take(width).collect();
     if s.chars().count() > width {
@@ -728,6 +738,53 @@ fn cmd_gui(_config: &Config, _paths: &Paths) -> Result<()> {
     bail!("this postbode was built without the GUI; install it with the default features")
 }
 
+#[cfg(feature = "mcp")]
+fn cmd_mcp(
+    config: &Config,
+    paths: &Paths,
+    scopes: &str,
+    accounts: &[String],
+    command: Option<McpCommand>,
+) -> Result<()> {
+    match command {
+        None => postbode::mcp::run(config, paths, scopes, accounts),
+        Some(McpCommand::Install {
+            target,
+            scopes,
+            account,
+            remove,
+            dry_run,
+        }) => {
+            use postbode::mcp::install::{Target, install};
+            if let Some(name) = account.iter().find(|name| config.account(name).is_none()) {
+                bail!("no account named '{name}'");
+            }
+            let target = match target {
+                InstallTarget::ClaudeCode => Target::ClaudeCode,
+                InstallTarget::ClaudeDesktop => Target::ClaudeDesktop,
+                InstallTarget::Json => Target::Json,
+            };
+            let (stdout, hint) = install(target, &scopes, &account, remove, dry_run)?;
+            print!("{stdout}");
+            if let Some(hint) = hint {
+                eprint!("{hint}");
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "mcp"))]
+fn cmd_mcp(
+    _config: &Config,
+    _paths: &Paths,
+    _scopes: &str,
+    _accounts: &[String],
+    _command: Option<McpCommand>,
+) -> Result<()> {
+    bail!("this postbode was built without the MCP server; install it with the default features")
+}
+
 fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
     if config.accounts.is_empty() {
         bail!("no accounts configured; run `postbode account add`");
@@ -769,10 +826,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             let file = postbode::rules::load(&paths.rules_file())?;
             for r in &file.rules {
                 if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({ "name": r.name, "enabled": r.enabled, "proposed_by": r.proposed_by, "account": r.account, "folder": r.folder })
-                    );
+                    println!("{}", postbode::output::rule(r));
                 } else {
                     println!(
                         "{}\t{}\t{}",
@@ -912,26 +966,15 @@ fn print_planned_actions(
     account: &AccountConfig,
     identity: &Identity,
 ) -> Result<()> {
-    let ctx = Context {
-        account: &account.name,
-        identity,
-        now: sync::now(),
-        mode: Mode::ApplyExisting,
-        notify_default: false,
-    };
-    for folder in store.folders()? {
-        for msg in store.messages_in_folder(&folder.name)? {
-            for a in evaluate(rules, &msg, &ctx).actions {
-                println!(
-                    "{}\t{}/{}\t{}\t{}",
-                    clean(&a.rule, false),
-                    clean(&msg.folder, false),
-                    msg.uid,
-                    clean(&a.action.label(), false),
-                    clean(msg.subject.as_deref().unwrap_or(""), false)
-                );
-            }
-        }
+    for p in postbode::actions::planned(rules, store, account, identity, sync::now())? {
+        println!(
+            "{}\t{}/{}\t{}\t{}",
+            clean(&p.rule, false),
+            clean(&p.message.folder, false),
+            p.message.uid,
+            clean(&p.action.label(), false),
+            clean(p.message.subject.as_deref().unwrap_or(""), false)
+        );
     }
     Ok(())
 }

@@ -62,3 +62,33 @@ fn readme_contains_the_book_index() {
         "README.md must contain docs/src/index.md verbatim"
     );
 }
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_page_snippet_matches_install_json() {
+    use postbode::mcp::install::{Entry, json_snippet};
+    let entry = Entry::new(
+        std::path::Path::new("/opt/homebrew/bin/postbode"),
+        "read,rules:propose",
+        &[],
+    );
+    let page = read("docs/src/mcp.md");
+    let snippet = fenced(&page, "json")
+        .into_iter()
+        .find(|block| block.contains("mcpServers"))
+        .expect("a snippet on the MCP page");
+    assert_eq!(snippet, json_snippet(&entry));
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_page_scope_table_lists_every_scope() {
+    let page = read("docs/src/mcp.md");
+    for scope in postbode::mcp::Scope::ALL {
+        assert!(
+            page.contains(&format!("| `{}` |", scope.as_str())),
+            "scope {} missing from the table",
+            scope.as_str()
+        );
+    }
+}

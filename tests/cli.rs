@@ -601,3 +601,94 @@ fn run_exits_nonzero_when_every_account_is_synced_elsewhere() {
         "{stderr}"
     );
 }
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_speaks_only_json_rpc_on_stdout() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("config")).unwrap();
+    std::fs::write(
+        home.path().join("config/config.toml"),
+        "[[accounts]]\nname = \"work\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .args(["mcp", "--scopes", "read"])
+        .env("POSTBODE_HOME", home.path())
+        .env("RUST_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let requests = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"folders","arguments":{}}}"#,
+    ];
+    let mut stdin = child.stdin.take().unwrap();
+    for line in requests {
+        writeln!(stdin, "{line}").unwrap();
+    }
+    // A reader thread lets the wait for id 3 time out instead of hanging the suite.
+    let stdout = BufReader::new(child.stdout.take().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in stdout.lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let json_rpc = |line: &str| {
+        let reply: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("not JSON-RPC: {line}: {e}"));
+        assert_eq!(reply["jsonrpc"], "2.0", "{line}");
+        reply
+    };
+    loop {
+        let line = rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("no reply with id 3");
+        if json_rpc(&line)["id"] == 3 {
+            break;
+        }
+    }
+    drop(stdin);
+    child.wait().unwrap();
+    for line in rx {
+        json_rpc(&line);
+    }
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_install_rejects_an_unknown_account_and_accepts_none() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postbode(
+        home.path(),
+        &["mcp", "install", "json", "--account", "nope"],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no account named 'nope'"));
+    let out = postbode(home.path(), &["mcp", "install", "json"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("mcpServers"));
+}
+
+#[cfg(feature = "mcp")]
+#[test]
+fn mcp_install_json_keeps_stdout_machine_readable() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postbode(home.path(), &["mcp", "install", "json"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
+    assert_eq!(parsed["mcpServers"]["postbode"]["args"][0], "mcp");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Scopes: read, rules:propose"));
+}

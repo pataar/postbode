@@ -4,9 +4,13 @@ pub mod credentials;
 pub mod engine;
 #[cfg(feature = "gui")]
 pub mod gui;
+pub mod help;
 pub mod mail_ops;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod message;
 pub mod notify;
+pub mod output;
 pub mod paths;
 pub mod rules;
 pub mod store;

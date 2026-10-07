@@ -1,12 +1,15 @@
-//! Direct actions on chosen messages: the CLI's mark, move, archive and delete. They run through the same `apply` as rules.
+//! Direct actions on chosen messages: mark, move, archive and delete, through the same `apply` as rules, plus the
+//! dry-run, rule preview and raw-message helpers the CLI, the window and the MCP server share.
+use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps};
-use crate::rules::Action;
-use crate::rules::apply::{ApplyError, apply, ensure_raw};
-use crate::rules::engine::{Plan, PlannedAction};
+use crate::message::clean;
+use crate::rules::apply::{ApplyError, apply, ensure_raw, trash_destination};
+use crate::rules::engine::{Context, Mode, Plan, PlannedAction, evaluate};
+use crate::rules::{Action, CompiledRule};
 use crate::store::{Message, Store, StoreError};
 use crate::trash::Trash;
 
-/// The rule name direct actions are logged under.
+/// The rule name the CLI and the window log direct actions under.
 pub const RULE_NAME: &str = "cli";
 
 #[derive(Debug, thiserror::Error)]
@@ -43,7 +46,9 @@ pub fn select_synced(
     Ok(())
 }
 
-/// Runs `action` on each uid in `folder`. One result per uid, so a missing message does not stop the others.
+/// Runs `action` on each uid in `folder`, logged under `rule_name`. One result per uid, so a missing message does not
+/// stop the others.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -51,12 +56,13 @@ pub fn run(
     folder: &str,
     uids: &[u32],
     action: &Action,
+    rule_name: &str,
     now: i64,
 ) -> Result<Vec<UidResult>, ActionError> {
     select_synced(ops, store, folder)?;
     let plan = Plan {
         actions: vec![PlannedAction {
-            rule: RULE_NAME.to_string(),
+            rule: rule_name.to_string(),
             action: action.clone(),
         }],
         notify: false,
@@ -122,6 +128,70 @@ pub fn fetch_body(
     Ok(())
 }
 
+/// What a dry run would do to `msg`; a user delete names its outcome, because an expunge cannot be undone on the server.
+pub fn planned_effect(store: &Store, msg: &Message, action: &Action) -> Result<String, StoreError> {
+    if *action != Action::Trash {
+        return Ok(format!("would {}", clean(&action.label(), false)));
+    }
+    let effect = match trash_destination(store, msg)? {
+        Some(trash) => format!("would move to {}", clean(&trash, false)),
+        None => "would delete (expunge, .eml backup kept)".to_string(),
+    };
+    Ok(effect)
+}
+
+/// One action a rule would take on a cached message.
+#[derive(Debug, Clone)]
+pub struct Planned {
+    pub rule: String,
+    pub message: Message,
+    pub action: Action,
+}
+
+/// What `rules` would do to every message cached in `store`, evaluated as `rules apply-existing` would.
+pub fn planned(
+    rules: &[CompiledRule],
+    store: &Store,
+    account: &AccountConfig,
+    identity: &Identity,
+    now: i64,
+) -> Result<Vec<Planned>, StoreError> {
+    let ctx = Context {
+        account: &account.name,
+        identity,
+        now,
+        mode: Mode::ApplyExisting,
+        notify_default: false,
+    };
+    let mut planned = Vec::new();
+    for folder in store.folders()? {
+        for message in store.messages_in_folder(&folder.name)? {
+            for PlannedAction { rule, action } in evaluate(rules, &message, &ctx).actions {
+                planned.push(Planned {
+                    rule,
+                    message: message.clone(),
+                    action,
+                });
+            }
+        }
+    }
+    Ok(planned)
+}
+
+/// The full message, from the store or fetched once from the server.
+pub fn message_raw(
+    account: &AccountConfig,
+    store: &Store,
+    msg: &Message,
+) -> anyhow::Result<Vec<u8>> {
+    if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
+        return Ok(raw);
+    }
+    let mut ops = crate::sync::connect(account)?;
+    select_synced(&mut ops, store, &msg.folder)?;
+    Ok(ensure_raw(msg, &mut ops, store)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +242,20 @@ mod tests {
     }
 
     #[test]
+    fn planned_effect_names_a_delete_without_trash() {
+        let (_ops, store, _trash, _dir) = setup();
+        let msg = store.message("INBOX", 5).unwrap().unwrap();
+        assert_eq!(
+            planned_effect(&store, &msg, &Action::Trash).unwrap(),
+            "would delete (expunge, .eml backup kept)"
+        );
+        assert_eq!(
+            planned_effect(&store, &msg, &Action::Archive).unwrap(),
+            "would archive"
+        );
+    }
+
+    #[test]
     fn run_applies_to_each_uid_and_reports_missing_ones() {
         let (mut ops, store, trash, _dir) = setup();
         let results = run(
@@ -181,6 +265,7 @@ mod tests {
             "INBOX",
             &[5, 99],
             &Action::Flag,
+            "mcp:test-host",
             500,
         )
         .unwrap();
@@ -190,14 +275,24 @@ mod tests {
             (99, Err(ActionError::NotFound { .. }))
         ));
         assert_eq!(ops.mail["INBOX"][0].flags, ["\\Flagged"]);
-        assert_eq!(store.log(10).unwrap()[0].rule_name, "cli");
+        assert_eq!(store.log(10).unwrap()[0].rule_name, "mcp:test-host");
     }
 
     #[test]
     fn run_refuses_a_folder_whose_uidvalidity_changed() {
         let (mut ops, store, trash, _dir) = setup();
         ops.uidvalidity.insert("INBOX".into(), 2);
-        let err = run(&mut ops, &store, &trash, "INBOX", &[5], &Action::Trash, 500).unwrap_err();
+        let err = run(
+            &mut ops,
+            &store,
+            &trash,
+            "INBOX",
+            &[5],
+            &Action::Trash,
+            RULE_NAME,
+            500,
+        )
+        .unwrap_err();
         assert!(matches!(err, ActionError::FolderChanged(_)));
         assert_eq!(ops.mail["INBOX"].len(), 1);
         assert_eq!(ops.calls, ["select INBOX"]);
@@ -213,6 +308,7 @@ mod tests {
             "Receipts",
             &[5],
             &Action::Flag,
+            RULE_NAME,
             500,
         )
         .unwrap_err();
