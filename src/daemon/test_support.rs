@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use super::wire::{self, ClientMessage, DaemonMessage, Outcome};
-use super::{Options, Report, run};
+use super::{Options, run};
 use crate::engine::Connector;
 use crate::mail_ops::{MailOps, RecordingOps};
 use crate::paths::Paths;
@@ -48,7 +48,6 @@ pub(crate) fn options(connect: Connector, idle_exit: Option<Duration>) -> Option
     Options {
         idle_exit,
         connect,
-        report: Report::Nothing,
         notify: false,
     }
 }

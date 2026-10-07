@@ -9,7 +9,7 @@ use super::test_support::{
     write_config,
 };
 use super::wire::{self, AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
-use super::{Options, Report, run};
+use super::{Options, run};
 use crate::paths::Paths;
 use crate::sync::{Activity, Command, Event};
 
@@ -384,11 +384,9 @@ fn wire_messages_round_trip() {
 fn options_presets_match_their_use() {
     let foreground = Options::foreground();
     assert_eq!(foreground.idle_exit, None);
-    assert_eq!(foreground.report, Report::All);
     assert!(foreground.notify);
     let auto = Options::auto_started(Duration::from_secs(60));
     assert_eq!(auto.idle_exit, Some(Duration::from_secs(60)));
-    assert_eq!(auto.report, Report::Errors);
     assert!(auto.notify);
 }
 
@@ -418,13 +416,12 @@ fn reporting_errors_leaves_senders_and_subjects_out_of_the_log() {
         message: "no".into(),
     };
     for event in [&new_mail, &synced, &error, &failed] {
-        assert!(Report::All.includes(event), "{event:?}");
-        assert!(!Report::Nothing.includes(event), "{event:?}");
+        assert!(super::reported(event, true), "{event:?}");
     }
-    assert!(!Report::Errors.includes(&new_mail));
-    assert!(!Report::Errors.includes(&synced));
-    assert!(Report::Errors.includes(&error));
-    assert!(Report::Errors.includes(&failed));
+    assert!(!super::reported(&new_mail, false));
+    assert!(!super::reported(&synced, false));
+    assert!(super::reported(&error, false));
+    assert!(super::reported(&failed, false));
 }
 
 mod client {
@@ -668,7 +665,7 @@ fn new_mail_notifies_even_on_an_account_with_notify_off() {
         .unwrap();
     drop(events);
     let notified = std::sync::Mutex::new(Vec::new());
-    super::route_events(&shared, received, Report::Nothing, |from, subject| {
+    super::route_events(&shared, received, false, |from, subject| {
         notified
             .lock()
             .unwrap()

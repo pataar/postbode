@@ -1,7 +1,7 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
 use std::collections::HashMap;
 use std::fs::{self, File, TryLockError};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -37,30 +37,10 @@ const FLUSH_GRACE: Duration = Duration::from_secs(1);
 const LOG_LIMIT: u64 = 1_048_576;
 const POLL: Duration = Duration::from_millis(200);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Report {
-    All,
-    /// Keeps senders and subjects out of a log file.
-    Errors,
-    Nothing,
-}
-
-impl Report {
-    fn includes(self, event: &Event) -> bool {
-        match self {
-            Report::All => true,
-            Report::Errors => matches!(event, Event::CommandFailed { .. } | Event::Error { .. }),
-            Report::Nothing => false,
-        }
-    }
-}
-
 pub struct Options {
     /// Exit after this long without a connected client; None never idles out.
     pub idle_exit: Option<Duration>,
     pub connect: Connector,
-    /// Which `[account] …` lines to print; stdout and stderr go to daemon.log when auto-started.
-    pub report: Report,
     /// Sends desktop notifications; tests turn it off.
     pub notify: bool,
 }
@@ -70,7 +50,6 @@ impl Options {
         Options {
             idle_exit: None,
             connect: engine::imap_connector(),
-            report: Report::All,
             notify: true,
         }
     }
@@ -78,7 +57,6 @@ impl Options {
     pub fn auto_started(idle: Duration) -> Options {
         Options {
             idle_exit: Some(idle),
-            report: Report::Errors,
             ..Options::foreground()
         }
     }
@@ -271,7 +249,7 @@ fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Res
         .name("daemon-events".into())
         .spawn({
             let shared = shared.clone();
-            move || route_events(&shared, events, options.report, notify)
+            move || route_events(&shared, events, io::stdout().is_terminal(), notify)
         })?;
     let connections = accept_until_done(&shared, &listener, &mut watch, options.idle_exit);
     // Connects fail at once from here on instead of waiting out the hello timeout; the socket file and lock remain.
@@ -398,14 +376,19 @@ fn stop(shared: &Shared, router: JoinHandle<()>, connections: Vec<Connection>) {
     }
 }
 
+/// Senders and subjects only go to a terminal, never into daemon.log; errors go to both.
+fn reported(event: &Event, terminal: bool) -> bool {
+    terminal || matches!(event, Event::CommandFailed { .. } | Event::Error { .. })
+}
+
 fn route_events(
     shared: &Shared,
     events: Receiver<Event>,
-    report_events: Report,
+    terminal: bool,
     notify: impl Fn(&str, &str),
 ) {
     for event in events {
-        if report_events.includes(&event) {
+        if reported(&event, terminal) {
             report(&event);
         }
         // The sync sends NewMail only for mail that should notify, rules included.

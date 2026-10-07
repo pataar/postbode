@@ -27,7 +27,7 @@ Both only look for a running daemon; they never start one, and say `no daemon ru
 
 ## Logs
 
-The daemon writes `daemon.log` in its state directory: `~/Library/Application Support/postbode/` on macOS, `~/.local/state/postbode/` on Linux. The log is emptied at start when it is over 1 MB. A daemon started by a command logs only errors there; `postbode run`, and so the service, also prints each new mail's sender and subject. The socket `daemon.sock` and the lock `daemon.lock` live there too. `postbode log` shows what rules and actions did.
+The daemon writes `daemon.log` in its state directory: `~/Library/Application Support/postbode/` on macOS, `~/.local/state/postbode/` on Linux. The log is emptied at start when it is over 1 MB. The daemon logs only errors there; `postbode run` in a terminal also prints each new mail's sender and subject. The socket `daemon.sock` and the lock `daemon.lock` live there too. `postbode log` shows what rules and actions did.
 
 ## Troubleshooting
 
