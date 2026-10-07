@@ -22,6 +22,7 @@ use crate::sync::{self, Activity, Command, Event, RequestId};
 use wire::{AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
 
 pub mod client;
+pub mod service;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]

@@ -31,6 +31,7 @@ const LOG_TAIL_LINES: usize = 20;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_millis(100);
 const START_WAIT: Duration = Duration::from_secs(5);
+const STOP_WAIT: Duration = Duration::from_secs(5);
 
 /// The error of a request that lost its daemon; a caller holding the client should reconnect.
 #[derive(Debug)]
@@ -268,6 +269,20 @@ impl Client {
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.call(|id| ClientMessage::Shutdown { id }, REPLY_TIMEOUT)?;
         Ok(())
+    }
+
+    /// Stops the daemon and waits for its socket to go; returns the pid it had.
+    pub fn stop_and_wait(&self, paths: &Paths) -> anyhow::Result<u32> {
+        let pid = self.status()?.pid;
+        self.shutdown()?;
+        let deadline = Instant::now() + STOP_WAIT;
+        while paths.daemon_socket().exists() {
+            if Instant::now() >= deadline {
+                bail!("the daemon (pid {pid}) did not stop within 5 s");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Ok(pid)
     }
 
     /// The message's full raw bytes: from the store, or fetched through the daemon once.

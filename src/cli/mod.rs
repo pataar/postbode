@@ -1,7 +1,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
@@ -67,6 +67,11 @@ enum Command {
     },
     /// Open the mail window; syncs every account like `run`
     Gui,
+    /// Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     /// Sync once, apply rules, exit
     Sync {
         #[arg(long)]
@@ -199,6 +204,22 @@ enum DaemonCommand {
 }
 
 #[derive(Subcommand)]
+enum ServiceCommand {
+    /// Install and start the service; stops a daemon that is already running so the service's takes over
+    Install {
+        /// Print the file and the commands and change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Stop and remove the service
+    Remove {
+        /// Print the commands and change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum McpCommand {
     /// Register `postbode mcp` with an agent host; re-run it to change the scopes
     Install {
@@ -328,6 +349,7 @@ pub fn run() -> Result<()> {
         Command::Run { idle_exit } => cmd_run(&config, &paths, idle_exit),
         Command::Daemon { command } => cmd_daemon(command, &paths),
         Command::Gui => cmd_gui(&config, &paths),
+        Command::Service { command } => cmd_service(command, &paths),
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
         Command::Rules { command } => cmd_rules(command, &config, &paths),
@@ -676,16 +698,17 @@ fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
     }
 }
 
+fn cmd_service(command: ServiceCommand, paths: &Paths) -> Result<()> {
+    let text = match command {
+        ServiceCommand::Install { dry_run } => postbode::daemon::service::install(paths, dry_run)?,
+        ServiceCommand::Remove { dry_run } => postbode::daemon::service::remove(dry_run)?,
+    };
+    println!("{text}");
+    Ok(())
+}
+
 fn stop_daemon(client: &Client, paths: &Paths) -> Result<()> {
-    let pid = client.status()?.pid;
-    client.shutdown()?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while paths.daemon_socket().exists() {
-        if Instant::now() >= deadline {
-            bail!("the daemon (pid {pid}) did not stop within 5 s");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let pid = client.stop_and_wait(paths)?;
     println!("stopped the daemon (pid {pid})");
     Ok(())
 }
