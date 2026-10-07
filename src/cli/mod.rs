@@ -1,13 +1,13 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
 use postbode::config::{AccountConfig, Config, Identity, PasswordSource};
 use postbode::credentials::{self, Secret};
-use postbode::engine::{Engine, StartState};
 use postbode::mail_ops::MailOps;
 use postbode::message::clean;
 use postbode::paths::Paths;
@@ -53,7 +53,11 @@ enum Mark {
 #[derive(Subcommand)]
 enum Command {
     /// Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
-    Run,
+    Run {
+        /// Exit after this many seconds with no client connected; what auto-start uses
+        #[arg(long, hide = true)]
+        idle_exit: Option<u64>,
+    },
     /// Open the mail window; syncs every account like `run`
     Gui,
     /// Sync once, apply rules, exit
@@ -306,7 +310,7 @@ pub fn run() -> Result<()> {
     };
     let config = Config::load(&paths.config_file())?;
     match cli.command {
-        Command::Run => cmd_run(&config, &paths),
+        Command::Run { idle_exit } => cmd_run(&config, &paths, idle_exit),
         Command::Gui => cmd_gui(&config, &paths),
         Command::Sync { account } => {
             let (tx, rx) = mpsc::channel();
@@ -760,35 +764,20 @@ fn cmd_mcp(
     bail!("this postbode was built without the MCP server; install it with the default features")
 }
 
-fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
+fn cmd_run(config: &Config, paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
     if config.accounts.is_empty() {
         bail!("no accounts configured; run `postbode account add`");
     }
     compiled_rules(paths, None)?;
-    // Ctrl-C ends the process through the default SIGINT handler; WAL and trash-before-delete leave nothing half done.
-    // `engine` holds the account locks until `run` exits.
-    let (engine, events) = Engine::start(config, paths);
-    let mut running = 0;
-    for (name, state) in &engine.accounts() {
-        match state {
-            StartState::Running => running += 1,
-            StartState::Locked { pid } => eprintln!(
-                "[{name}] already synced by another Postbode process{}; skipped",
-                pid.map(|p| format!(" (pid {p})")).unwrap_or_default()
-            ),
-            StartState::Failed(e) => eprintln!("[{name}] could not start: {}", clean(e, false)),
-        }
-    }
-    if running == 0 {
-        bail!("no account could start");
-    }
-    for event in events {
-        postbode::daemon::report(&event);
-        if let Event::NewMail { from, subject, .. } = &event {
-            postbode::notify::new_mail(from, subject);
-        }
-    }
-    Ok(())
+    // Test hook: lets tests idle an auto-started daemon out in seconds.
+    let override_secs = std::env::var("POSTBODE_IDLE_EXIT_SECS")
+        .ok()
+        .and_then(|secs| secs.parse().ok());
+    let options = match idle_exit.map(|secs| override_secs.unwrap_or(secs)) {
+        Some(secs) => postbode::daemon::Options::auto_started(Duration::from_secs(secs)),
+        None => postbode::daemon::Options::foreground(),
+    };
+    postbode::daemon::run(paths, options)
 }
 
 fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()> {

@@ -584,24 +584,6 @@ fn search_bodies_works_offline() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/43"));
 }
 
-#[test]
-fn run_exits_nonzero_when_every_account_is_synced_elsewhere() {
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(home.path().join("config")).unwrap();
-    std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
-    let dir = postbode::paths::Paths::under(home.path()).account_dir("work");
-    std::fs::create_dir_all(&dir).unwrap();
-    let lock = std::fs::File::create(dir.join("sync.lock")).unwrap();
-    lock.try_lock().unwrap();
-    let out = postbode(home.path(), &["run"]);
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("already synced by another Postbode process"),
-        "{stderr}"
-    );
-}
-
 #[cfg(feature = "mcp")]
 #[test]
 fn mcp_speaks_only_json_rpc_on_stdout() {
