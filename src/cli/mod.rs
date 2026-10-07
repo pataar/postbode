@@ -618,14 +618,14 @@ fn cmd_sync(config: &Config, paths: &Paths, account: Option<&str>) -> Result<()>
     let client = Client::connect_or_start(paths)?;
     let events = client.subscribe()?;
     std::thread::scope(|scope| {
-        let printer = scope.spawn(|| print_sync_events(events, &names));
+        let printer = scope.spawn(|| print_new_mail(events, &names));
         let mut failed = false;
         for name in &names {
             failed |= !sync_account(&client, name);
         }
         // Closing the connection ends the event stream once the printer has drained it.
         drop(client);
-        failed |= printer.join().unwrap_or(true);
+        let _ = printer.join();
         if failed {
             bail!("sync failed for at least one account or folder");
         }
@@ -633,27 +633,30 @@ fn cmd_sync(config: &Config, paths: &Paths, account: Option<&str>) -> Result<()>
     })
 }
 
-/// Prints the errors and new mail of `accounts` until the stream ends; true when any error came by.
-fn print_sync_events(events: Receiver<Event>, accounts: &[&str]) -> bool {
-    let mut failed = false;
+/// Prints the new mail of `accounts` until the stream ends.
+fn print_new_mail(events: Receiver<Event>, accounts: &[&str]) {
     for event in &events {
-        let (Event::Error { account, .. } | Event::NewMail { account, .. }) = &event else {
-            continue;
-        };
-        if accounts.contains(&account.as_str()) {
-            failed |= matches!(event, Event::Error { .. });
+        if let Event::NewMail { account, .. } = &event
+            && accounts.contains(&account.as_str())
+        {
             postbode::daemon::report(&event);
         }
     }
-    failed
 }
 
-/// Syncs one account through the daemon and reports it; false when it failed.
+/// Syncs one account through the daemon and reports it with its pass's errors; false when it failed or had any.
 fn sync_account(client: &Client, name: &str) -> bool {
     match client.request(name, sync::Command::SyncNow) {
         Ok(event) => {
             postbode::daemon::report(&event);
-            true
+            let errors = match &event {
+                Event::Synced { errors, .. } => errors.as_slice(),
+                _ => &[],
+            };
+            for message in errors {
+                eprintln!("[{name}] error: {}", clean(message, false));
+            }
+            errors.is_empty()
         }
         Err(e) => {
             eprintln!("[{name}] error: {}", clean(&format!("{e:#}"), false));

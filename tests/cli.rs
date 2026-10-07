@@ -797,11 +797,15 @@ fn sync_through_an_offline_account_fails_with_the_offline_reason() {
     );
 }
 
-/// Answers like a daemon of another version: hello, status and shutdown, which removes its socket.
-fn serve_stale_daemon(paths: &Paths) -> std::thread::JoinHandle<()> {
+const FAILED_PASS: &str = "rule 'x': invalid regex; running no rules until it is fixed";
+
+/// Answers like a daemon of `version`: hello, subscribe, status, shutdown (which removes its socket), and a sync whose
+/// pass failed with FAILED_PASS. Subscribers also get an error from an unrelated pass.
+fn serve_fake_daemon(paths: &Paths, version: &'static str) -> std::thread::JoinHandle<()> {
     use postbode::daemon::wire::{
         self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status,
     };
+    use postbode::sync::Event;
     use std::io::{BufRead, BufReader};
 
     std::fs::create_dir_all(&paths.state_dir).unwrap();
@@ -814,14 +818,35 @@ fn serve_stale_daemon(paths: &Paths) -> std::thread::JoinHandle<()> {
                 let reply = match serde_json::from_str(&line.unwrap()).unwrap() {
                     ClientMessage::Hello { .. } => DaemonMessage::Hello {
                         protocol: PROTOCOL,
-                        version: "0.0.0-old".into(),
+                        version: version.into(),
                         pid: 4242,
+                    },
+                    ClientMessage::Subscribe { id } => {
+                        let done = DaemonMessage::Reply {
+                            id,
+                            outcome: Outcome::Ok(Payload::Done),
+                        };
+                        wire::write_line(&mut stream, &done).unwrap();
+                        DaemonMessage::Event(Event::Error {
+                            account: "work".into(),
+                            message: "an unrelated pass failed".into(),
+                        })
+                    }
+                    ClientMessage::Command { id, account, .. } => DaemonMessage::Reply {
+                        id,
+                        outcome: Outcome::Ok(Payload::Event(Event::Synced {
+                            account,
+                            new_messages: 0,
+                            actions: 0,
+                            requests: Vec::new(),
+                            errors: vec![FAILED_PASS.into()],
+                        })),
                     },
                     ClientMessage::Status { id } => DaemonMessage::Reply {
                         id,
                         outcome: Outcome::Ok(Payload::Status(Status {
                             pid: 4242,
-                            version: "0.0.0-old".into(),
+                            version: version.into(),
                             uptime_secs: 0,
                             clients: 1,
                             accounts: Vec::new(),
@@ -836,7 +861,6 @@ fn serve_stale_daemon(paths: &Paths) -> std::thread::JoinHandle<()> {
                         wire::write_line(&mut stream, &done).unwrap();
                         return;
                     }
-                    other => panic!("unexpected {other:?}"),
                 };
                 wire::write_line(&mut stream, &reply).unwrap();
             }
@@ -848,7 +872,7 @@ fn serve_stale_daemon(paths: &Paths) -> std::thread::JoinHandle<()> {
 fn daemon_status_and_stop_reach_a_daemon_of_another_version() {
     let (home, _store) = seeded_home(&[]);
     let paths = Paths::under(home.path());
-    let stale = serve_stale_daemon(&paths);
+    let stale = serve_fake_daemon(&paths, "0.0.0-old");
     let out = postbode(home.path(), &["daemon", "status"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -863,4 +887,25 @@ fn daemon_status_and_stop_reach_a_daemon_of_another_version() {
     );
     stale.join().unwrap();
     assert!(!paths.daemon_socket().exists());
+}
+
+#[test]
+fn sync_prints_the_errors_of_its_own_pass_and_fails() {
+    let (home, _store) = seeded_home(&[]);
+    serve_fake_daemon(&Paths::under(home.path()), postbode::daemon::wire::VERSION);
+    let out = postbode(home.path(), &["sync"]);
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.status.success(), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("[work] synced: 0 new, 0 rule actions"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains(&format!("[work] error: {FAILED_PASS}")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("unrelated"), "{stderr}");
 }
