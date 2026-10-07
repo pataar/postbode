@@ -486,9 +486,15 @@ impl App {
                 account.activity = Some(activity);
             }
             Event::BodiesFetched { .. } | Event::NewMail { .. } | Event::RuleApplied { .. } => {}
-            Event::CommandFailed { message, .. } | Event::Error { message, .. } => {
-                self.note_error(Some(index), message)
+            Event::CommandFailed { message, .. } => {
+                // A refusal carries no uids, so every edit of the account goes and the store shows what is true.
+                let account = &mut self.accounts[index];
+                account.pending.clear();
+                account.queued = 0;
+                self.note_error(Some(index), message);
+                self.refresh(index);
             }
+            Event::Error { message, .. } => self.note_error(Some(index), message),
             Event::Synced { .. } => self.refresh(index),
             Event::ActionDone {
                 folder, results, ..
@@ -1743,5 +1749,26 @@ mod tests {
                 .query_by_label("work: work is offline (x); retrying at 10:00")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn a_refused_action_puts_the_row_back_and_clears_the_queue() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "e");
+        assert_eq!(uids(&harness), [2, 1]);
+        wires
+            .events
+            .send(Event::CommandFailed {
+                account: "work".into(),
+                request: 0,
+                message: "work is offline (x); retrying at 10:00".into(),
+            })
+            .unwrap();
+        harness.run();
+        assert_eq!(uids(&harness), [3, 2, 1]);
+        assert_eq!(harness.state().accounts[0].queued, 0);
+        assert!(harness.query_by_label_contains("queued").is_none());
     }
 }
