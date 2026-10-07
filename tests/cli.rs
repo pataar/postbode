@@ -176,6 +176,21 @@ fn seeded_home(messages: &[Message]) -> (tempfile::TempDir, Store) {
 }
 
 #[test]
+fn list_shows_local_time() {
+    let mut m = message(42, "billing@example.com", "Your invoice");
+    m.internaldate = 0;
+    let (home, _store) = seeded_home(&[m]);
+    let out = Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .arg("list")
+        .env("POSTBODE_HOME", home.path())
+        .env("TZ", "Etc/GMT-3")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1970-01-01 03:00"), "{stdout}");
+}
+
+#[test]
 fn list_and_log_show_the_account() {
     let (home, store) = seeded_home(&[message(42, "billing@example.com", "Your invoice")]);
     store

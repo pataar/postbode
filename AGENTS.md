@@ -20,6 +20,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
 - `store` one SQLite file per account; migrations in `migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
+- `time` the current Unix time, and timestamps shown in local time
 - `trash` `.eml` backups before any rule delete
 
 `tests/architecture.rs` checks the ownership rules above for `mcp`, `rules` (rules.toml writes), `gui` views and `cli`; allowed exceptions live there with a reason.
