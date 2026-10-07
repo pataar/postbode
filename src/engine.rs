@@ -1,6 +1,7 @@
 //! Runs one sync thread per account and routes commands to them; the entry point for front ends.
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -25,6 +26,11 @@ pub enum StartState {
 
 pub type Connector =
     Arc<dyn Fn(&AccountConfig) -> Result<Box<dyn MailOps>, SyncError> + Send + Sync>;
+
+/// Connects to the account's real IMAP server.
+pub fn imap_connector() -> Connector {
+    Arc::new(|account| Ok(Box::new(sync::connect(account)?)))
+}
 
 struct AccountThread {
     config: AccountConfig,
@@ -137,8 +143,7 @@ pub struct Engine {
 impl Engine {
     /// Takes each account's lock and spawns its sync thread; accounts whose lock is held are not started.
     pub fn start(config: &Config, paths: &Paths) -> (Engine, Receiver<Event>) {
-        let connect: Connector = Arc::new(|account| Ok(Box::new(sync::connect(account)?)));
-        Engine::start_with(config, paths, connect)
+        Engine::start_with(config, paths, imap_connector())
     }
 
     pub fn start_with(
@@ -250,12 +255,17 @@ impl Drop for Engine {
 /// The held lock file, or the pid written by the process holding it.
 pub fn lock_account(paths: &Paths, name: &str) -> io::Result<Result<File, Option<u32>>> {
     paths.ensure_account(name)?;
+    lock_pid_file(&paths.account_dir(name).join("sync.lock"))
+}
+
+/// Takes an exclusive lock on `path` and writes our pid there, or reads the pid of the process holding it.
+pub fn lock_pid_file(path: &Path) -> io::Result<Result<File, Option<u32>>> {
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(paths.account_dir(name).join("sync.lock"))?;
+        .open(path)?;
     match file.try_lock() {
         Ok(()) => {
             file.set_len(0)?;

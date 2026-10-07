@@ -1,6 +1,7 @@
 pub mod actions;
 pub mod config;
 pub mod credentials;
+pub mod daemon;
 pub mod engine;
 #[cfg(feature = "gui")]
 pub mod gui;

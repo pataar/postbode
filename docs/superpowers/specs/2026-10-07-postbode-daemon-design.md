@@ -84,20 +84,24 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 
 **Client to daemon.**
 ```json
-{"hello": {"protocol": 1, "version": "0.2.0"}}
-{"id": 7, "subscribe": true}
-{"id": 8, "account": "work", "command": {"Apply": {"folder": "INBOX", "uids": [42], "action": "archive", "by": "mcp:claude-ai"}}}
-{"id": 9, "status": {}}
-{"id": 10, "shutdown": {}}
+{"hello":{"protocol":1,"version":"0.2.0"}}
+{"subscribe":{"id":7}}
+{"command":{"id":8,"account":"work","command":{"Apply":{"folder":"INBOX","uids":[42],"action":"archive","by":"mcp:claude-ai"}}}}
+{"status":{"id":9}}
+{"shutdown":{"id":10}}
 ```
 
 **Daemon to client.**
 ```json
-{"hello": {"protocol": 1, "version": "0.2.0", "pid": 4242}}
-{"reply": 8, "ok": {"ActionDone": {...}}}
-{"reply": 8, "error": "work is offline (no route to host); retrying at 14:02"}
-{"event": {"NewMail": {...}}}
+{"hello":{"protocol":1,"version":"0.2.0","pid":4242}}
+{"reply":{"id":7,"outcome":{"ok":"done"}}}
+{"reply":{"id":8,"outcome":{"ok":{"event":{"ActionDone":{"account":"work","folder":"INBOX","results":[[42,{"Ok":1}]],"request":3}}}}}}
+{"reply":{"id":8,"outcome":{"error":"work is offline (no route to host); retrying at 14:02"}}}
+{"reply":{"id":9,"outcome":{"ok":{"status":{"pid":4242,"version":"0.2.0","uptime_secs":61,"clients":2,"accounts":[{"name":"work","state":"Running","activity":{"Idle":{"since":1791374400}}}]}}}}}
+{"event":{"NewMail":{"account":"work","folder":"INBOX","uid":43,"from":"alice@example.com","subject":"Hi"}}}
 ```
+
+A reply carries the client's own `id`; the `request` inside an event is the daemon's id for the job.
 
 **Rules of the exchange.**
 - `hello` is the first message each way. Any other first message closes the connection.

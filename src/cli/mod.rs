@@ -320,7 +320,7 @@ pub fn run() -> Result<()> {
             drop(tx);
             for event in rx {
                 failed |= matches!(event, Event::Error { .. });
-                print_event(&event);
+                postbode::daemon::report(&event);
             }
             if failed {
                 bail!("sync failed for at least one account or folder");
@@ -700,39 +700,6 @@ fn truncate(s: &str, width: usize) -> String {
     out
 }
 
-fn print_event(event: &Event) {
-    match event {
-        Event::NewMail {
-            account,
-            from,
-            subject,
-            ..
-        } => println!(
-            "[{account}] new mail from {}: {}",
-            clean(from, false),
-            clean(subject, false)
-        ),
-        Event::Synced {
-            account,
-            new_messages,
-            actions,
-            ..
-        } => println!("[{account}] synced: {new_messages} new, {actions} rule actions"),
-        Event::CommandFailed {
-            account, message, ..
-        }
-        | Event::Error { account, message } => {
-            eprintln!("[{account}] error: {}", clean(message, false))
-        }
-        Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
-        Event::ActionDone { .. }
-        | Event::BodiesFetched { .. }
-        | Event::BodyReady { .. }
-        | Event::Restored { .. }
-        | Event::RuleApplied { .. } => {}
-    }
-}
-
 #[cfg(feature = "gui")]
 fn cmd_gui(config: &Config, paths: &Paths) -> Result<()> {
     if config.accounts.is_empty() {
@@ -816,7 +783,7 @@ fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
         bail!("no account could start");
     }
     for event in events {
-        print_event(&event);
+        postbode::daemon::report(&event);
         if let Event::NewMail { from, subject, .. } = &event {
             postbode::notify::new_mail(from, subject);
         }
@@ -880,7 +847,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 )?;
                 for event in &run.events {
                     failed |= matches!(event, Event::Error { .. });
-                    print_event(event);
+                    postbode::daemon::report(event);
                 }
                 println!(
                     "{}: {} actions on {} messages",

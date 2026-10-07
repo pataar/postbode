@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Paths {
+    /// The root given to `under` (`POSTBODE_HOME`); None for the platform directories.
+    pub home: Option<PathBuf>,
     pub config_dir: PathBuf,
     pub state_dir: PathBuf,
     pub cache_dir: PathBuf,
@@ -18,6 +20,7 @@ impl Paths {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| dirs.data_local_dir().to_path_buf());
         Ok(Paths {
+            home: None,
             config_dir: dirs.config_dir().to_path_buf(),
             state_dir,
             cache_dir: dirs.cache_dir().to_path_buf(),
@@ -26,6 +29,7 @@ impl Paths {
 
     pub fn under(root: &Path) -> Paths {
         Paths {
+            home: Some(root.to_path_buf()),
             config_dir: root.join("config"),
             state_dir: root.join("state"),
             cache_dir: root.join("cache"),
@@ -38,6 +42,18 @@ impl Paths {
 
     pub fn rules_file(&self) -> PathBuf {
         self.config_dir.join("rules.toml")
+    }
+
+    pub fn daemon_socket(&self) -> PathBuf {
+        self.state_dir.join("daemon.sock")
+    }
+
+    pub fn daemon_lock(&self) -> PathBuf {
+        self.state_dir.join("daemon.lock")
+    }
+
+    pub fn daemon_log(&self) -> PathBuf {
+        self.state_dir.join("daemon.log")
     }
 
     pub fn account_dir(&self, name: &str) -> PathBuf {
