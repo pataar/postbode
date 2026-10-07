@@ -346,7 +346,7 @@ pub fn run() -> Result<()> {
     };
     let config = Config::load(&paths.config_file())?;
     match cli.command {
-        Command::Run { idle_exit } => cmd_run(&config, &paths, idle_exit),
+        Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
         Command::Daemon { command } => cmd_daemon(command, &paths),
         Command::Gui => cmd_gui(&config, &paths),
         Command::Service { command } => cmd_service(command, &paths),
@@ -873,10 +873,9 @@ fn cmd_mcp(
     bail!("this postbode was built without the MCP server; install it with the default features")
 }
 
-fn cmd_run(config: &Config, paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
-    if config.accounts.is_empty() {
-        bail!("no accounts configured; run `postbode account add`");
-    }
+/// Starts even without accounts: a login service would otherwise restart it in a loop, and accounts added to
+/// config.toml later start on their own.
+fn cmd_run(paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
     // Test hook: lets tests idle an auto-started daemon out in seconds.
     let override_secs = std::env::var("POSTBODE_IDLE_EXIT_SECS")
         .ok()

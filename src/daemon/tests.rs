@@ -297,6 +297,25 @@ fn a_config_change_starts_an_added_account() {
 }
 
 #[test]
+fn a_daemon_without_accounts_serves_and_starts_one_added_later() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    let daemon = TestDaemon::serve(home, paths, options(recording_connector(), None));
+    assert!(status_of(&mut daemon.client()).accounts.is_empty());
+
+    write_config(&daemon.paths);
+    fs::File::options()
+        .write(true)
+        .open(daemon.paths.config_file())
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(10))
+        .unwrap();
+    status_until(&mut daemon.client(), |status| {
+        status.accounts.iter().any(|account| account.name == "work")
+    });
+}
+
+#[test]
 fn a_rules_change_syncs_every_account() {
     let daemon = TestDaemon::start();
     let mut watcher = subscribed(daemon.client());
