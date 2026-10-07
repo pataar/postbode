@@ -5,8 +5,7 @@
 //! dropped connection, optionally after the server already ran the command) and one server event between its sync and
 //! its rules. The test drives the same public steps a daemon pass takes (`load_rules_for`, `sync_all` or
 //! `sync_folder` on INBOX, then `run_rules`) through `Harness`, a `MailOps` wrapper around the fake that injects the
-//! failures and checks every command the code sends. Half the runs report the new uid of a move, like a UIDPLUS
-//! server; the fake alone never does. All mail is made up.
+//! failures and checks every command the code sends. All mail is made up.
 //!
 //! Not modelled: the daemon's command queue and IDLE (the checkpoint closure is a no-op here), body rules, restore
 //! from trash, user deletes, folders deleted on the server, and more than one account.
@@ -238,8 +237,6 @@ struct Harness<'a> {
     calls: usize,
     tripped: bool,
     dead: bool,
-    /// Whether moves report the new uid, like a server with UIDPLUS; the fake alone never does.
-    uidplus: bool,
 }
 
 impl<'a> Harness<'a> {
@@ -271,7 +268,6 @@ impl<'a> Harness<'a> {
             calls: 0,
             tripped: false,
             dead: false,
-            uidplus: false,
         }
     }
 
@@ -660,13 +656,11 @@ impl<'a> Harness<'a> {
     }
 
     /// Holds after every step, failures or not: in a folder whose stored UIDVALIDITY is the server's, every row names
-    /// the message the server had at that uid when it was fetched (or reported it moved to). Rows may be stale
-    /// (deleted or moved since), never wrong.
+    /// the message the server had at that uid when it was fetched. Rows may be stale (deleted or moved since), never
+    /// wrong.
     ///
     /// A folder whose stored UIDVALIDITY differs from the server's is exempt: the store already knows it is stale,
-    /// rules and direct actions refuse to touch it, and its next sync wipes it. Its rows can legitimately mix
-    /// UIDVALIDITYs: when the folder is reset between a pass's sync and its rules, a rule move into it on a UIDPLUS
-    /// server files the new uid (under the new UIDVALIDITY) next to the old rows.
+    /// rules and direct actions refuse to touch it, and its next sync wipes it.
     fn check_rows_name_their_messages(&self) {
         for folder in self.store.folders().unwrap() {
             if self.ops.uidvalidity.get(&folder.name) != Some(&folder.uidvalidity) {
@@ -861,7 +855,7 @@ impl MailOps for Harness<'_> {
         Ok(())
     }
 
-    fn move_message(&mut self, uid: u32, to: &str) -> MailResult<Option<u32>> {
+    fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()> {
         let what = format!("move:{to}");
         if self.selected.is_some() {
             self.check_rule_command(uid, &what);
@@ -869,21 +863,8 @@ impl MailOps for Harness<'_> {
         let folder = self.selected.clone();
         let id = folder.as_deref().and_then(|f| self.identity(f, uid));
         self.run_selected(|ops| ops.move_message(uid, to))?;
-        self.record(folder.as_deref().unwrap(), uid, &what, id.clone());
-        if !self.uidplus {
-            return Ok(None);
-        }
-        // A UIDPLUS server reports the new uid (COPYUID), and the code moves the store row there.
-        let new_uid = self.ops.mail[to]
-            .iter()
-            .find(|e| message_id(&e.headers) == id)
-            .map(|e| e.uid);
-        if let (Some(new_uid), Some(id)) = (new_uid, id) {
-            let uidvalidity = self.ops.uidvalidity[to];
-            self.uid_map
-                .insert((to.to_string(), uidvalidity, new_uid), id);
-        }
-        Ok(new_uid)
+        self.record(folder.as_deref().unwrap(), uid, &what, id);
+        Ok(())
     }
 
     fn create_folder(&mut self, name: &str) -> MailResult<()> {
@@ -1013,11 +994,10 @@ impl Fixture {
     }
 }
 
-fn run_model(uidplus: bool, initial: &[ServerEvent], steps: &[Step]) {
+fn run_model(initial: &[ServerEvent], steps: &[Step]) {
     let (fixture, trash_dir) = Fixture::new();
     let store = Store::open_in_memory().unwrap();
     let mut h = Harness::new(&store, trash_dir);
-    h.uidplus = uidplus;
     // Mail already on the server before the first pass: older than every rule, so no rule may touch it.
     for event in initial {
         h.server(event);
@@ -1123,13 +1103,9 @@ fn config() -> Config {
 #[test]
 fn sync_and_rules_keep_their_invariants() {
     let mut runner = TestRunner::new(config());
-    let strategy = (
-        any::<bool>(),
-        initial_mail(),
-        prop::collection::vec(step(), 1..30),
-    );
-    let result = runner.run(&strategy, |(uidplus, initial, steps)| {
-        run_model(uidplus, &initial, &steps);
+    let strategy = (initial_mail(), prop::collection::vec(step(), 1..30));
+    let result = runner.run(&strategy, |(initial, steps)| {
+        run_model(&initial, &steps);
         Ok(())
     });
     if let Err(e) = result {
