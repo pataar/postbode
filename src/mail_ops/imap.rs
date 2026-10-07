@@ -471,18 +471,10 @@ mod tests {
     }
 
     fn test_account(host: &str, port: u16) -> AccountConfig {
+        let password = PasswordSource::Keyring { keyring: true };
         AccountConfig {
-            name: "test".into(),
-            host: host.into(),
             port,
-            username: "me@example.com".into(),
-            password: PasswordSource::Keyring { keyring: true },
-            address: None,
-            aliases: vec![],
-            sync_interval_secs: 120,
-            trash_retention_days: 30,
-            notify: true,
-            ca_file: None,
+            ..AccountConfig::new("test", host, "me@example.com", password)
         }
     }
 

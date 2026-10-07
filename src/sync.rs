@@ -1495,19 +1495,8 @@ mod tests {
     const H: i64 = 3600;
 
     fn account() -> AccountConfig {
-        AccountConfig {
-            name: "work".into(),
-            host: "h".into(),
-            port: 993,
-            username: "pieter@example.com".into(),
-            password: PasswordSource::Keyring { keyring: true },
-            address: None,
-            aliases: vec![],
-            sync_interval_secs: 120,
-            trash_retention_days: 30,
-            notify: true,
-            ca_file: None,
-        }
+        let password = PasswordSource::Keyring { keyring: true };
+        AccountConfig::new("work", "h", "pieter@example.com", password)
     }
 
     fn headers(from: &str, subject: &str, id: &str) -> String {
