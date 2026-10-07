@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::engine::Engine;
 use crate::paths::Paths;
 use crate::store::{Folder, Message, Store};
-use crate::sync::{Command, Event};
+use crate::sync::{Command, Event, Job};
 
 use super::App;
 
@@ -21,13 +21,16 @@ pub(crate) struct Fixture {
 
 /// The app's ends of the detached engine: the commands it sent, and a sender for test events.
 pub(crate) struct Wires {
-    pub commands: Receiver<(String, Command)>,
+    pub commands: Receiver<(String, Job)>,
     pub events: Sender<Event>,
 }
 
 impl Wires {
     pub fn sent(&self) -> Vec<(String, Command)> {
-        self.commands.try_iter().collect()
+        self.commands
+            .try_iter()
+            .map(|(account, job)| (account, job.command))
+            .collect()
     }
 }
 

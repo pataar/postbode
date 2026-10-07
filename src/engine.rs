@@ -7,11 +7,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
+use serde::{Deserialize, Serialize};
+
 use crate::config::Config;
 use crate::paths::Paths;
-use crate::sync::{self, Command, Event};
+use crate::sync::{self, Command, Event, Job, RequestId};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StartState {
     Running,
     /// Another process holds the account's lock; `pid` is what it wrote there.
@@ -22,13 +24,13 @@ pub enum StartState {
 }
 
 struct AccountThread {
-    commands: Sender<Command>,
+    commands: Sender<Job>,
     wake: Arc<AtomicBool>,
 }
 
 enum Route {
     Threads(HashMap<String, AccountThread>),
-    Detached(Sender<(String, Command)>),
+    Detached(Sender<(String, Job)>),
 }
 
 pub struct Engine {
@@ -105,14 +107,15 @@ impl Engine {
     }
 
     /// Queues the command and wakes the account's IDLE; false when the account is not running.
-    pub fn send(&self, account: &str, command: Command) -> bool {
+    pub fn send(&self, account: &str, request: RequestId, command: Command) -> bool {
+        let job = Job { request, command };
         match &self.route {
             Route::Threads(threads) => threads.get(account).is_some_and(|thread| {
-                let sent = thread.commands.send(command).is_ok();
+                let sent = thread.commands.send(job).is_ok();
                 thread.wake.store(true, Ordering::Release);
                 sent
             }),
-            Route::Detached(sent) => sent.send((account.to_string(), command)).is_ok(),
+            Route::Detached(sent) => sent.send((account.to_string(), job)).is_ok(),
         }
     }
 
@@ -122,7 +125,7 @@ impl Engine {
     }
 
     /// An engine with no threads whose commands arrive on the returned receiver, for front-end tests.
-    pub fn detached(accounts: &[&str]) -> (Engine, Receiver<(String, Command)>) {
+    pub fn detached(accounts: &[&str]) -> (Engine, Receiver<(String, Job)>) {
         let (sent, received) = mpsc::channel();
         let engine = Engine {
             accounts: accounts
@@ -232,7 +235,7 @@ mod tests {
                 }
             )]
         );
-        assert!(!engine.send("work", Command::SyncNow));
+        assert!(!engine.send("work", 1, Command::SyncNow));
         engine.stop();
         drop(held);
         assert!(lock_soon(&paths, "work"));
@@ -261,8 +264,8 @@ mod tests {
                 break;
             }
         }
-        assert!(engine.send("work", Command::SyncNow));
-        assert!(!engine.send("nope", Command::SyncNow));
+        assert!(engine.send("work", 1, Command::SyncNow));
+        assert!(!engine.send("nope", 2, Command::SyncNow));
         let started = std::time::Instant::now();
         engine.stop();
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
@@ -290,16 +293,46 @@ mod tests {
     }
 
     #[test]
+    fn a_command_for_an_offline_account_fails_with_its_request_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            accounts: vec![offline_account("work")],
+            ..Default::default()
+        };
+        let (engine, events) = Engine::start(&config, &Paths::under(dir.path()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut failed = None;
+        while failed.is_none() {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match events.recv_timeout(left).unwrap() {
+                Event::Activity {
+                    activity: Activity::Offline { .. },
+                    ..
+                } => assert!(engine.send("work", 4, Command::SyncNow)),
+                Event::CommandFailed { request, .. } => failed = Some(request),
+                _ => {}
+            }
+        }
+        assert_eq!(failed, Some(4));
+    }
+
+    #[test]
     fn a_detached_engine_hands_commands_to_the_test() {
         let (engine, sent) = Engine::detached(&["work"]);
         assert_eq!(
             engine.accounts(),
             [("work".to_string(), StartState::Running)]
         );
-        assert!(engine.send("work", Command::SyncNow));
+        assert!(engine.send("work", 1, Command::SyncNow));
         assert_eq!(
             sent.try_recv().unwrap(),
-            ("work".to_string(), Command::SyncNow)
+            (
+                "work".to_string(),
+                Job {
+                    request: 1,
+                    command: Command::SyncNow
+                }
+            )
         );
     }
 }

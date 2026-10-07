@@ -410,6 +410,7 @@ mod tests {
                 account: "work".into(),
                 new_messages: 1,
                 actions: 0,
+                requests: vec![],
             })
             .unwrap();
         harness.run();

@@ -334,10 +334,13 @@ impl App {
         let name = match &event {
             Event::Activity { account, .. }
             | Event::ActionDone { account, .. }
+            | Event::BodiesFetched { account, .. }
             | Event::BodyReady { account, .. }
+            | Event::CommandFailed { account, .. }
             | Event::Error { account, .. }
             | Event::NewMail { account, .. }
             | Event::Restored { account, .. }
+            | Event::RuleApplied { account, .. }
             | Event::Synced { account, .. } => account,
         };
         let Some(index) = self.accounts.iter().position(|a| &a.name == name) else {
@@ -364,7 +367,10 @@ impl App {
                 }
                 account.activity = Some(activity);
             }
-            Event::Error { message, .. } => self.note_error(Some(index), message),
+            Event::BodiesFetched { .. } | Event::RuleApplied { .. } => {}
+            Event::CommandFailed { message, .. } | Event::Error { message, .. } => {
+                self.note_error(Some(index), message)
+            }
             Event::NewMail { from, subject, .. } => {
                 if self.accounts[index].notify {
                     (self.notifier)(&from, &subject);
@@ -962,6 +968,7 @@ impl App {
                 folder,
                 uids,
                 action,
+                by: "gui".into(),
             },
         ) {
             let state = &mut self.accounts[account];
@@ -980,7 +987,7 @@ impl App {
     pub(crate) fn send(&self, account: usize, command: Command) -> bool {
         self.engine
             .as_ref()
-            .is_some_and(|engine| engine.send(&self.accounts[account].name, command))
+            .is_some_and(|engine| engine.send(&self.accounts[account].name, 0, command))
     }
 
     /// False, with the reason on the status line, when another process owns the account's connection.
@@ -1314,6 +1321,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: uids.to_vec(),
             action,
+            by: "gui".into(),
         };
         ("work".into(), command)
     }
@@ -1376,6 +1384,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 results,
+                request: 0,
             })
             .unwrap();
         harness.run();
@@ -1400,6 +1409,7 @@ mod tests {
                 account: "work".into(),
                 new_messages: 0,
                 actions: 0,
+                requests: vec![],
             })
             .unwrap();
         harness.run();
@@ -1412,6 +1422,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 results,
+                request: 0,
             })
             .unwrap();
         harness.run();
@@ -1461,6 +1472,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 results: vec![(1, Ok(1))],
+                request: 0,
             })
             .unwrap();
         harness.run();

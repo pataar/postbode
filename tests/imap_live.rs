@@ -443,10 +443,12 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
     let sent = Instant::now();
     assert!(engine.send(
         &account.name,
+        1,
         Command::Apply {
             folder: "INBOX".into(),
             uids: vec![1],
             action: Action::MarkRead,
+            by: "gui".into(),
         }
     ));
     let done = wait(&|e| matches!(e, Event::ActionDone { .. }));

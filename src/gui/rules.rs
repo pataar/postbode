@@ -475,6 +475,7 @@ mod tests {
             .send(Event::Restored {
                 account: "work".into(),
                 folder: "INBOX".into(),
+                request: 0,
             })
             .unwrap();
         harness.run();

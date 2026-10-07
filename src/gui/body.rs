@@ -310,6 +310,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 uid: 1,
+                request: 0,
             })
             .unwrap();
         harness.run();
@@ -370,6 +371,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 uid: 1,
+                request: 0,
             })
             .unwrap();
         harness.run();
@@ -383,6 +385,7 @@ mod tests {
                     folder: "INBOX".into(),
                     uids: vec![1],
                     action,
+                    by: "gui".into(),
                 },
             )
         };
@@ -424,6 +427,7 @@ mod tests {
                     folder: "INBOX".into(),
                     uids: vec![uid],
                     action,
+                    by: "gui".into(),
                 },
             )
         };
@@ -479,6 +483,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![1],
             action: Action::MarkRead,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), read)]);
         harness.input_mut().time = Some(13.0);
@@ -499,6 +504,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![1],
             action: Action::MarkUnread,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), unread)]);
     }
@@ -538,6 +544,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![uid],
             action: Action::MarkRead,
+            by: "gui".into(),
         };
         ("work".to_string(), command)
     }
@@ -562,6 +569,7 @@ mod tests {
                 account: "work".into(),
                 new_messages: 1,
                 actions: 0,
+                requests: vec![],
             })
             .unwrap();
         at(&mut harness, 10.0);
@@ -621,6 +629,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 uid: 1,
+                request: 0,
             })
             .unwrap();
         at(&mut harness, 12.5);
@@ -643,6 +652,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![2],
             action: Action::Archive,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), archive), read(1)]);
     }
@@ -700,6 +710,7 @@ mod tests {
                 account: "work".into(),
                 new_messages: 1,
                 actions: 0,
+                requests: vec![],
             })
             .unwrap();
         harness.step();
@@ -711,6 +722,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![2, 4],
             action: Action::Archive,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), archive)]);
     }
@@ -736,6 +748,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 uid: 1,
+                request: 0,
             })
             .unwrap();
         at(&mut harness, 20.0);

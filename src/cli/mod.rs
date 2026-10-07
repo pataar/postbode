@@ -716,12 +716,20 @@ fn print_event(event: &Event) {
             account,
             new_messages,
             actions,
+            ..
         } => println!("[{account}] synced: {new_messages} new, {actions} rule actions"),
-        Event::Error { account, message } => {
+        Event::CommandFailed {
+            account, message, ..
+        }
+        | Event::Error { account, message } => {
             eprintln!("[{account}] error: {}", clean(message, false))
         }
         Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
-        Event::ActionDone { .. } | Event::BodyReady { .. } | Event::Restored { .. } => {}
+        Event::ActionDone { .. }
+        | Event::BodiesFetched { .. }
+        | Event::BodyReady { .. }
+        | Event::Restored { .. }
+        | Event::RuleApplied { .. } => {}
     }
 }
 
