@@ -70,7 +70,8 @@ fn shell_words(words: &[String]) -> String {
 
 pub fn json_snippet(entry: &Entry) -> String {
     let snippet = json!({ "mcpServers": { "postbode": entry.server() } });
-    serde_json::to_string_pretty(&snippet).expect("JSON values serialize") + "\n"
+    // `{:#}` pretty-prints a JSON value like `to_string_pretty`, without a serializer that could fail.
+    format!("{snippet:#}\n")
 }
 
 /// Claude Desktop's config: `~/Library/Application Support/Claude/` on macOS, `~/.config/Claude/` on Linux.

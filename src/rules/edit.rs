@@ -29,17 +29,19 @@ pub fn propose(path: &Path, mut rule: Rule, by: &str) -> Result<(), RulesError> 
 /// Turns a rule on or off, keeping the file's comments and layout.
 pub fn set_enabled(path: &Path, name: &str, enabled: bool) -> Result<(), RulesError> {
     edit(path, name, |rules, index| {
-        write_enabled(
-            rules.get_mut(index).expect("index comes from position()"),
-            enabled,
-        );
+        let table = rules
+            .get_mut(index)
+            .ok_or_else(|| invalid(name, "no such rule"))?;
+        write_enabled(table, enabled);
         Ok(None)
     })
 }
 
 pub fn approve(path: &Path, name: &str) -> Result<(), RulesError> {
     edit(path, name, |rules, index| {
-        let table = rules.get_mut(index).expect("index comes from position()");
+        let table = rules
+            .get_mut(index)
+            .ok_or_else(|| invalid(name, "no such rule"))?;
         if !is_disabled(table) {
             return Err(invalid(name, "is already enabled"));
         }
@@ -58,7 +60,9 @@ fn write_enabled(table: &mut toml_edit::Table, enabled: bool) {
 
 pub fn reject(path: &Path, name: &str) -> Result<(), RulesError> {
     edit(path, name, |rules, index| {
-        let table = rules.get(index).expect("index comes from position()");
+        let table = rules
+            .get(index)
+            .ok_or_else(|| invalid(name, "no such rule"))?;
         if !is_disabled(table) || !table.contains_key("proposed_by") {
             return Err(invalid(
                 name,

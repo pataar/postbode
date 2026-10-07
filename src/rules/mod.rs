@@ -169,7 +169,8 @@ fn default_true() -> bool {
 /// JSON Schema of rules.toml; a proposal for `rules propose` is one entry of `rules`.
 pub fn schema() -> String {
     let schema = schemars::schema_for!(RuleFile);
-    serde_json::to_string_pretty(&schema).expect("a schema serializes") + "\n"
+    // `{:#}` pretty-prints a JSON value like `to_string_pretty`, without a serializer that could fail.
+    format!("{:#}\n", schema.as_value())
 }
 
 pub fn parse(text: &str) -> Result<RuleFile, RulesError> {
