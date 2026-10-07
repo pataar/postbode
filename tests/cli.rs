@@ -1,9 +1,11 @@
 use std::process::Command;
+use std::time::Duration;
 
 fn postbode(home: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_postbode"))
         .args(args)
         .env("POSTBODE_HOME", home)
+        .env("POSTBODE_IDLE_EXIT_SECS", "1")
         .env("RUST_LOG", "error")
         .output()
         .unwrap()
@@ -572,15 +574,23 @@ fn search_bodies_works_offline() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(
-        !stderr.contains("could not connect"),
-        "connected with nothing to fetch: {stderr}"
+        !stderr.contains("offline"),
+        "asked the daemon with nothing to fetch: {stderr}"
+    );
+    assert!(
+        !Paths::under(home.path()).daemon_socket().exists(),
+        "started a daemon with nothing to fetch"
     );
 
     let (home, _store) = seeded_home(&[message(43, "friend@example.com", "Lunch?")]);
     let out = postbode(home.path(), &["search", "--bodies", "Lunch"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
-    assert!(stderr.contains("could not connect"), "{stderr}");
+    assert!(
+        stderr.contains("work: work is offline (")
+            && stderr.contains("searching the bodies already stored"),
+        "{stderr}"
+    );
     assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/43"));
 }
 
@@ -673,4 +683,136 @@ fn mcp_install_json_keeps_stdout_machine_readable() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
     assert_eq!(parsed["mcpServers"]["postbode"]["args"][0], "mcp");
     assert!(String::from_utf8_lossy(&out.stderr).contains("Scopes: read, rules:propose"));
+}
+
+/// A foreground `postbode run`, killed if a test fails before it is stopped.
+struct Daemon(std::process::Child);
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn start_daemon(home: &std::path::Path) -> Daemon {
+    let child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .arg("run")
+        .env("POSTBODE_HOME", home)
+        .env("RUST_LOG", "error")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_status(home, "work");
+    Daemon(child)
+}
+
+/// Polls `postbode daemon status` for up to 10 s until its output contains `needle`.
+fn wait_for_status(home: &std::path::Path, needle: &str) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let out = postbode(home, &["daemon", "status"]);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        if stdout.contains(needle) {
+            return stdout;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "status never showed {needle:?}: {stdout}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn archive_through_an_offline_account_reports_the_offline_reason() {
+    let (home, _store) = seeded_home(&[message(1, "a@example.com", "Hello")]);
+    let _daemon = start_daemon(home.path());
+    wait_for_status(home.path(), "offline");
+    for args in [
+        &["archive", "1"][..],
+        &["delete", "1"],
+        &["mark", "unread", "1"],
+    ] {
+        let out = postbode(home.path(), args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}: {stderr}");
+        assert!(stderr.contains("work is offline ("), "{args:?}: {stderr}");
+    }
+    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+}
+
+#[test]
+fn daemon_status_shows_pid_version_and_accounts() {
+    let (home, _store) = seeded_home(&[]);
+    let daemon = start_daemon(home.path());
+    let stdout = wait_for_status(home.path(), "work");
+    let first = stdout.lines().next().unwrap();
+    assert!(
+        first.starts_with(&format!(
+            "pid {}, version {}, up ",
+            daemon.0.id(),
+            env!("CARGO_PKG_VERSION")
+        )) && first.ends_with(" clients"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.lines().any(|line| line.starts_with("work  running")),
+        "{stdout}"
+    );
+    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+}
+
+#[test]
+fn daemon_stop_ends_the_daemon() {
+    let (home, _store) = seeded_home(&[]);
+    let mut daemon = start_daemon(home.path());
+    let out = postbode(home.path(), &["daemon", "stop"]);
+    assert!(out.status.success());
+    assert!(daemon.0.wait().unwrap().success());
+    assert!(!Paths::under(home.path()).daemon_socket().exists());
+    let out = postbode(home.path(), &["daemon", "status"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "no daemon running"
+    );
+}
+
+#[test]
+fn daemon_stop_without_a_daemon_says_so() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postbode(home.path(), &["daemon", "stop"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "no daemon running"
+    );
+}
+
+#[test]
+fn run_refuses_a_second_daemon() {
+    let (home, _store) = seeded_home(&[]);
+    let daemon = start_daemon(home.path());
+    let out = postbode(home.path(), &["run"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!("already running (pid {})", daemon.0.id())),
+        "{stderr}"
+    );
+    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+}
+
+#[test]
+fn sync_through_an_offline_account_fails_with_the_offline_reason() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postbode(home.path(), &["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("[work] error: work is offline ("),
+        "{stderr}"
+    );
 }

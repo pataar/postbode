@@ -195,6 +195,7 @@ fn postbode(home: &Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
         .args(args)
         .env("POSTBODE_HOME", home)
+        .env("POSTBODE_IDLE_EXIT_SECS", "1")
         .env("RUST_LOG", "error")
         .output()
         .unwrap()
@@ -299,6 +300,75 @@ fn cli_delete_moves_to_the_trash_folder() {
     ops.select("INBOX").unwrap();
     assert!(all_envelopes(&mut ops).is_empty(), "still in INBOX");
     ops.select("Trash").unwrap();
+    assert_eq!(all_envelopes(&mut ops).len(), 1);
+}
+
+#[test]
+fn cli_actions_are_logged_as_cli_through_the_daemon() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "cli-logged");
+    let home = home_with(&account, "");
+    connect(&account)
+        .append("INBOX", &mail("file me"), &[])
+        .unwrap();
+    for args in [&["sync"][..], &["archive", "1"][..]] {
+        let out = postbode(home.path(), args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let store = Store::open(&Paths::under(home.path()).mail_db(&account.name)).unwrap();
+    assert_eq!(store.log(1).unwrap()[0].rule_name, "cli");
+}
+
+#[test]
+fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "cli-restore");
+    let home = home_with(
+        &account,
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"sign-in code\" }\nactions = [\"delete\"]\n",
+    );
+    connect(&account)
+        .append("INBOX", &mail("Your sign-in code"), &[])
+        .unwrap();
+    let success = |args: &[&str]| {
+        let out = postbode(home.path(), args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    success(&["sync"]);
+    assert!(success(&["search", "--bodies", "Body"]).contains("INBOX/1"));
+    assert!(success(&["show", "1", "--raw"]).contains("Body of Your sign-in code"));
+    assert!(success(&["rules", "apply-existing", "codes"]).contains("live: 1 actions on"));
+
+    let trash_dir = Paths::under(home.path()).trash_dir(&account.name);
+    let backup = std::fs::read_dir(&trash_dir)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let restored = std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .args(["trash", "restore"])
+        .arg(backup.file_name())
+        .current_dir(&trash_dir)
+        .env("POSTBODE_HOME", home.path())
+        .env("POSTBODE_IDLE_EXIT_SECS", "1")
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let mut ops = connect(&account);
+    ops.select("INBOX").unwrap();
     assert_eq!(all_envelopes(&mut ops).len(), 1);
 }
 

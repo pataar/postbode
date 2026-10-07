@@ -6,6 +6,9 @@ This document contains the help content for the `postbode` command-line program.
 
 * [`postbode`↴](#postbode)
 * [`postbode run`↴](#postbode-run)
+* [`postbode daemon`↴](#postbode-daemon)
+* [`postbode daemon status`↴](#postbode-daemon-status)
+* [`postbode daemon stop`↴](#postbode-daemon-stop)
 * [`postbode gui`↴](#postbode-gui)
 * [`postbode sync`↴](#postbode-sync)
 * [`postbode attachment`↴](#postbode-attachment)
@@ -47,7 +50,8 @@ A fast, simple mail client with automatic mailbox rules
 
 ###### **Subcommands:**
 
-* `run` — Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
+* `run` — Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
+* `daemon` — Inspect or stop the daemon that syncs your accounts; other commands start it when needed
 * `gui` — Open the mail window; syncs every account like `run`
 * `sync` — Sync once, apply rules, exit
 * `attachment` — List or save a message's attachments
@@ -70,9 +74,38 @@ A fast, simple mail client with automatic mailbox rules
 
 ## `postbode run`
 
-Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
+Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
 
 **Usage:** `postbode run`
+
+
+
+## `postbode daemon`
+
+Inspect or stop the daemon that syncs your accounts; other commands start it when needed
+
+**Usage:** `postbode daemon <COMMAND>`
+
+###### **Subcommands:**
+
+* `status` — Print the daemon's pid, version, uptime and what each account is doing
+* `stop` — Stop the daemon; it starts again when a command needs it
+
+
+
+## `postbode daemon status`
+
+Print the daemon's pid, version, uptime and what each account is doing
+
+**Usage:** `postbode daemon status`
+
+
+
+## `postbode daemon stop`
+
+Stop the daemon; it starts again when a command needs it
+
+**Usage:** `postbode daemon stop`
 
 
 
