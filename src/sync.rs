@@ -42,6 +42,8 @@ pub enum SyncError {
     Io(#[from] io::Error),
     #[error("stopped")]
     Stopped,
+    #[error("crashed: {0}")]
+    Crashed(String),
 }
 
 /// Names one command so the event that completes it can be matched to whoever sent it.
@@ -1131,17 +1133,21 @@ pub fn run_loop_with(
     let mut sync_requests = Vec::new();
     while !shutdown.load(Ordering::Acquire) {
         let mut completed_cycle = false;
-        let result = run_session(
-            &account,
-            &paths,
-            &events,
-            &shutdown,
-            &commands,
-            &wake,
-            &mut sync_requests,
-            &mut connect,
-            &mut completed_cycle,
-        );
+        // A bug in one session must still answer its requests and leave the account retrying, not silently dead.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_session(
+                &account,
+                &paths,
+                &events,
+                &shutdown,
+                &commands,
+                &wake,
+                &mut sync_requests,
+                &mut connect,
+                &mut completed_cycle,
+            )
+        }))
+        .unwrap_or_else(|panic| Err(SyncError::Crashed(panic_message(&*panic))));
         if completed_cycle {
             backoff = Duration::from_secs(5);
         }
@@ -1167,6 +1173,14 @@ pub fn run_loop_with(
     }
     let stopped = format!("{} stopped", account.name);
     fail_requests(&account, &events, &commands, &mut sync_requests, &stopped);
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|text| text.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into())
 }
 
 /// Why an offline account cannot run a command: `<account> is offline (<reason>); retrying at <HH:MM>`, local time.
@@ -1887,6 +1901,40 @@ mod tests {
             .filter(|e| matches!(e, Event::Synced { .. }))
             .count();
         assert_eq!(passes, 2, "{events:?}");
+    }
+
+    #[test]
+    fn a_panicking_session_fails_its_requests_and_goes_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (queue, commands) = std::sync::mpsc::channel();
+        queue
+            .send(Job {
+                request: 5,
+                command: Command::SyncNow,
+            })
+            .unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            Paths::under(dir.path()),
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || -> Result<Box<dyn MailOps>, SyncError> { panic!("a bug") },
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Activity { activity: Activity::Offline { reason, .. }, .. } if reason == "crashed: a bug")),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, Event::CommandFailed { request: 5, message, .. } if message.starts_with("work is offline (crashed: a bug)"))),
+            "{events:?}"
+        );
     }
 
     #[test]
