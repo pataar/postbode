@@ -31,7 +31,7 @@ pub mod wire;
 
 pub use client::Client;
 
-const CONFIG_POLL: Duration = Duration::from_secs(2);
+const FILE_POLL: Duration = Duration::from_secs(2);
 /// How long exit waits for clients to take their last replies before closing their connections.
 const FLUSH_GRACE: Duration = Duration::from_secs(1);
 const LOG_LIMIT: u64 = 1_048_576;
@@ -235,7 +235,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Result<()> {
-    let mut watch = ConfigWatch::new(paths.config_file());
+    let mut watch = Watch::new(paths);
     let config = Config::load(&paths.config_file())?;
     migrate_stores(&config, paths);
     let (engine, events) = Engine::start(&config, paths, options.connect.clone());
@@ -271,35 +271,58 @@ fn migrate_stores(config: &Config, paths: &Paths) {
     }
 }
 
-struct ConfigWatch {
-    path: PathBuf,
-    modified: Option<SystemTime>,
+/// config.toml and rules.toml, looked at every 2 s.
+struct Watch {
+    config: FileWatch,
+    rules: FileWatch,
     checked: Instant,
 }
 
-impl ConfigWatch {
-    fn new(path: PathBuf) -> ConfigWatch {
-        ConfigWatch {
-            modified: modified_time(&path),
-            path,
+impl Watch {
+    fn new(paths: &Paths) -> Watch {
+        Watch {
+            config: FileWatch::new(paths.config_file()),
+            rules: FileWatch::new(paths.rules_file()),
             checked: Instant::now(),
         }
     }
 
-    /// The config, loaded again once its modification time changed; looked at every 2 s.
-    fn changed(&mut self) -> Option<Config> {
-        if self.checked.elapsed() < CONFIG_POLL {
-            return None;
+    /// The config, loaded again once it changed, and whether the rules file changed.
+    fn changed(&mut self) -> (Option<Config>, bool) {
+        if self.checked.elapsed() < FILE_POLL {
+            return (None, false);
         }
         self.checked = Instant::now();
+        let config = self.config.changed().then(|| {
+            Config::load(&self.config.path)
+                .inspect_err(|e| log::error!("{e}; keeping the running accounts"))
+                .ok()
+        });
+        (config.flatten(), self.rules.changed())
+    }
+}
+
+struct FileWatch {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+}
+
+impl FileWatch {
+    fn new(path: PathBuf) -> FileWatch {
+        FileWatch {
+            modified: modified_time(&path),
+            path,
+        }
+    }
+
+    /// Whether the modification time changed since the last call.
+    fn changed(&mut self) -> bool {
         let modified = modified_time(&self.path);
         if modified == self.modified {
-            return None;
+            return false;
         }
         self.modified = modified;
-        Config::load(&self.path)
-            .inspect_err(|e| log::error!("{e}; keeping the running accounts"))
-            .ok()
+        true
     }
 }
 
@@ -315,18 +338,25 @@ struct Connection {
 fn accept_until_done(
     shared: &Arc<Shared>,
     listener: &UnixListener,
-    watch: &mut ConfigWatch,
+    watch: &mut Watch,
     idle_exit: Option<Duration>,
 ) -> Vec<Connection> {
     let mut connections: Vec<Connection> = Vec::new();
     let mut next_client: ClientId = 0;
     while !done(shared, idle_exit) {
-        let changed = watch.changed();
+        let (config, rules) = watch.changed();
         if let Some(engine) = lock(&shared.engine).as_mut() {
-            if let Some(config) = &changed {
+            if let Some(config) = &config {
                 engine.apply_config(config);
             }
             engine.start_ready();
+            if rules {
+                // Rules act on mail synced after they change, so every running account syncs at once; request 0 has
+                // nobody waiting for its reply.
+                for account in engine.accounts() {
+                    engine.send(&account, 0, Command::SyncNow);
+                }
+            }
         }
         match listener.accept() {
             Ok((stream, _)) => {
