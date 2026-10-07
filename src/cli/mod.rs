@@ -802,7 +802,7 @@ fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
     // `engine` holds the account locks until `run` exits.
     let (engine, events) = Engine::start(config, paths);
     let mut running = 0;
-    for (name, state) in engine.accounts() {
+    for (name, state) in &engine.accounts() {
         match state {
             StartState::Running => running += 1,
             StartState::Locked { pid } => eprintln!(

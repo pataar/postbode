@@ -1045,6 +1045,7 @@ pub fn run_once(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_loop(
     account: AccountConfig,
     paths: Paths,
@@ -1052,17 +1053,18 @@ pub fn run_loop(
     shutdown: Arc<AtomicBool>,
     commands: Receiver<Job>,
     wake: Arc<AtomicBool>,
+    connect: impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
 ) {
     let name = account.name.clone();
     let (stop, woken) = (shutdown.clone(), wake.clone());
     run_loop_with(
-        account.clone(),
+        account,
         paths,
         events,
         shutdown,
         commands,
         wake,
-        move || Ok(Box::new(connect(&account)?) as Box<dyn MailOps>),
+        connect,
         |delay| {
             log::warn!("{name}: reconnecting in {}s", delay.as_secs());
             // Stop or a new command cuts this wait short; clearing the flag keeps later waits at full length.
@@ -2615,7 +2617,12 @@ mod tests {
             let (paths, shutdown, wake) =
                 (Paths::under(dir.path()), shutdown.clone(), wake.clone());
             let commands = std::sync::mpsc::channel::<Job>().1;
-            std::thread::spawn(move || run_loop(offline, paths, tx, shutdown, commands, wake))
+            std::thread::spawn(move || {
+                let account = offline.clone();
+                run_loop(offline, paths, tx, shutdown, commands, wake, move || {
+                    Ok(Box::new(connect(&account)?) as Box<dyn MailOps>)
+                })
+            })
         };
         wait_for(&rx, &mut Vec::new(), |e| {
             matches!(
