@@ -16,7 +16,7 @@ use postbode::message::clean;
 use postbode::paths::Paths;
 use postbode::rules::{Action, CompiledRule, Rule, RuleFile};
 use postbode::store::{Message, Store};
-use postbode::sync::{self, Activity, Event};
+use postbode::sync::{self, Event};
 use postbode::trash::Trash;
 
 #[derive(Parser)]
@@ -709,41 +709,9 @@ fn print_status(status: &Status) {
 fn account_line(account: &AccountStatus) -> String {
     let name = &account.name;
     match &account.activity {
-        Some(activity) => format!("{name}  running  {}", activity_summary(activity)),
+        Some(activity) => format!("{name}  running  {activity}"),
         None => format!("{name}  running"),
     }
-}
-
-fn activity_summary(activity: &Activity) -> String {
-    match activity {
-        Activity::Connecting => "connecting".into(),
-        Activity::FetchingBodies { folder, .. } => {
-            format!("fetching bodies {}", clean(folder, false))
-        }
-        Activity::FetchingHeaders { folder, .. } => {
-            format!("fetching headers {}", clean(folder, false))
-        }
-        Activity::Idle { .. } => "idle".into(),
-        Activity::ListingFolders => "listing folders".into(),
-        Activity::Offline { reason, retry_at } => format!(
-            "offline: {}, retrying at {}",
-            clean(reason, false),
-            clock_time(*retry_at)
-        ),
-        Activity::RunningCommand { what } => format!("running {}", clean(what, false)),
-        Activity::RunningRules { folder } => format!("running rules {}", clean(folder, false)),
-        Activity::SyncingFolder { folder, .. } => format!("syncing {}", clean(folder, false)),
-    }
-}
-
-fn clock_time(timestamp: i64) -> String {
-    chrono::DateTime::from_timestamp(timestamp, 0)
-        .map(|time| {
-            time.with_timezone(&chrono::Local)
-                .format("%H:%M")
-                .to_string()
-        })
-        .unwrap_or_default()
 }
 
 fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) -> Result<()> {

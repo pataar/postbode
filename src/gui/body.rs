@@ -2,10 +2,9 @@
 use eframe::egui;
 
 use crate::message::clean;
-use crate::sync::Activity;
+use crate::sync::{Activity, local_time};
 
 use super::app::{Account, App, UiAction};
-use super::status::local_time;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Segment<'a> {

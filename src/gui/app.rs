@@ -474,11 +474,7 @@ impl App {
                     activity,
                     Activity::FetchingBodies { .. } | Activity::FetchingHeaders { .. }
                 ) {
-                    let line = format!(
-                        "{}: {}",
-                        self.accounts[index].name,
-                        status::activity_text(&activity)
-                    );
+                    let line = format!("{}: {activity}", self.accounts[index].name);
                     self.push_history(line);
                 }
                 let account = &mut self.accounts[index];
@@ -1663,7 +1659,7 @@ mod tests {
         fx.add("work", unread);
         reconnect(&mut harness);
         assert!(harness.query_by_label_contains(DAEMON_LOST).is_none());
-        let line = format!("work: up to date · {}", status::clock(1_790_000_000));
+        let line = format!("work: up to date · {}", crate::sync::clock(1_790_000_000));
         assert!(harness.query_by_label(&line).is_some());
         assert!(harness.query_by_label("INBOX (1)").is_some());
         press(&mut harness, "e");

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -5,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{self, ActionError};
@@ -12,7 +14,7 @@ use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
 use crate::mail_ops::imap::ImapOps;
 use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder};
-use crate::message::{body_text, parse_headers, thread_id};
+use crate::message::{body_text, clean, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply, ensure_raw};
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body};
@@ -172,6 +174,78 @@ pub enum Activity {
         reason: String,
         retry_at: i64,
     },
+}
+
+impl fmt::Display for Activity {
+    /// The status line text the window and `postbode daemon status` show.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            Activity::Connecting => "connecting…".into(),
+            Activity::ListingFolders => "listing folders".into(),
+            Activity::SyncingFolder { folder, index, of } => {
+                format!("{} ({index}/{of})", clean(folder, false))
+            }
+            Activity::FetchingHeaders {
+                folder,
+                done,
+                total,
+            } => fetching(folder, "headers", *done, *total),
+            Activity::FetchingBodies {
+                folder,
+                done,
+                total,
+            } => fetching(folder, "bodies", *done, *total),
+            Activity::RunningRules { folder } => {
+                format!("running rules on {}", clean(folder, false))
+            }
+            Activity::RunningCommand { what } => clean(what, false),
+            Activity::Idle { since } => format!("up to date · {}", clock(*since)),
+            Activity::Offline { reason, retry_at } => {
+                format!(
+                    "offline ({}) · retry {}",
+                    clean(reason, false),
+                    clock(*retry_at)
+                )
+            }
+        };
+        f.write_str(&text)
+    }
+}
+
+/// "INBOX headers 1,200 / 5,000".
+fn fetching(folder: &str, what: &str, done: usize, total: usize) -> String {
+    format!(
+        "{} {what} {} / {}",
+        clean(folder, false),
+        thousands(done),
+        thousands(total)
+    )
+}
+
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// The timestamp in local time, in a chrono `format`.
+pub fn local_time(ts: i64, format: &str) -> String {
+    chrono::Local
+        .timestamp_opt(ts, 0)
+        .single()
+        .map(|at| at.format(format).to_string())
+        .unwrap_or_default()
+}
+
+/// `HH:MM` in local time.
+pub fn clock(ts: i64) -> String {
+    local_time(ts, "%H:%M")
 }
 
 /// Work the daemon asks an account's sync thread to do on its connection, on a client's behalf.
@@ -1184,13 +1258,10 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 
 /// Why an offline account cannot run a command: `<account> is offline (<reason>); retrying at <HH:MM>`, local time.
 pub fn offline_message(account: &str, reason: &str, retry_at: i64) -> String {
-    use chrono::TimeZone;
-    let clock = chrono::Local
-        .timestamp_opt(retry_at, 0)
-        .single()
-        .map(|time| time.format("%H:%M").to_string())
-        .unwrap_or_default();
-    format!("{account} is offline ({reason}); retrying at {clock}")
+    format!(
+        "{account} is offline ({reason}); retrying at {}",
+        clock(retry_at)
+    )
 }
 
 /// Fails the held `SyncNow` requests and every queued job, so each request still gets its one answer.
@@ -1352,6 +1423,74 @@ mod tests {
             r.first_seen_at = store.rule_first_seen(&r.rule.name, now).unwrap();
         }
         compiled
+    }
+
+    #[test]
+    fn thousands_groups_digits() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000), "1,000");
+        assert_eq!(thousands(48_213), "48,213");
+        assert_eq!(thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn activity_text_matches_the_spec_table() {
+        let folder = || "INBOX".to_string();
+        let cases = [
+            (Activity::Connecting, "connecting…".to_string()),
+            (Activity::ListingFolders, "listing folders".into()),
+            (
+                Activity::SyncingFolder {
+                    folder: "Archive".into(),
+                    index: 4,
+                    of: 12,
+                },
+                "Archive (4/12)".into(),
+            ),
+            (
+                Activity::FetchingHeaders {
+                    folder: folder(),
+                    done: 12_500,
+                    total: 48_213,
+                },
+                "INBOX headers 12,500 / 48,213".into(),
+            ),
+            (
+                Activity::FetchingBodies {
+                    folder: folder(),
+                    done: 30,
+                    total: 210,
+                },
+                "INBOX bodies 30 / 210".into(),
+            ),
+            (
+                Activity::RunningRules { folder: folder() },
+                "running rules on INBOX".into(),
+            ),
+            (
+                Activity::RunningCommand {
+                    what: "archiving 3 messages".into(),
+                },
+                "archiving 3 messages".into(),
+            ),
+            (
+                Activity::Idle {
+                    since: 1_790_000_000,
+                },
+                format!("up to date · {}", clock(1_790_000_000)),
+            ),
+            (
+                Activity::Offline {
+                    reason: "timeout".into(),
+                    retry_at: 1_790_000_300,
+                },
+                format!("offline (timeout) · retry {}", clock(1_790_000_300)),
+            ),
+        ];
+        for (activity, text) in cases {
+            assert_eq!(activity.to_string(), text);
+        }
     }
 
     #[test]

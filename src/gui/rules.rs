@@ -8,10 +8,10 @@ use crate::message::{clean, parse_headers};
 use crate::paths::Paths;
 use crate::rules::{self, Rule, RuleFile};
 use crate::store::LogEntry;
+use crate::sync::local_time;
 use crate::trash::{Trash, TrashEntry};
 
 use super::app::{Account, App, UiAction};
-use super::status::local_time;
 
 /// Entries shown in the Activity view.
 const LOG_LIMIT: u32 = 500;

@@ -1,48 +1,16 @@
 //! The bottom bar: a line per account from its latest activity, the history window, and the theme switch.
-use chrono::{Local, TimeZone};
 use eframe::egui;
 
-use crate::message::clean;
-use crate::sync::Activity;
+use crate::sync::{Activity, clock};
 
 use super::app::{Account, App, UiAction};
 use super::theme;
-
-pub(crate) fn activity_text(activity: &Activity) -> String {
-    match activity {
-        Activity::Connecting => "connecting…".into(),
-        Activity::ListingFolders => "listing folders".into(),
-        Activity::SyncingFolder { folder, index, of } => {
-            format!("{} ({index}/{of})", clean(folder, false))
-        }
-        Activity::FetchingHeaders {
-            folder,
-            done,
-            total,
-        } => fetching(folder, "headers", *done, *total),
-        Activity::FetchingBodies {
-            folder,
-            done,
-            total,
-        } => fetching(folder, "bodies", *done, *total),
-        Activity::RunningRules { folder } => format!("running rules on {}", clean(folder, false)),
-        Activity::RunningCommand { what } => clean(what, false),
-        Activity::Idle { since } => format!("up to date · {}", clock(*since)),
-        Activity::Offline { reason, retry_at } => {
-            format!(
-                "offline ({}) · retry {}",
-                clean(reason, false),
-                clock(*retry_at)
-            )
-        }
-    }
-}
 
 /// The account's status line: its error or its latest activity; plus queued commands.
 pub(crate) fn account_line(account: &Account) -> String {
     let state = match (&account.error, &account.activity) {
         (Some(error), _) => error.clone(),
-        (None, Some(activity)) => activity_text(activity),
+        (None, Some(activity)) => activity.to_string(),
         (None, None) => "starting…".into(),
     };
     let mut line = format!("{}: {state}", account.name);
@@ -50,40 +18,6 @@ pub(crate) fn account_line(account: &Account) -> String {
         line.push_str(&format!(" · {} queued", account.queued));
     }
     line
-}
-
-pub(crate) fn local_time(ts: i64, format: &str) -> String {
-    Local
-        .timestamp_opt(ts, 0)
-        .single()
-        .map(|at| at.format(format).to_string())
-        .unwrap_or_default()
-}
-
-/// "INBOX headers 1,200 / 5,000".
-fn fetching(folder: &str, what: &str, done: usize, total: usize) -> String {
-    format!(
-        "{} {what} {} / {}",
-        clean(folder, false),
-        thousands(done),
-        thousands(total)
-    )
-}
-
-pub(crate) fn clock(ts: i64) -> String {
-    local_time(ts, "%H:%M")
-}
-
-pub(crate) fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
 }
 
 fn progress(activity: &Activity) -> Option<f32> {
@@ -233,74 +167,6 @@ mod tests {
     use super::*;
     use crate::gui::test_support::{Fixture, message};
     use crate::sync::Event;
-
-    #[test]
-    fn thousands_groups_digits() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1_000), "1,000");
-        assert_eq!(thousands(48_213), "48,213");
-        assert_eq!(thousands(1_234_567), "1,234,567");
-    }
-
-    #[test]
-    fn activity_text_matches_the_spec_table() {
-        let folder = || "INBOX".to_string();
-        let cases = [
-            (Activity::Connecting, "connecting…".to_string()),
-            (Activity::ListingFolders, "listing folders".into()),
-            (
-                Activity::SyncingFolder {
-                    folder: "Archive".into(),
-                    index: 4,
-                    of: 12,
-                },
-                "Archive (4/12)".into(),
-            ),
-            (
-                Activity::FetchingHeaders {
-                    folder: folder(),
-                    done: 12_500,
-                    total: 48_213,
-                },
-                "INBOX headers 12,500 / 48,213".into(),
-            ),
-            (
-                Activity::FetchingBodies {
-                    folder: folder(),
-                    done: 30,
-                    total: 210,
-                },
-                "INBOX bodies 30 / 210".into(),
-            ),
-            (
-                Activity::RunningRules { folder: folder() },
-                "running rules on INBOX".into(),
-            ),
-            (
-                Activity::RunningCommand {
-                    what: "archiving 3 messages".into(),
-                },
-                "archiving 3 messages".into(),
-            ),
-            (
-                Activity::Idle {
-                    since: 1_790_000_000,
-                },
-                format!("up to date · {}", clock(1_790_000_000)),
-            ),
-            (
-                Activity::Offline {
-                    reason: "timeout".into(),
-                    retry_at: 1_790_000_300,
-                },
-                format!("offline (timeout) · retry {}", clock(1_790_000_300)),
-            ),
-        ];
-        for (activity, text) in cases {
-            assert_eq!(activity_text(&activity), text);
-        }
-    }
 
     #[test]
     fn an_up_to_date_account_line_is_green_and_an_error_wins() {
