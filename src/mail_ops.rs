@@ -63,8 +63,8 @@ pub trait MailOps {
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
     fn remove_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
     fn expunge(&mut self, uid: u32) -> MailResult<()>;
-    /// Moves the message; returns the new uid when the server reports it.
-    fn move_message(&mut self, uid: u32, to: &str) -> MailResult<Option<u32>>;
+    /// Moves the message. Its new uid is not known here; the next sync of `to` finds it.
+    fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()>;
     fn create_folder(&mut self, name: &str) -> MailResult<()>;
     /// Appends a message carrying `flags`, e.g. a keyword.
     fn append(&mut self, folder: &str, raw: &[u8], flags: &[&str]) -> MailResult<()>;
@@ -317,7 +317,7 @@ mod recording {
             Ok(())
         }
 
-        fn move_message(&mut self, uid: u32, to: &str) -> MailResult<Option<u32>> {
+        fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()> {
             self.calls
                 .push(format!("move {} {uid} -> {to}", self.selected));
             if !self.mail.contains_key(to) {
@@ -338,7 +338,7 @@ mod recording {
             if let Some(raw) = raw {
                 self.raw.insert((to.into(), new_uid), raw);
             }
-            Ok(None)
+            Ok(())
         }
 
         fn create_folder(&mut self, name: &str) -> MailResult<()> {
@@ -444,7 +444,7 @@ mod tests {
             .with_folder("Archive", Some("Archive"));
         ops.add_mail("INBOX", 1, 10, "Subject: a\r\n\r\n", Some("raw"));
         ops.select("INBOX").unwrap();
-        assert_eq!(ops.move_message(1, "Archive").unwrap(), None);
+        ops.move_message(1, "Archive").unwrap();
         assert!(ops.mail["INBOX"].is_empty());
         assert_eq!(ops.raw.get(&("Archive".into(), 1)).unwrap(), b"raw");
         assert_eq!(ops.calls.last().unwrap(), "move INBOX 1 -> Archive");

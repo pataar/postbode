@@ -488,7 +488,8 @@ impl App {
                 account.activity = Some(activity);
             }
             Event::NewMail { .. } => {}
-            // Request 0 is this window's own outcome; a daemon id is another client's, or the broadcast copy of ours.
+            // Request 0 is this window's own outcome. A daemon id is another client's, or the broadcast copy of our own
+            // failure; the client drops the copy of our own `ActionDone`.
             Event::CommandFailed { request, .. } if request != 0 => {}
             Event::ActionDone { request, .. } if request != 0 => self.refresh(index),
             Event::CommandFailed { message, .. } => {

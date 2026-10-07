@@ -114,7 +114,7 @@ With more than one visible account, every tool that acts on one message needs `a
 - Without `read:bodies`, no tool returns or reveals body text: `search` covers subject and addresses only, as plain words, with no search operators, and `rules_test` refuses a rule that matches on the body.
 - A call outside the granted scopes fails with "not allowed with these scopes". Hosts only see the tools you granted, so they should not make such a call.
 
-## With the mail window open
+## Alongside the window and the CLI
 
 The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postbode daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list.
 

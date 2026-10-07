@@ -72,7 +72,7 @@ enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Sync once, apply rules, exit
+    /// Ask the daemon to sync now and apply rules; waits for the result
     Sync {
         #[arg(long)]
         account: Option<String>,
@@ -346,7 +346,7 @@ pub fn run() -> Result<()> {
     };
     let config = Config::load(&paths.config_file())?;
     match cli.command {
-        Command::Run { idle_exit } => cmd_run(&config, &paths, idle_exit),
+        Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
         Command::Daemon { command } => cmd_daemon(command, &paths),
         Command::Gui => cmd_gui(&config, &paths),
         Command::Service { command } => cmd_service(command, &paths),
@@ -873,10 +873,9 @@ fn cmd_mcp(
     bail!("this postbode was built without the MCP server; install it with the default features")
 }
 
-fn cmd_run(config: &Config, paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
-    if config.accounts.is_empty() {
-        bail!("no accounts configured; run `postbode account add`");
-    }
+/// Starts even without accounts: a login service would otherwise restart it in a loop, and accounts added to
+/// config.toml later start on their own.
+fn cmd_run(paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
     // Test hook: lets tests idle an auto-started daemon out in seconds.
     let override_secs = std::env::var("POSTBODE_IDLE_EXIT_SECS")
         .ok()
@@ -943,11 +942,8 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                         other => Err(other),
                     })?;
                 failed |= !errors.is_empty();
-                for message in errors {
-                    postbode::daemon::report(&Event::Error {
-                        account: acc.name.clone(),
-                        message,
-                    });
+                for message in &errors {
+                    postbode::daemon::report_error(&acc.name, message);
                 }
                 println!("{}: {actions} actions on {evaluated} messages", acc.name);
             }
@@ -1084,7 +1080,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
                     other => Err(other),
                 })?;
             println!(
-                "restored to {}; rules leave restored mail alone. Run `postbode sync` to see it",
+                "restored to {}; rules leave restored mail alone",
                 clean(&folder, false)
             );
             Ok(())
@@ -1126,17 +1122,10 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         PasswordSource::Keyring { keyring: true }
     };
     let account = AccountConfig {
-        name,
-        host,
         port,
-        username,
-        password,
         address,
-        aliases: vec![],
-        sync_interval_secs: 120,
-        trash_retention_days: 30,
-        notify: true,
         ca_file,
+        ..AccountConfig::new(&name, &host, &username, password)
     };
     config.accounts.retain(|a| a.name != account.name);
     config.accounts.push(account);

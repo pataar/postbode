@@ -322,6 +322,7 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(any(test, feature = "testing"))]
 pub fn sync_folder(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -354,13 +355,7 @@ pub fn sync_folder_with(
         _ => (0, true),
     };
 
-    // A rule move on a UIDPLUS server stores its row above last_uid; check up to there too, or a row whose message is
-    // gone before the folder's next new mail would stay.
-    let flags_upto = if starts_tracking {
-        0
-    } else {
-        last_uid.max(store.highest_uid(&folder.name)?)
-    };
+    let flags_upto = if starts_tracking { 0 } else { last_uid };
     let updates = if flags_upto > 0 {
         ops.fetch_flags(flags_upto)?
     } else {
@@ -475,6 +470,7 @@ fn to_message(folder: &str, env: Envelope) -> Message {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 pub fn sync_all(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -950,11 +946,11 @@ fn fetch_bodies_in(
     folder: Option<&str>,
 ) -> Result<usize, ActionError> {
     if let Some(folder) = folder {
-        return actions::fetch_bodies(ops, store, folder, |_| {});
+        return actions::fetch_bodies(ops, store, folder);
     }
     let mut fetched = 0;
     for folder in store.folders()? {
-        match actions::fetch_bodies(ops, store, &folder.name, |_| {}) {
+        match actions::fetch_bodies(ops, store, &folder.name) {
             Ok(count) => fetched += count,
             Err(e) if connection_lost(&e) => return Err(e),
             Err(e) => log::warn!("{}: body fetch skipped: {e}", folder.name),
@@ -1262,6 +1258,7 @@ impl<'a> AccountSync<'a> {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 pub fn run_once(
     account: &AccountConfig,
     paths: &Paths,
@@ -1696,34 +1693,6 @@ mod tests {
         .unwrap();
         assert_eq!(run.events.len(), 1, "{:?}", run.events);
         assert!(matches!(&run.events[0], Event::NewMail { uid: 1, .. }));
-    }
-
-    /// Found by tests/sync_model.rs: such a row stayed until the next new mail reached the folder.
-    #[test]
-    fn row_a_uidplus_move_stored_above_last_uid_goes_when_its_message_does() {
-        let mut ops = RecordingOps::new()
-            .with_folder("INBOX", None)
-            .with_folder("Lists", None);
-        ops.add_mail(
-            "INBOX",
-            1,
-            10 * H,
-            &headers("news@x", "deals", "n1@x"),
-            None,
-        );
-        let store = Store::open_in_memory().unwrap();
-        sync_all(&mut ops, &store).unwrap();
-        // A rule moved it on a UIDPLUS server, so its row followed to Lists/1, above Lists' last_uid of 0.
-        ops.select("INBOX").unwrap();
-        ops.move_message(1, "Lists").unwrap();
-        store
-            .move_message_row("INBOX", 1, "Lists", Some(1))
-            .unwrap();
-        // Another client deletes it before any other mail reaches Lists.
-        ops.mail.get_mut("Lists").unwrap().clear();
-        sync_all(&mut ops, &store).unwrap();
-        assert!(store.message("Lists", 1).unwrap().is_none());
-        assert_eq!(store.message_count("Lists").unwrap(), 0);
     }
 
     #[test]
@@ -2766,27 +2735,6 @@ mod tests {
     }
 
     #[test]
-    fn a_row_moved_in_above_last_uid_does_not_hide_unsynced_mail_below_it() {
-        let mut ops = ops_with_inbox().with_folder("Archive", Some("Archive"));
-        ops.add_mail("Archive", 1, 10 * H, &headers("c@x", "kept", "a1@x"), None);
-        let store = Store::open_in_memory().unwrap();
-        sync_all(&mut ops, &store).unwrap();
-        assert!(notify_uids(&mut ops, &store).is_empty());
-        ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
-        // A command moved Archive/1 into INBOX and UIDPLUS gave it uid 4, above INBOX's last_uid; uid 3 is not synced yet.
-        ops.mail.get_mut("Archive").unwrap().clear();
-        ops.add_mail("INBOX", 4, 10 * H, &headers("c@x", "kept", "a1@x"), None);
-        store
-            .move_message_row("Archive", 1, "INBOX", Some(4))
-            .unwrap();
-        assert!(notify_uids(&mut ops, &store).is_empty());
-        sync_all(&mut ops, &store).unwrap();
-        assert_eq!(notify_uids(&mut ops, &store), [3, 4]);
-        sync_all(&mut ops, &store).unwrap();
-        assert!(notify_uids(&mut ops, &store).is_empty());
-    }
-
-    #[test]
     fn checkpoints_report_progress_in_order() {
         let mut ops = ops_with_inbox();
         let store = Store::open_in_memory().unwrap();
@@ -3294,7 +3242,7 @@ mod tests {
         fn expunge(&mut self, uid: u32) -> crate::mail_ops::MailResult<()> {
             self.inner.expunge(uid)
         }
-        fn move_message(&mut self, uid: u32, to: &str) -> crate::mail_ops::MailResult<Option<u32>> {
+        fn move_message(&mut self, uid: u32, to: &str) -> crate::mail_ops::MailResult<()> {
             self.inner.move_message(uid, to)
         }
         fn create_folder(&mut self, name: &str) -> crate::mail_ops::MailResult<()> {
