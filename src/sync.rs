@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 
 use crate::actions::{self, ActionError};
@@ -20,6 +19,7 @@ use crate::rules::apply::{ApplyError, apply, ensure_raw};
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body};
 use crate::rules::{Action, CompiledRule, RulesError};
 use crate::store::{Folder, Message, Store, StoreError};
+use crate::time::{clock, now};
 use crate::trash::{RestoreError, Trash};
 
 #[derive(Debug, thiserror::Error)]
@@ -239,20 +239,6 @@ fn thousands(n: usize) -> String {
     grouped
 }
 
-/// The timestamp in local time, in a chrono `format`.
-pub fn local_time(ts: i64, format: &str) -> String {
-    chrono::Local
-        .timestamp_opt(ts, 0)
-        .single()
-        .map(|at| at.format(format).to_string())
-        .unwrap_or_default()
-}
-
-/// `HH:MM` in local time.
-pub fn clock(ts: i64) -> String {
-    local_time(ts, "%H:%M")
-}
-
 /// Work the daemon asks an account's sync thread to do on its connection, on a client's behalf.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
@@ -314,13 +300,6 @@ pub type Checkpoint<'a> = dyn FnMut(&mut dyn MailOps, Activity) -> Result<bool, 
 
 /// Envelopes are fetched this many messages at a time, each batch committed on its own.
 const CHUNK: usize = 500;
-
-pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 pub fn sync_folder(
     ops: &mut dyn MailOps,

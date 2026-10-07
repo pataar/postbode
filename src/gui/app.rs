@@ -14,7 +14,7 @@ use crate::message::{self, Attachment, clean};
 use crate::paths::Paths;
 use crate::rules::{self as rule_file, Action, RulesError};
 use crate::store::{LogEntry, Message, Store, StoreError};
-use crate::sync::{self, Activity, Command, Event};
+use crate::sync::{Activity, Command, Event};
 
 use super::body;
 use super::folders;
@@ -574,7 +574,7 @@ impl App {
             return;
         }
         self.history.push_back(HistoryLine {
-            at: sync::now(),
+            at: crate::time::now(),
             text,
         });
         while self.history.len() > HISTORY {
@@ -1664,7 +1664,7 @@ mod tests {
         fx.add("work", unread);
         reconnect(&mut harness);
         assert!(harness.query_by_label_contains(DAEMON_LOST).is_none());
-        let line = format!("work: up to date · {}", crate::sync::clock(1_790_000_000));
+        let line = format!("work: up to date · {}", crate::time::clock(1_790_000_000));
         assert!(harness.query_by_label(&line).is_some());
         assert!(harness.query_by_label("INBOX (1)").is_some());
         press(&mut harness, "e");

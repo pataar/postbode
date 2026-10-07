@@ -11,7 +11,8 @@ use crate::output;
 use crate::paths::Paths;
 use crate::rules::{self, Action, Rule, RuleFile};
 use crate::store::{Message, Store};
-use crate::sync::{self, Command, Event};
+use crate::sync::{Command, Event};
+use crate::time;
 use crate::trash::Trash;
 
 pub const MAX_LIMIT: u32 = 500;
@@ -392,7 +393,7 @@ impl Backend {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(acc)?;
-            for p in actions::planned(&compiled, &store, acc, &acc.identity()?, sync::now())? {
+            for p in actions::planned(&compiled, &store, acc, &acc.identity()?, time::now())? {
                 rows.push(json!({
                     "account": acc.name, "rule": p.rule, "folder": p.message.folder,
                     "uid": p.message.uid, "action": p.action.label(), "subject": p.message.subject,
@@ -421,7 +422,7 @@ impl Backend {
         self.ensure_rule_visible(name, true)?;
         rules::edit::approve(&self.paths.rules_file(), name)?;
         for account in &self.all_accounts {
-            Store::open_account(&self.paths, account)?.restart_rule_clock(name, sync::now())?;
+            Store::open_account(&self.paths, account)?.restart_rule_clock(name, time::now())?;
         }
         Ok(json!({ "rule": name, "enabled": true }))
     }
