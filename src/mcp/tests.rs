@@ -8,16 +8,42 @@ use tempfile::TempDir;
 
 use super::{Backend, Server, parse_scopes};
 use crate::config::Config;
+use crate::daemon::Client;
+use crate::daemon::test_support::{TestDaemon, offline_connector, options, recording_connector};
+use crate::engine::Connector;
+use crate::mail_ops::{MailOps, RecordingOps};
 use crate::paths::Paths;
 use crate::store::{Folder, LogEntry, Message, Store};
 
 pub(super) struct Fixture {
     pub paths: Paths,
-    _dir: TempDir,
+    has_daemon: bool,
+    _owner: Box<dyn std::any::Any>,
 }
 
 /// A temp home with one account per name, each with an empty INBOX; port 1 refuses, so any connection attempt fails fast.
+/// No daemon serves it, and `connect` gives its backend a client without one.
 pub(super) fn fixture(accounts: &[&str]) -> Fixture {
+    let (dir, paths) = prepare(accounts);
+    Fixture {
+        paths,
+        has_daemon: false,
+        _owner: Box::new(dir),
+    }
+}
+
+/// Like `fixture`, with an in-process daemon serving the home over `connector`.
+pub(super) fn fixture_with_daemon(accounts: &[&str], connector: Connector) -> Fixture {
+    let (dir, paths) = prepare(accounts);
+    let daemon = TestDaemon::serve(dir, paths.clone(), options(connector, None));
+    Fixture {
+        paths,
+        has_daemon: true,
+        _owner: Box::new(daemon),
+    }
+}
+
+fn prepare(accounts: &[&str]) -> (TempDir, Paths) {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::under(dir.path());
     std::fs::create_dir_all(&paths.config_dir).unwrap();
@@ -28,11 +54,24 @@ pub(super) fn fixture(accounts: &[&str]) -> Fixture {
         ));
     }
     std::fs::write(paths.config_file(), config).unwrap();
-    let fx = Fixture { paths, _dir: dir };
     for name in accounts {
-        fx.folder(name, "INBOX", None);
+        open_store(&paths, name).upsert_folder(&inbox()).unwrap();
     }
-    fx
+    (dir, paths)
+}
+
+fn open_store(paths: &Paths, account: &str) -> Store {
+    paths.ensure_account(account).unwrap();
+    Store::open(&paths.mail_db(account)).unwrap()
+}
+
+fn inbox() -> Folder {
+    Folder {
+        name: "INBOX".into(),
+        uidvalidity: 1,
+        last_uid: 0,
+        special_use: None,
+    }
 }
 
 impl Fixture {
@@ -41,18 +80,7 @@ impl Fixture {
     }
 
     pub fn store(&self, account: &str) -> Store {
-        self.paths.ensure_account(account).unwrap();
-        Store::open(&self.paths.mail_db(account)).unwrap()
-    }
-
-    pub fn folder(&self, account: &str, name: &str, special_use: Option<&str>) {
-        let folder = Folder {
-            name: name.into(),
-            uidvalidity: 1,
-            last_uid: 0,
-            special_use: special_use.map(str::to_string),
-        };
-        self.store(account).upsert_folder(&folder).unwrap();
+        open_store(&self.paths, account)
     }
 
     pub fn add(&self, account: &str, message: Message) {
@@ -91,7 +119,14 @@ pub(super) async fn connect(
     only: &[&str],
 ) -> RunningService<RoleClient, ClientConfig> {
     let only: Vec<String> = only.iter().map(|s| s.to_string()).collect();
-    let backend = Backend::new(&fx.config(), &fx.paths, &only).unwrap();
+    let backend = if fx.has_daemon {
+        Backend::new(&fx.config(), &fx.paths, &only).unwrap()
+    } else {
+        let config = fx.config();
+        let names: Vec<&str> = config.accounts.iter().map(|a| a.name.as_str()).collect();
+        let (client, _sent, _inject) = Client::in_memory(&names);
+        Backend::with_client(&config, &fx.paths, &only, client).unwrap()
+    };
     let server = Server::new(backend, parse_scopes(scopes).unwrap());
     let (server_io, client_io) = tokio::io::duplex(1 << 20);
     tokio::spawn(async move {
@@ -706,13 +741,10 @@ async fn dry_run_reports_from_the_store_without_connecting() {
         "would delete (expunge, .eml backup kept)"
     );
     assert_eq!(report["missing"], json!([9]));
-    // Without dry_run the fixture's port 1 refuses: proof the dry run never connected.
-    assert_eq!(
-        call(&client, "archive", json!({ "uids": [1] }))
-            .await
-            .is_error,
-        Some(true)
-    );
+    // Without dry_run the request reaches the client, which here has no daemon: proof the dry run never asked.
+    let text = error_text(&call(&client, "archive", json!({ "uids": [1] })).await);
+    assert!(text.contains("no daemon"), "{text}");
+    assert!(!fx.paths.daemon_socket().exists());
 }
 
 #[tokio::test]
@@ -777,19 +809,123 @@ async fn trash_list_names_backups_and_restore_takes_the_name() {
     );
 }
 
+/// A fake server holding one message in INBOX and an Archive folder.
+fn connector_with_mail() -> Connector {
+    std::sync::Arc::new(|_| {
+        let mut ops = RecordingOps::new()
+            .with_folder("INBOX", None)
+            .with_folder("Archive", Some("Archive"));
+        ops.add_mail(
+            "INBOX",
+            1,
+            100,
+            "Subject: Hi\r\n\r\n",
+            Some("Subject: Hi\r\n\r\nthe body"),
+        );
+        Ok(Box::new(ops) as Box<dyn MailOps>)
+    })
+}
+
 #[tokio::test]
-async fn sync_reports_the_holder_of_a_held_lock() {
-    let fx = fixture(&["work"]);
-    let _held = crate::engine::lock_account(&fx.paths, "work")
-        .unwrap()
-        .unwrap();
+async fn sync_sends_sync_now_and_reports_the_synced_reply() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
     let client = connect(&fx, "read", &[]).await;
     let report = rows(&call(&client, "sync", json!({})).await);
     assert_eq!(
         report,
-        vec![
-            json!({ "account": "work", "synced_by": "another Postbode process", "pid": std::process::id() })
-        ]
+        vec![json!({ "account": "work", "new_messages": 0, "actions": 0, "errors": [] })]
+    );
+}
+
+#[tokio::test]
+async fn sync_reports_a_refusal_as_the_accounts_error() {
+    let fx = fixture_with_daemon(&["work"], offline_connector());
+    let client = connect(&fx, "read", &[]).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let report = loop {
+        let report = rows(&call(&client, "sync", json!({})).await);
+        if report[0].get("error").is_some() || std::time::Instant::now() > deadline {
+            break report;
+        }
+    };
+    let error = report[0]["error"].as_str().unwrap();
+    assert!(
+        error.starts_with("work is offline (no route to host)"),
+        "{report:?}"
+    );
+    assert_eq!(report[0]["account"], "work");
+    assert_eq!(report[0].as_object().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn archive_goes_through_the_daemon_attributed_to_the_client() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    let client = connect(&fx, "mail:modify", &[]).await;
+    call(&client, "sync", json!({})).await;
+    let report = call(&client, "archive", json!({ "uids": [1] })).await;
+    let report = report.structured_content.unwrap();
+    assert_eq!(report["done"], 1, "{report}");
+    assert_eq!(
+        fx.store("work").log(1).unwrap()[0].rule_name,
+        "mcp:test-host"
+    );
+}
+
+#[tokio::test]
+async fn show_fetches_a_missing_body_through_the_daemon() {
+    let fx = fixture_with_daemon(&["work"], connector_with_mail());
+    let client = connect(&fx, "read:bodies", &[]).await;
+    call(&client, "sync", json!({})).await;
+    assert!(fx.store("work").raw("INBOX", 1).unwrap().is_none());
+    let shown = call(&client, "show", json!({ "uid": 1 })).await;
+    let body = shown.structured_content.unwrap()["body"].to_string();
+    assert!(body.contains("the body"), "{body}");
+}
+
+#[tokio::test]
+async fn trash_restore_goes_through_the_daemon() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    let backup = crate::trash::Trash::new(fx.paths.trash_dir("work"))
+        .save("INBOX", 7, b"Subject: Back\r\n\r\nbody", 1_790_000_000)
+        .unwrap();
+    let file = backup.file_name().unwrap().to_string_lossy().into_owned();
+    let client = connect(&fx, "mail:modify", &[]).await;
+    let report = call(&client, "trash_restore", json!({ "file": file })).await;
+    assert_eq!(
+        report.structured_content.unwrap(),
+        json!({ "account": "work", "restored_to": "INBOX" })
+    );
+}
+
+#[test]
+fn a_backend_reconnects_after_the_daemon_stopped() {
+    let mut first = TestDaemon::start();
+    let paths = first.paths.clone();
+    let backend = Backend::new(&Config::load(&paths.config_file()).unwrap(), &paths, &[]).unwrap();
+    assert!(
+        backend
+            .sync(None)
+            .unwrap()
+            .iter()
+            .all(|row| row.get("error").is_none())
+    );
+    Client::connect(&paths).unwrap().shutdown().unwrap();
+    first.finished().unwrap();
+    for row in backend.sync(Some("work")).unwrap() {
+        let error = row["error"].as_str().unwrap();
+        assert!(error.starts_with("the daemon stopped"), "{error}");
+    }
+    let _second = TestDaemon::serve(
+        tempfile::tempdir().unwrap(),
+        paths,
+        options(recording_connector(), None),
+    );
+    assert!(
+        backend
+            .sync(None)
+            .unwrap()
+            .iter()
+            .all(|row| row.get("error").is_none())
     );
 }
 

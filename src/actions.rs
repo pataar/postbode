@@ -178,20 +178,6 @@ pub fn planned(
     Ok(planned)
 }
 
-/// The full message, from the store or fetched once from the server.
-pub fn message_raw(
-    account: &AccountConfig,
-    store: &Store,
-    msg: &Message,
-) -> anyhow::Result<Vec<u8>> {
-    if let Some(raw) = store.raw(&msg.folder, msg.uid)? {
-        return Ok(raw);
-    }
-    let mut ops = crate::sync::connect(account)?;
-    select_synced(&mut ops, store, &msg.folder)?;
-    Ok(ensure_raw(msg, &mut ops, store)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

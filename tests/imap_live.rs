@@ -531,11 +531,39 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
     engine.stop();
 }
 
+/// The binary behind a script that sets the idle exit to 1 s; tests cannot set environment variables without unsafe.
+#[cfg(feature = "mcp")]
+fn idling_exe() -> &'static Path {
+    use std::sync::OnceLock;
+    static SCRIPT: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    &SCRIPT
+        .get_or_init(|| {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let script = dir.path().join("postbode");
+            let text = format!(
+                "#!/bin/sh\nPOSTBODE_IDLE_EXIT_SECS=1 exec '{}' \"$@\"\n",
+                env!("CARGO_BIN_EXE_postbode")
+            );
+            std::fs::write(&script, text).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (dir, script)
+        })
+        .1
+}
+
+/// A backend on a daemon this test starts, which exits a second after the backend is dropped.
 #[cfg(feature = "mcp")]
 fn backend(home: &Path) -> postbode::mcp::Backend {
     let paths = Paths::under(home);
     let config = Config::load(&paths.config_file()).unwrap();
-    postbode::mcp::Backend::new(&config, &paths, &[]).unwrap()
+    let client = postbode::daemon::Client::connect_or_start_with(
+        &paths,
+        idling_exe(),
+        postbode::daemon::wire::VERSION,
+    )
+    .unwrap();
+    postbode::mcp::Backend::with_client(&config, &paths, &[], client).unwrap()
 }
 
 #[cfg(feature = "mcp")]

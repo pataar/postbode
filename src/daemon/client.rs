@@ -27,6 +27,8 @@ use crate::sync::{Command, Event};
 
 pub const NO_REPLY: &str =
     "no reply from the daemon within 120 s; the command may still run, see `postbode log`";
+/// What every error of a lost daemon starts with.
+pub const STOPPED: &str = "the daemon stopped";
 const LOG_TAIL_LINES: usize = 20;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_millis(100);
@@ -330,7 +332,7 @@ impl Client {
     }
 
     fn stopped(&self) -> anyhow::Error {
-        anyhow!("the daemon stopped; see {}", self.log.display())
+        anyhow!("{STOPPED}; see {}", self.log.display())
     }
 }
 
