@@ -57,9 +57,13 @@ zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypt
 [dev-dependencies]
 clap-markdown = "0.1"                                # docs/src/cli.md generated from the clap definitions
 egui_kittest = { version = "0.36", features = ["snapshot", "wgpu"] }  # headless GUI tests: press keys, find widgets by label; render views to PNG snapshots
-proptest = { version = "1", default-features = false, features = ["std"] }  # tests/fuzz.rs: hostile input must never panic the parsers
+proptest = { version = "1", default-features = false, features = ["std"] }  # tests/fuzz.rs (hostile input never panics the parsers) and tests/sync_model.rs (random sync event sequences, shrunk)
 rmcp = { version = "3.5", default-features = false, features = ["client", "server", "transport-async-rw"] }  # in-process MCP client for the server tests
 tempfile = "3"                                       # temp dirs for store and paths tests
+
+[[test]]
+name = "sync_model"
+required-features = ["testing"]                      # drives sync against RecordingOps
 
 [lints.rust]
 unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way

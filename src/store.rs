@@ -600,6 +600,16 @@ impl Store {
         )?)
     }
 
+    /// The highest uid stored in `folder`, 0 when it holds none. A rule move on a UIDPLUS server can store a row above
+    /// the folder's `last_uid`.
+    pub fn highest_uid(&self, folder: &str) -> Result<u32, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder = ?1",
+            params![folder],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn unread_count(&self, folder: &str) -> Result<u32, StoreError> {
         Ok(self.conn.query_row(
             "SELECT COUNT(*) FROM messages WHERE folder = ?1 AND instr(flags, '\\Seen') = 0",
