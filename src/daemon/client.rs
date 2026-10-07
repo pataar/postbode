@@ -92,15 +92,18 @@ impl Inbox {
 pub(super) enum ConnectError {
     /// Nothing answered, or the connection closed before the daemon's hello.
     Down(io::Error),
-    /// The daemon speaks another protocol or is another version.
-    Mismatch(String),
+    /// The daemon speaks another protocol or is another version; `connection` is the one that saw its hello.
+    Mismatch {
+        reason: String,
+        connection: BufReader<UnixStream>,
+    },
 }
 
 impl fmt::Display for ConnectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConnectError::Down(e) => write!(f, "no daemon answered: {e}"),
-            ConnectError::Mismatch(reason) => f.write_str(reason),
+            ConnectError::Mismatch { reason, .. } => f.write_str(reason),
         }
     }
 }
@@ -130,9 +133,9 @@ impl Client {
     ) -> anyhow::Result<Client> {
         match connect_as(paths, version, false) {
             Ok(client) => return Ok(client),
-            Err(ConnectError::Mismatch(reason)) => {
+            Err(ConnectError::Mismatch { reason, connection }) => {
                 log::info!("{reason}; restarting it");
-                stop_daemon(paths);
+                stop_daemon(paths, connection);
             }
             Err(ConnectError::Down(_)) => {}
         }
@@ -367,24 +370,28 @@ fn handshake(
     if reader.read_line(&mut line).map_err(ConnectError::Down)? == 0 {
         return Err(ConnectError::Down(io::ErrorKind::UnexpectedEof.into()));
     }
-    stream.set_read_timeout(None).map_err(ConnectError::Down)?;
-    match serde_json::from_str(&line) {
+    let reason = match serde_json::from_str(&line) {
         Ok(DaemonMessage::Hello {
             protocol,
             version: theirs,
             ..
-        }) if protocol == PROTOCOL && (any_version || theirs == version) => Ok(reader),
+        }) if protocol == PROTOCOL && (any_version || theirs == version) => {
+            stream.set_read_timeout(None).map_err(ConnectError::Down)?;
+            return Ok(reader);
+        }
         Ok(DaemonMessage::Hello {
             protocol,
             version: theirs,
             ..
-        }) => Err(ConnectError::Mismatch(format!(
-            "daemon is version {theirs} (protocol {protocol}); this postbode is {version}"
-        ))),
-        _ => Err(ConnectError::Mismatch(format!(
-            "the daemon's hello was not understood; this postbode is {version}"
-        ))),
-    }
+        }) => {
+            format!("daemon is version {theirs} (protocol {protocol}); this postbode is {version}")
+        }
+        _ => format!("the daemon's hello was not understood; this postbode is {version}"),
+    };
+    Err(ConnectError::Mismatch {
+        reason,
+        connection: reader,
+    })
 }
 
 fn read_messages(reader: &mut BufReader<UnixStream>, inbox: &Mutex<Inbox>) {
@@ -400,15 +407,12 @@ fn read_messages(reader: &mut BufReader<UnixStream>, inbox: &Mutex<Inbox>) {
     lock(inbox).close();
 }
 
-/// Asks the daemon to shut down and waits up to 5 s for its socket to go.
-fn stop_daemon(paths: &Paths) {
-    if let Ok(mut stream) = UnixStream::connect(paths.daemon_socket()) {
-        let hello = ClientMessage::Hello {
-            protocol: PROTOCOL,
-            version: VERSION.into(),
-        };
-        let _ = wire::write_line(&mut stream, &hello);
-        let _ = wire::write_line(&mut stream, &ClientMessage::Shutdown { id: 0 });
+/// Shuts down the daemon behind `connection`, waits for it to hang up, then up to 5 s for its socket to go.
+fn stop_daemon(paths: &Paths, mut connection: BufReader<UnixStream>) {
+    let shutdown = ClientMessage::Shutdown { id: 0 };
+    if wire::write_line(&mut connection.get_ref(), &shutdown).is_ok() {
+        // The read timeout from the handshake bounds this wait.
+        let _ = io::copy(&mut connection, &mut io::sink());
     }
     let deadline = Instant::now() + START_WAIT;
     while paths.daemon_socket().exists() && Instant::now() < deadline {
@@ -425,7 +429,7 @@ fn start_daemon(paths: &Paths, exe: &Path, version: &str) -> anyhow::Result<Clie
         // We started our own binary; whatever now serves is the daemon to use, so only the protocol must match.
         match connect_as(paths, version, true) {
             Ok(client) => break Ok(client),
-            Err(ConnectError::Mismatch(reason)) => break Err(anyhow!(reason)),
+            Err(ConnectError::Mismatch { reason, .. }) => break Err(anyhow!(reason)),
             Err(ConnectError::Down(_)) => {}
         }
         if Instant::now() >= deadline {
@@ -436,7 +440,7 @@ fn start_daemon(paths: &Paths, exe: &Path, version: &str) -> anyhow::Result<Clie
                 log_tail(&log)
             ));
         }
-        if child.try_wait()?.is_some() && !paths.daemon_socket().exists() {
+        if matches!(child.try_wait(), Ok(Some(_))) && !paths.daemon_socket().exists() {
             child = spawn_daemon(paths, exe)?;
         }
     };
@@ -455,6 +459,7 @@ fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Child> {
     let mut command = std::process::Command::new(exe);
     command
         .args(["run", "--idle-exit", "60"])
+        .current_dir("/")
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log)
