@@ -110,21 +110,13 @@ fn rules_test_previews_fresh_rule() {
         .insert_message(&Message {
             folder: "INBOX".into(),
             uid: 42,
-            message_id: None,
             from_addr: Some("billing@example.com".into()),
             to_addr: Some("me@example.com".into()),
-            cc_addr: None,
-            delivered_to: None,
-            in_reply_to: None,
-            refs: None,
             thread_id: "t42".into(),
             subject: Some("Your invoice".into()),
             date: Some(1_000),
             internaldate: 1_000,
-            flags: String::new(),
-            size: None,
-            headers: Vec::new(),
-            body_text: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -154,18 +146,11 @@ fn message(uid: u32, from: &str, subject: &str) -> Message {
         message_id: Some(format!("m{uid}@example.com")),
         from_addr: Some(from.into()),
         to_addr: Some("me@example.com".into()),
-        cc_addr: None,
-        delivered_to: None,
-        in_reply_to: None,
-        refs: None,
         thread_id: format!("m{uid}@example.com"),
         subject: Some(subject.into()),
         date: Some(1_000 + uid as i64),
         internaldate: 1_000 + uid as i64,
-        flags: String::new(),
-        size: None,
-        headers: Vec::new(),
-        body_text: None,
+        ..Default::default()
     }
 }
 

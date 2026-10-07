@@ -97,18 +97,14 @@ pub(super) fn fixture_message(folder: &str, uid: u32, subject: &str, body: &str)
         message_id: Some(format!("<{uid}@example.com>")),
         from_addr: Some(format!("Sender {uid} <sender{uid}@example.com>")),
         to_addr: Some("me@example.com".into()),
-        cc_addr: None,
-        delivered_to: None,
-        in_reply_to: None,
-        refs: None,
         thread_id: format!("<{uid}@example.com>"),
         subject: Some(subject.into()),
         date: Some(at),
         internaldate: at,
-        flags: String::new(),
         size: Some(100),
         headers: format!("Subject: {subject}\r\n\r\n").into_bytes(),
         body_text: Some(body.into()),
+        ..Default::default()
     }
 }
 

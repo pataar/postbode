@@ -205,21 +205,11 @@ mod tests {
             .insert_message(&Message {
                 folder: "INBOX".into(),
                 uid: 5,
-                message_id: None,
-                from_addr: None,
-                to_addr: None,
-                cc_addr: None,
-                delivered_to: None,
-                in_reply_to: None,
-                refs: None,
                 thread_id: "t".into(),
                 subject: Some("hi".into()),
-                date: None,
                 internaldate: 100,
-                flags: String::new(),
-                size: None,
                 headers: b"Subject: hi\r\n\r\n".to_vec(),
-                body_text: None,
+                ..Default::default()
             })
             .unwrap();
         (ops, store, Trash::new(dir.path().join("trash")), dir)

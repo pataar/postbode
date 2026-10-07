@@ -46,23 +46,18 @@ fn account(host: &str, port: u16, test: &str) -> AccountConfig {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let password = PasswordSource::Command {
+        command: format!("printf {PASSWORD}"),
+    };
+    let username = format!("{test}-{nanos}@example.com");
     AccountConfig {
-        name: "live".into(),
-        host: host.into(),
         port,
-        username: format!("{test}-{nanos}@example.com"),
-        password: PasswordSource::Command {
-            command: format!("printf {PASSWORD}"),
-        },
-        address: None,
-        aliases: vec![],
-        sync_interval_secs: 120,
-        trash_retention_days: 30,
         notify: false,
         ca_file: Some(PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/dovecot/certs/ca.pem"
         ))),
+        ..AccountConfig::new("live", host, &username, password)
     }
 }
 

@@ -108,10 +108,6 @@ pub(crate) fn message(folder: &str, uid: u32, subject: &str) -> Message {
         message_id: Some(format!("<{uid}@example.com>")),
         from_addr: Some(format!("Sender {uid} <sender{uid}@example.com>")),
         to_addr: Some("me@example.com".into()),
-        cc_addr: None,
-        delivered_to: None,
-        in_reply_to: None,
-        refs: None,
         thread_id: format!("<{uid}@example.com>"),
         subject: Some(subject.into()),
         date: Some(at),
@@ -120,5 +116,6 @@ pub(crate) fn message(folder: &str, uid: u32, subject: &str) -> Message {
         size: Some(100),
         headers: format!("Subject: {subject}\r\n\r\n").into_bytes(),
         body_text: Some(format!("Body of {uid}")),
+        ..Default::default()
     }
 }

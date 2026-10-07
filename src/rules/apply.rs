@@ -264,19 +264,11 @@ mod tests {
             uid: 5,
             message_id: Some("m5@x".into()),
             from_addr: Some("a@x".into()),
-            to_addr: None,
-            cc_addr: None,
-            delivered_to: None,
-            in_reply_to: None,
-            refs: None,
             thread_id: "m5@x".into(),
             subject: Some("hi".into()),
-            date: None,
             internaldate: 100,
-            flags: String::new(),
-            size: None,
             headers: b"Subject: hi\r\n\r\n".to_vec(),
-            body_text: None,
+            ..Default::default()
         };
         store.insert_message(&msg).unwrap();
         let trash = Trash::new(dir.path().join("trash"));

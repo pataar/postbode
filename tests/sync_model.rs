@@ -900,18 +900,10 @@ impl Fixture {
         std::fs::create_dir_all(&trash_dir).unwrap();
         let rules_path = dir.path().join("rules.toml");
         std::fs::write(&rules_path, BASE_RULES).unwrap();
+        let password = PasswordSource::Keyring { keyring: true };
         let account = AccountConfig {
-            name: "model".into(),
-            host: "imap.model.example".into(),
-            port: 993,
-            username: "me@model.example".into(),
-            password: PasswordSource::Keyring { keyring: true },
             address: Some("me@model.example".into()),
-            aliases: vec![],
-            sync_interval_secs: 120,
-            trash_retention_days: 30,
-            notify: true,
-            ca_file: None,
+            ..AccountConfig::new("model", "imap.model.example", "me@model.example", password)
         };
         let identity = account.identity().unwrap();
         let fixture = Fixture {
