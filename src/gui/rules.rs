@@ -490,11 +490,11 @@ mod tests {
     }
 
     #[test]
-    fn restore_on_a_locked_account_sends_nothing() {
+    fn restore_on_a_failed_account_sends_nothing() {
         let fx = Fixture::new(&["work"]);
         backup(&fx);
         let (mut harness, wires) = fx.harness();
-        harness.state_mut().accounts[0].state = StartState::Locked { pid: None };
+        harness.state_mut().accounts[0].state = StartState::Failed("no keyring".into());
         harness.state_mut().select_view(View::Trash);
         harness.run();
         harness.get_by_label("Restore").click();

@@ -93,7 +93,6 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     use super::*;
-    use crate::engine::StartState;
     use crate::gui::app::View;
     use crate::gui::test_support::{Fixture, message};
     use crate::store::Folder;
@@ -158,19 +157,6 @@ mod tests {
         harness.get_by_label("Rules").click();
         harness.run();
         assert_eq!(harness.state().view, View::Rules);
-    }
-
-    #[test]
-    fn locked_account_says_who_syncs_it() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = fx.harness();
-        harness.state_mut().accounts[0].state = StartState::Locked { pid: Some(42) };
-        harness.run();
-        assert!(
-            harness
-                .query_by_label("synced by another Postbode process (pid 42)")
-                .is_some()
-        );
     }
 
     #[test]

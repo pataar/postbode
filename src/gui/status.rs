@@ -231,8 +231,6 @@ pub(crate) fn show_help(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use eframe::egui;
     use egui_kittest::kittest::Queryable;
 
@@ -416,30 +414,6 @@ mod tests {
         harness.run();
         assert_eq!(harness.state().list.rows.len(), 1);
         assert!(harness.query_by_label("INBOX (1)").is_some());
-    }
-
-    #[test]
-    fn new_mail_notifies_when_the_account_notifies() {
-        static NOTIFIED: AtomicUsize = AtomicUsize::new(0);
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().notifier = |_, _| {
-            NOTIFIED.fetch_add(1, Ordering::SeqCst);
-        };
-        let new_mail = || Event::NewMail {
-            account: "work".into(),
-            folder: "INBOX".into(),
-            uid: 1,
-            from: "a@example.com".into(),
-            subject: "hi".into(),
-        };
-        wires.events.send(new_mail()).unwrap();
-        harness.run();
-        assert_eq!(NOTIFIED.load(Ordering::SeqCst), 1);
-        harness.state_mut().accounts[0].notify = false;
-        wires.events.send(new_mail()).unwrap();
-        harness.run();
-        assert_eq!(NOTIFIED.load(Ordering::SeqCst), 1);
     }
 
     #[test]

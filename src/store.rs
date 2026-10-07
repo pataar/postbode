@@ -176,13 +176,6 @@ impl Store {
         Store::init(conn)
     }
 
-    /// Changes when another connection commits to this database; this connection's own writes leave it alone.
-    pub fn data_version(&self) -> Result<i64, StoreError> {
-        Ok(self
-            .conn
-            .query_row("PRAGMA data_version", [], |r| r.get(0))?)
-    }
-
     pub fn open_in_memory() -> Result<Store, StoreError> {
         Store::init(Connection::open_in_memory()?)
     }
@@ -1101,24 +1094,5 @@ mod tests {
         let latest = &s.thread_summaries("INBOX", 10).unwrap()[0].latest;
         assert_eq!((latest.from.as_str(), latest.subject.as_str()), ("", ""));
         assert!(!latest.is_seen() && !latest.is_flagged());
-    }
-
-    #[test]
-    fn data_version_moves_on_another_connections_write_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mail.db");
-        let ours = Store::open(&path).unwrap();
-        let theirs = Store::open(&path).unwrap();
-        let folder = |name: &str| Folder {
-            name: name.into(),
-            uidvalidity: 1,
-            last_uid: 0,
-            special_use: None,
-        };
-        let before = ours.data_version().unwrap();
-        ours.upsert_folder(&folder("A")).unwrap();
-        assert_eq!(ours.data_version().unwrap(), before);
-        theirs.upsert_folder(&folder("B")).unwrap();
-        assert_ne!(ours.data_version().unwrap(), before);
     }
 }
