@@ -378,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn a_config_change_asks_for_a_restart() {
+    fn a_config_change_asks_to_reopen_the_window() {
         let fx = Fixture::new(&["work"]);
         let (mut harness, _wires) = fx.harness();
         touch(&fx.paths.config_file());

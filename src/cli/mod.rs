@@ -735,10 +735,6 @@ fn account_line(account: &AccountStatus) -> String {
             Some(activity) => format!("{name}  running  {}", activity_summary(activity)),
             None => format!("{name}  running"),
         },
-        StartState::Locked { pid: Some(pid) } => {
-            format!("{name}  locked by pid {pid}")
-        }
-        StartState::Locked { pid: None } => format!("{name}  locked by another process"),
         StartState::Failed(reason) => format!("{name}  failed: {}", clean(reason, false)),
     }
 }

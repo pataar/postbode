@@ -18,9 +18,6 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                 }
             });
             match &account.state {
-                StartState::Locked { pid } => {
-                    ui.weak(locked_text(*pid));
-                }
                 StartState::Failed(e) => {
                     ui.colored_label(
                         ui.visuals().error_fg_color,
@@ -60,13 +57,6 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         }
     });
     actions
-}
-
-pub(crate) fn locked_text(pid: Option<u32>) -> String {
-    match pid {
-        Some(pid) => format!("synced by another Postbode process (pid {pid})"),
-        None => "synced by another Postbode process".into(),
-    }
 }
 
 /// INBOX first, then the special-use folders in a fixed order, then the rest alphabetically.

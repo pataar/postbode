@@ -1095,15 +1095,12 @@ impl App {
         self.client.send(&self.accounts[account].name, command)
     }
 
-    /// False, with the reason on the status line, when another process owns the account's connection.
+    /// False, with the reason on the status line, when the account's sync did not start.
     pub(crate) fn ensure_can_act(&mut self, account: usize) -> bool {
         let reason = match &self.accounts[account].state {
             StartState::Running => return true,
             StartState::Failed(reason) => {
                 format!("could not start: {reason}; actions are off here")
-            }
-            StartState::Locked { .. } => {
-                "another Postbode process syncs this account; actions are off here".into()
             }
         };
         self.note_error(Some(account), reason);

@@ -7,7 +7,6 @@ use crate::message::clean;
 use crate::sync::Activity;
 
 use super::app::{Account, App, UiAction};
-use super::folders::locked_text;
 use super::theme;
 
 pub(crate) fn activity_text(activity: &Activity) -> String {
@@ -44,7 +43,6 @@ pub(crate) fn activity_text(activity: &Activity) -> String {
 pub(crate) fn account_line(account: &Account) -> String {
     let state = match (&account.error, &account.state, &account.activity) {
         (Some(error), _, _) => error.clone(),
-        (None, StartState::Locked { pid }, _) => locked_text(*pid),
         (None, StartState::Failed(e), _) => format!("could not start: {}", clean(e, false)),
         (None, StartState::Running, Some(activity)) => activity_text(activity),
         (None, StartState::Running, None) => "starting…".into(),

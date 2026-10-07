@@ -616,10 +616,6 @@ fn refusal(
     match (state, activity) {
         (None, _) => Some(format!("no account named '{account}'")),
         (Some(StartState::Failed(reason)), _) => Some(reason),
-        (Some(StartState::Locked { pid }), _) => Some(format!(
-            "{account} is synced by another Postbode process{}",
-            pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
-        )),
         (Some(StartState::Running), Some(Activity::Offline { reason, retry_at })) => {
             Some(sync::offline_message(account, reason, *retry_at))
         }

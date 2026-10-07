@@ -199,25 +199,10 @@ fn a_refused_second_daemon_leaves_the_log_alone() {
 
 #[test]
 fn a_failed_account_refuses_commands_with_its_reason() {
-    let home = tempfile::tempdir().unwrap();
-    let paths = Paths::under(home.path());
-    write_config(&paths);
-    fs::create_dir_all(paths.state_dir.join("accounts")).unwrap();
-    fs::write(paths.account_dir("work"), "not a directory").unwrap();
-    let daemon = TestDaemon::serve(home, paths, options(recording_connector(), None));
-    let mut client = daemon.client();
-    let state = status_of(&mut client)
-        .accounts
-        .into_iter()
-        .find(|account| account.name == "work")
-        .unwrap()
-        .state;
-    let StartState::Failed(reason) = state else {
-        panic!("work started: {state:?}");
-    };
+    let state = Some(StartState::Failed("no threads left".into()));
     assert_eq!(
-        client.request(command(4, "work", Command::SyncNow)),
-        Outcome::Error(reason)
+        super::refusal("work", state, None),
+        Some("no threads left".to_string())
     );
 }
 

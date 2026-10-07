@@ -17,10 +17,6 @@ use crate::sync::{self, Command, Event, Job, RequestId, SyncError};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StartState {
     Running,
-    /// Another process holds the account's lock; `pid` is what it wrote there.
-    Locked {
-        pid: Option<u32>,
-    },
     Failed(String),
 }
 
@@ -39,7 +35,6 @@ struct AccountThread {
     wake: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
-    lock: Option<File>,
 }
 
 impl AccountThread {
@@ -51,7 +46,6 @@ impl AccountThread {
             wake: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             handle: None,
-            lock: None,
         }
     }
 
@@ -60,12 +54,10 @@ impl AccountThread {
         self.wake.store(true, Ordering::Release);
     }
 
-    /// Joins the thread, then releases the lock.
     fn join(&mut self) {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-        self.lock = None;
     }
 }
 
@@ -76,21 +68,9 @@ struct Spawner {
 }
 
 impl Spawner {
-    /// Takes the account's lock and spawns its sync thread; a held lock or a failure is recorded as its state.
+    /// Spawns the account's sync thread; a spawn failure is recorded as its state.
     fn spawn(&self, config: &AccountConfig) -> AccountThread {
         let name = &config.name;
-        let lock = match lock_account(&self.paths, name) {
-            Ok(Ok(file)) => file,
-            Ok(Err(pid)) => {
-                return AccountThread::not_started(config.clone(), StartState::Locked { pid });
-            }
-            Err(e) => {
-                return AccountThread::not_started(
-                    config.clone(),
-                    StartState::Failed(e.to_string()),
-                );
-            }
-        };
         let (commands_tx, commands) = mpsc::channel();
         let mut thread = AccountThread::not_started(config.clone(), StartState::Running);
         let spawned = std::thread::Builder::new()
@@ -117,7 +97,6 @@ impl Spawner {
             Ok(handle) => {
                 thread.commands = Some(commands_tx);
                 thread.handle = Some(handle);
-                thread.lock = Some(lock);
                 thread
             }
             Err(e) => AccountThread::not_started(config.clone(), StartState::Failed(e.to_string())),
@@ -125,23 +104,13 @@ impl Spawner {
     }
 }
 
-enum Route {
-    Threads {
-        threads: Vec<AccountThread>,
-        spawner: Spawner,
-    },
-    Detached {
-        accounts: Vec<String>,
-        sent: Sender<(String, Job)>,
-    },
-}
-
 pub struct Engine {
-    route: Route,
+    spawner: Spawner,
+    threads: Vec<AccountThread>,
 }
 
 impl Engine {
-    /// Takes each account's lock and spawns its sync thread; accounts whose lock is held are not started.
+    /// Spawns a sync thread per account.
     pub fn start(config: &Config, paths: &Paths) -> (Engine, Receiver<Event>) {
         Engine::start_with(config, paths, imap_connector())
     }
@@ -162,24 +131,19 @@ impl Engine {
             .iter()
             .map(|account| spawner.spawn(account))
             .collect();
-        let engine = Engine {
-            route: Route::Threads { threads, spawner },
-        };
-        (engine, received)
+        (Engine { spawner, threads }, received)
     }
 
     /// Stops accounts that were removed or whose settings changed, starts new and changed ones, and leaves the rest.
     pub fn apply_config(&mut self, config: &Config) {
-        let Route::Threads { threads, spawner } = &mut self.route else {
-            return;
-        };
-        let (kept, mut stale): (Vec<_>, Vec<_>) = std::mem::take(threads)
+        let (kept, mut stale): (Vec<_>, Vec<_>) = std::mem::take(&mut self.threads)
             .into_iter()
             .partition(|thread| config.accounts.contains(&thread.config));
         stale.iter().for_each(AccountThread::signal_stop);
         stale.iter_mut().for_each(AccountThread::join);
         let mut kept: Vec<Option<AccountThread>> = kept.into_iter().map(Some).collect();
-        *threads = config
+        let spawner = &self.spawner;
+        self.threads = config
             .accounts
             .iter()
             .map(|account| {
@@ -195,67 +159,38 @@ impl Engine {
     }
 
     pub fn accounts(&self) -> Vec<(String, StartState)> {
-        match &self.route {
-            Route::Threads { threads, .. } => threads
-                .iter()
-                .map(|thread| (thread.config.name.clone(), thread.state.clone()))
-                .collect(),
-            Route::Detached { accounts, .. } => accounts
-                .iter()
-                .map(|name| (name.clone(), StartState::Running))
-                .collect(),
-        }
+        self.threads
+            .iter()
+            .map(|thread| (thread.config.name.clone(), thread.state.clone()))
+            .collect()
     }
 
     /// Queues the command and wakes the account's IDLE; false when the account is not running.
     pub fn send(&self, account: &str, request: RequestId, command: Command) -> bool {
         let job = Job { request, command };
-        match &self.route {
-            Route::Threads { threads, .. } => threads
-                .iter()
-                .find(|thread| thread.config.name == account)
-                .and_then(|thread| thread.commands.as_ref().map(|commands| (thread, commands)))
-                .is_some_and(|(thread, commands)| {
-                    let sent = commands.send(job).is_ok();
-                    thread.wake.store(true, Ordering::Release);
-                    sent
-                }),
-            Route::Detached { sent, .. } => sent.send((account.to_string(), job)).is_ok(),
-        }
+        self.threads
+            .iter()
+            .find(|thread| thread.config.name == account)
+            .and_then(|thread| thread.commands.as_ref().map(|commands| (thread, commands)))
+            .is_some_and(|(thread, commands)| {
+                let sent = commands.send(job).is_ok();
+                thread.wake.store(true, Ordering::Release);
+                sent
+            })
     }
 
-    /// Stops the threads and releases the locks, like dropping the engine.
+    /// Stops the threads, like dropping the engine.
     pub fn stop(self) {
         drop(self);
-    }
-
-    /// An engine with no threads whose commands arrive on the returned receiver, for front-end tests.
-    pub fn detached(accounts: &[&str]) -> (Engine, Receiver<(String, Job)>) {
-        let (sent, received) = mpsc::channel();
-        let engine = Engine {
-            route: Route::Detached {
-                accounts: accounts.iter().map(|name| name.to_string()).collect(),
-                sent,
-            },
-        };
-        (engine, received)
     }
 }
 
 impl Drop for Engine {
-    /// Signals every thread first so they stop together, then joins them and releases their locks.
+    /// Signals every thread first so they stop together, then joins them.
     fn drop(&mut self) {
-        if let Route::Threads { threads, .. } = &mut self.route {
-            threads.iter().for_each(AccountThread::signal_stop);
-            threads.iter_mut().for_each(AccountThread::join);
-        }
+        self.threads.iter().for_each(AccountThread::signal_stop);
+        self.threads.iter_mut().for_each(AccountThread::join);
     }
-}
-
-/// The held lock file, or the pid written by the process holding it.
-pub fn lock_account(paths: &Paths, name: &str) -> io::Result<Result<File, Option<u32>>> {
-    paths.ensure_account(name)?;
-    lock_pid_file(&paths.account_dir(name).join("sync.lock"))
 }
 
 /// Takes an exclusive lock on `path` and writes our pid there, or reads the pid of the process holding it.
@@ -305,41 +240,22 @@ mod tests {
         }
     }
 
-    /// A concurrent test spawning a password command briefly inherits a lock's descriptor until its exec closes it.
-    fn lock_soon(paths: &Paths, name: &str) -> bool {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        while lock_account(paths, name).unwrap().is_err() {
-            if std::time::Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        true
-    }
-
     #[test]
-    fn an_account_locked_elsewhere_is_reported_and_not_started() {
+    fn every_configured_account_starts() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
-        let held = lock_account(&paths, "work").unwrap().unwrap();
-        let config = Config {
-            accounts: vec![offline_account("work")],
-            ..Default::default()
-        };
-        let (engine, _events) = Engine::start(&config, &paths);
-        assert_eq!(
-            engine.accounts(),
-            [(
-                "work".to_string(),
-                StartState::Locked {
-                    pid: Some(std::process::id())
-                }
-            )]
-        );
-        assert!(!engine.send("work", 1, Command::SyncNow));
-        engine.stop();
-        drop(held);
-        assert!(lock_soon(&paths, "work"));
+        let config = config_of(&["home", "work"]);
+        let (first, _first_events) = Engine::start(&config, &paths);
+        let (second, _second_events) = Engine::start(&config, &paths);
+        for engine in [&first, &second] {
+            assert_eq!(
+                engine.accounts(),
+                [
+                    ("home".to_string(), StartState::Running),
+                    ("work".to_string(), StartState::Running)
+                ]
+            );
+        }
     }
 
     #[test]
@@ -373,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    fn dropping_the_engine_stops_its_threads_before_releasing_the_locks() {
+    fn dropping_the_engine_stops_its_threads() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let config = Config {
@@ -390,7 +306,6 @@ mod tests {
             Err(mpsc::TryRecvError::Disconnected),
             "every sync thread has ended"
         );
-        assert!(lock_soon(&paths, "work"));
     }
 
     #[test]
@@ -480,33 +395,12 @@ mod tests {
         engine.apply_config(&config_of(&["a", "c"]));
         assert_eq!(connected.recv_timeout(WAIT).unwrap(), "c");
         assert_eq!(names_of(&engine), ["a", "c"]);
+        drop(engine);
         assert_eq!(
-            connected.try_recv(),
-            Err(mpsc::TryRecvError::Empty),
-            "a was never restarted"
+            connected.try_iter().collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "a was never restarted, and no thread connects after the engine drops"
         );
-    }
-
-    #[test]
-    fn a_restarted_account_takes_its_lock_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::under(dir.path());
-        let (connector, connected) = recording_connector();
-        let mut config = config_of(&["a"]);
-        let (mut engine, _events) = Engine::start_with(&config, &paths, connector);
-        connected.recv_timeout(WAIT).unwrap();
-
-        config.accounts[0].sync_interval_secs = 300;
-        engine.apply_config(&config);
-        connected.recv_timeout(WAIT).unwrap();
-        assert_eq!(engine.accounts(), [("a".to_string(), StartState::Running)]);
-        assert!(
-            lock_account(&paths, "a").unwrap().is_err(),
-            "the new thread holds the lock"
-        );
-
-        engine.apply_config(&config_of(&[]));
-        assert!(lock_soon(&paths, "a"));
     }
 
     #[test]
@@ -525,25 +419,5 @@ mod tests {
                 break;
             }
         }
-    }
-
-    #[test]
-    fn a_detached_engine_hands_commands_to_the_test() {
-        let (engine, sent) = Engine::detached(&["work"]);
-        assert_eq!(
-            engine.accounts(),
-            [("work".to_string(), StartState::Running)]
-        );
-        assert!(engine.send("work", 1, Command::SyncNow));
-        assert_eq!(
-            sent.try_recv().unwrap(),
-            (
-                "work".to_string(),
-                Job {
-                    request: 1,
-                    command: Command::SyncNow
-                }
-            )
-        );
     }
 }
