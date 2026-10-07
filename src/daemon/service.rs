@@ -108,21 +108,25 @@ impl Target {
         })
     }
 
-    fn remove_step(self, home: &Path) -> Result<Step> {
+    /// The first step stops the service; the rest run after the file is deleted.
+    fn remove_steps(self, home: &Path) -> Result<Vec<Step>> {
         Ok(match self {
-            Target::Launchd => Step::new(
+            Target::Launchd => vec![Step::new(
                 "launchctl",
                 &[
                     "bootout",
                     &format!("{}/{LAUNCHD_LABEL}", launchd_domain(home)?),
                 ],
                 true,
-            ),
-            Target::Systemd => Step::new(
-                "systemctl",
-                &["--user", "disable", "--now", SYSTEMD_UNIT],
-                true,
-            ),
+            )],
+            Target::Systemd => vec![
+                Step::new(
+                    "systemctl",
+                    &["--user", "disable", "--now", SYSTEMD_UNIT],
+                    true,
+                ),
+                Step::new("systemctl", &["--user", "daemon-reload"], true),
+            ],
         })
     }
 }
@@ -155,21 +159,22 @@ pub fn remove(dry_run: bool) -> Result<String> {
     let target = Target::current()?;
     let home = home_dir()?;
     let file = target.file(&home);
-    let step = target.remove_step(&home)?;
+    let steps = target.remove_steps(&home)?;
     if !dry_run {
-        step.run()?;
+        steps[0].run()?;
         match std::fs::remove_file(&file) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).with_context(|| format!("deleting {}", file.display())),
         }
+        steps[1..].iter().try_for_each(Step::run)?;
     }
     Ok(describe(
         dry_run,
         ("would delete", "deleted"),
         &file,
         None,
-        &[step],
+        &steps,
     ))
 }
 
@@ -225,9 +230,18 @@ fn xml_escape(text: &str) -> String {
 }
 
 pub fn plist(exe: &Path, log: &Path) -> String {
+    plist_with_path(exe, log, std::env::var("PATH").ok().as_deref())
+}
+
+fn plist_with_path(exe: &Path, log: &Path, path: Option<&str>) -> String {
     let exe = xml_escape(&exe.to_string_lossy());
     let log = xml_escape(&log.to_string_lossy());
-    let path = xml_escape(&std::env::var("PATH").unwrap_or_default());
+    let environment = path.map_or_else(String::new, |path| {
+        format!(
+            "    <key>EnvironmentVariables</key>\n    <dict>\n        <key>PATH</key>\n        <string>{}</string>\n    </dict>\n",
+            xml_escape(path)
+        )
+    });
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -248,21 +262,21 @@ pub fn plist(exe: &Path, log: &Path) -> String {
     <string>{log}</string>
     <key>StandardErrorPath</key>
     <string>{log}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>{path}</string>
-    </dict>
-</dict>
+{environment}</dict>
 </plist>
 "#
     )
 }
 
+/// systemd expands `%` specifiers and unquotes `"` and `\` in ExecStart, so a path needs all three escaped.
 pub fn unit(exe: &Path) -> String {
+    let exe = exe
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
     format!(
-        "[Unit]\nDescription=Postbode mail sync\n\n[Service]\nExecStart={} run\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
-        exe.display()
+        "[Unit]\nDescription=Postbode mail sync\n\n[Service]\nExecStart=\"{exe}\" run\nRestart=on-failure\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
     )
 }
 
@@ -299,9 +313,40 @@ mod tests {
     #[test]
     fn the_systemd_unit_restarts_on_failure() {
         let text = unit(Path::new("/home/me/.cargo/bin/postbode"));
-        assert!(text.contains("ExecStart=/home/me/.cargo/bin/postbode run"));
+        assert!(text.contains("ExecStart=\"/home/me/.cargo/bin/postbode\" run"));
         assert!(text.contains("Restart=on-failure"));
+        assert!(text.contains("RestartSec=10"));
         assert!(text.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn the_systemd_exec_start_survives_spaces_and_percent_signs() {
+        let text = unit(Path::new("/home/me/my bin/50%/postbode"));
+        assert!(
+            text.contains("ExecStart=\"/home/me/my bin/50%%/postbode\" run"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_plist_has_no_environment_without_a_path() {
+        let text = plist_with_path(Path::new("/bin/postbode"), Path::new("/x/log"), None);
+        assert!(!text.contains("EnvironmentVariables"), "{text}");
+        assert!(text.contains("</dict>\n</plist>"), "{text}");
+    }
+
+    #[test]
+    fn removing_the_systemd_unit_reloads_systemd_after_the_file_is_gone() {
+        let steps = Target::Systemd.remove_steps(Path::new("/home/me")).unwrap();
+        let shown: Vec<_> = steps.iter().map(Step::shown).collect();
+        assert_eq!(
+            shown,
+            [
+                "systemctl --user disable --now postbode",
+                "systemctl --user daemon-reload"
+            ]
+        );
+        assert!(steps.iter().all(|step| step.tolerate_failure));
     }
 
     #[test]
