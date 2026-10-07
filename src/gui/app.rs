@@ -586,7 +586,11 @@ impl App {
         match action {
             UiAction::Act(action) => self.act(action),
             UiAction::ApproveRule(name) => {
-                self.edit_rules(|path| rule_file::edit::approve(path, &name));
+                let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+                let paths = self.paths.clone();
+                self.edit_rules(|_| {
+                    rule_file::edit::approve_from_now(&paths, &accounts, &name, sync::now())
+                });
             }
             UiAction::Collapse => self.collapse(),
             UiAction::Escape => {

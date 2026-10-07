@@ -550,16 +550,13 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         }
         return Ok(());
     }
-    let command = sync::Command::Apply {
-        folder: selection.folder.clone(),
-        uids: selection.uids.clone(),
-        action: action.clone(),
-        by: postbode::actions::RULE_NAME.into(),
-    };
-    let results = LazyClient::new(paths).request(&acc.name, command, |reply| match reply {
-        Event::ActionDone { results, .. } => Ok(results),
-        other => Err(other),
-    })?;
+    let results = LazyClient::new(paths).apply(
+        &acc.name,
+        &selection.folder,
+        &selection.uids,
+        &action,
+        postbode::actions::RULE_NAME,
+    )?;
     let mut failed = 0;
     for (uid, result) in &results {
         if let Err(message) = result {
@@ -567,13 +564,9 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
             failed += 1;
         }
     }
-    let label = match action {
-        Action::Trash => Action::Delete.label(),
-        _ => action.label(),
-    };
     println!(
         "{}: {} of {} messages",
-        clean(&label, false),
+        clean(&action.command_label(), false),
         results.len() - failed,
         results.len()
     );
@@ -994,10 +987,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Approve { name } => {
-            postbode::rules::edit::approve(&paths.rules_file(), &name)?;
-            for acc in &config.accounts {
-                Store::open_account(paths, &acc.name)?.restart_rule_clock(&name, sync::now())?;
-            }
+            let accounts: Vec<String> =
+                config.accounts.iter().map(|acc| acc.name.clone()).collect();
+            postbode::rules::edit::approve_from_now(paths, &accounts, &name, sync::now())?;
             println!(
                 "enabled '{}'; it acts on mail that arrives from now on",
                 clean(&name, false)
@@ -1075,14 +1067,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         }
         TrashCommand::Restore { file, account } => {
             let acc = single_account(config, account.as_deref())?;
-            let command = sync::Command::Restore {
-                file: std::path::absolute(&file)?,
-            };
-            let folder =
-                LazyClient::new(paths).request(&acc.name, command, |reply| match reply {
-                    Event::Restored { folder, .. } => Ok(folder),
-                    other => Err(other),
-                })?;
+            let folder = LazyClient::new(paths).restore(&acc.name, std::path::absolute(&file)?)?;
             println!(
                 "restored to {}; rules leave restored mail alone. Run `postbode sync` to see it",
                 clean(&folder, false)
