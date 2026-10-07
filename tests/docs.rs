@@ -1,3 +1,6 @@
+// Test code: unwrap, expect and panic are how a test fails.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use postbode::config::Config;
 use postbode::rules::{Rule, RuleFile, compile, parse};
 

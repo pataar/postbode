@@ -325,13 +325,16 @@ mod recording {
             }
             let folder = self.selected.clone();
             let mut env = self.envelope_mut(uid)?.clone();
-            self.mail.get_mut(&folder).unwrap().retain(|e| e.uid != uid);
+            if let Some(list) = self.mail.get_mut(&folder) {
+                list.retain(|e| e.uid != uid);
+            }
             let raw = self.raw.remove(&(folder, uid));
             let next = self.next_uid.entry(to.into()).or_insert(1);
             let new_uid = *next;
             *next += 1;
             env.uid = new_uid;
-            self.mail.get_mut(to).unwrap().push(env);
+            // `to` exists: checked above.
+            self.mail.entry(to.into()).or_default().push(env);
             if let Some(raw) = raw {
                 self.raw.insert((to.into(), new_uid), raw);
             }
