@@ -950,11 +950,11 @@ fn fetch_bodies_in(
     folder: Option<&str>,
 ) -> Result<usize, ActionError> {
     if let Some(folder) = folder {
-        return actions::fetch_bodies(ops, store, folder, |_| {});
+        return actions::fetch_bodies(ops, store, folder);
     }
     let mut fetched = 0;
     for folder in store.folders()? {
-        match actions::fetch_bodies(ops, store, &folder.name, |_| {}) {
+        match actions::fetch_bodies(ops, store, &folder.name) {
             Ok(count) => fetched += count,
             Err(e) if connection_lost(&e) => return Err(e),
             Err(e) => log::warn!("{}: body fetch skipped: {e}", folder.name),
