@@ -487,6 +487,9 @@ impl App {
                 account.activity = Some(activity);
             }
             Event::NewMail { .. } => {}
+            // Request 0 is this window's own outcome; a daemon id is another client's, or the broadcast copy of ours.
+            Event::CommandFailed { request, .. } if request != 0 => {}
+            Event::ActionDone { request, .. } if request != 0 => self.refresh(index),
             Event::CommandFailed { message, .. } => {
                 // A refusal carries no uids, so every edit of the account goes and the store shows what is true.
                 let account = &mut self.accounts[index];
@@ -1746,6 +1749,34 @@ mod tests {
                 .query_by_label("work: work is offline (x); retrying at 10:00")
                 .is_some()
         );
+    }
+
+    #[test]
+    fn another_clients_outcomes_leave_this_windows_edits_alone() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 2, 3]);
+        let (mut harness, wires) = fx.harness();
+        press(&mut harness, "e");
+        let foreign = [
+            Event::ActionDone {
+                account: "work".into(),
+                folder: "INBOX".into(),
+                results: vec![(3, Ok(1))],
+                request: 7,
+            },
+            Event::CommandFailed {
+                account: "work".into(),
+                request: 8,
+                message: "no rule named 'x'".into(),
+            },
+        ];
+        for event in foreign {
+            wires.events.send(event).unwrap();
+        }
+        harness.run();
+        assert_eq!(uids(&harness), [2, 1]);
+        assert_eq!(harness.state().accounts[0].queued, 1);
+        assert!(harness.query_by_label_contains("no rule named").is_none());
     }
 
     #[test]
