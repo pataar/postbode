@@ -334,6 +334,7 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
     connect(&account)
         .append("INBOX", &mail("Your sign-in code"), &[])
         .unwrap();
+    wait_past_the_rule_clock();
     let success = |args: &[&str]| {
         let out = postbode(home.path(), args);
         assert!(
