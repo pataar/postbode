@@ -22,6 +22,8 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
 - `trash` `.eml` backups before any rule delete
 
+`tests/architecture.rs` checks the ownership rules above for `mcp`, `rules` (rules.toml writes), `gui` views and `cli`; allowed exceptions live there with a reason.
+
 ## Definition of done
 - `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` all pass
 - New logic has a test; a bug fix has a regression test
@@ -52,7 +54,7 @@ Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as
 ## Build speed
 `mise install` brings kache, cargo-nextest and actionlint. Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
 
-`assets/icon.png` (the window icon) is `assets/icon.svg` rendered at 512×512 by headless Chrome with `--default-background-color=00000000`; re-render it when the SVG changes.
+Run `packaging/icons.sh` after changing `assets/icon.svg`, and commit what it writes.
 
 ## Releasing
 Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand.

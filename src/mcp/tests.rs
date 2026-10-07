@@ -365,6 +365,18 @@ async fn a_bad_rule_returns_the_rules_check_error() {
 }
 
 #[tokio::test]
+async fn rules_propose_refuses_blank_and_overlong_folders() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "rules:propose", &[]).await;
+    for folder in [String::new(), "   ".into(), "a".repeat(100_000)] {
+        let rule = json!({ "name": "x", "folder": folder, "match": { "seen": true }, "actions": ["flag"] });
+        let text = error_text(&call(&client, "rules_propose", rule).await);
+        assert!(text.contains("folder must"), "{text}");
+    }
+    assert!(!fx.paths.rules_file().exists() || !rule_file(&fx).contains("name = \"x\""));
+}
+
+#[tokio::test]
 async fn rules_test_previews_subjects() {
     let fx = fixture(&["work"]);
     fx.add(

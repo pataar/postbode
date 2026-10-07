@@ -399,8 +399,9 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
 fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
     let Some(host) = host() else { return };
     let account = account(&host, PORT, "cli-sync-error");
-    // Dovecot refuses a 300-character mailbox name, so the move fails for this message only.
-    let target = "x".repeat(300);
+    // Rules allow 255 characters, but these are 510 bytes: Dovecot refuses the mailbox name, so the move fails for
+    // this message only.
+    let target = "é".repeat(255);
     let home = home_with(
         &account,
         &format!(
