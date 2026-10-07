@@ -581,14 +581,17 @@ fn status(shared: &Shared) -> Status {
 /// Refuses the command at once when its account cannot run it, and otherwise hands it to the engine.
 fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Command) {
     // None once `stop` took the engine.
-    let known = lock(&shared.engine)
-        .as_ref()
-        .map(|engine| engine.accounts().iter().any(|name| name == account));
+    let known = lock(&shared.engine).as_ref().map(|engine| {
+        let running = engine.accounts().iter().any(|name| name == account);
+        (running, engine.is_restarting(account))
+    });
     let request = {
         let mut hub = lock(&shared.hub);
         let refused = match known {
             None => Some("the daemon is stopping".to_string()),
-            Some(known) => refusal(account, known, hub.activity.get(account)),
+            Some((running, restarting)) => {
+                refusal(account, running, restarting, hub.activity.get(account))
+            }
         };
         if let Some(refusal) = refused {
             hub.reply(client, id, Outcome::Error(refusal));
@@ -615,8 +618,14 @@ fn submit(shared: &Shared, client: ClientId, id: u64, account: &str, command: Co
 }
 
 /// Why a command for `account` cannot run now, if it cannot.
-fn refusal(account: &str, known: bool, activity: Option<&Activity>) -> Option<String> {
-    match (known, activity) {
+fn refusal(
+    account: &str,
+    running: bool,
+    restarting: bool,
+    activity: Option<&Activity>,
+) -> Option<String> {
+    match (running, activity) {
+        (false, _) if restarting => Some(format!("{account} is restarting")),
         (false, _) => Some(format!("no account named '{account}'")),
         (true, Some(Activity::Offline { reason, retry_at })) => {
             Some(sync::offline_message(account, reason, *retry_at))

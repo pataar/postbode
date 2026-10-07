@@ -760,3 +760,52 @@ fn a_config_change_never_stalls_the_daemon_while_an_old_account_thread_finishes(
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn a_command_for_an_account_between_threads_says_it_is_restarting() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    write_config(&paths);
+    let released = Arc::new(AtomicBool::new(false));
+    let connector: crate::engine::Connector = Arc::new({
+        let released = released.clone();
+        move |_| {
+            while !released.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(
+                Box::new(crate::mail_ops::RecordingOps::new().with_folder("INBOX", None))
+                    as Box<dyn crate::mail_ops::MailOps>,
+            )
+        }
+    });
+    let config = crate::config::Config::parse(super::test_support::CONFIG).unwrap();
+    let (mut engine, _events) = crate::engine::Engine::start(&config, &paths, connector);
+    let mut changed = crate::config::Config::parse(super::test_support::CONFIG).unwrap();
+    changed.accounts[0].sync_interval_secs = 300;
+    engine.apply_config(&changed);
+    let shared = super::Shared {
+        engine: std::sync::Mutex::new(Some(engine)),
+        hub: std::sync::Mutex::new(super::Hub::new()),
+    };
+    let (out, lines) = std::sync::mpsc::channel();
+    let conn = super::ClientConn {
+        out,
+        subscribed: false,
+        writer: std::thread::spawn(|| {}),
+    };
+    shared.hub.lock().unwrap().clients.insert(1, conn);
+    super::submit(&shared, 1, 7, "work", Command::SyncNow);
+    released.store(true, Ordering::Release);
+    let line = lines.recv_timeout(WAIT).unwrap();
+    assert_eq!(
+        serde_json::from_str::<DaemonMessage>(&line).unwrap(),
+        DaemonMessage::Reply {
+            id: 7,
+            outcome: Outcome::Error("work is restarting".into()),
+        }
+    );
+}

@@ -35,5 +35,6 @@ The daemon writes `daemon.log` in its state directory: `~/Library/Application Su
 - `socket path too long`: the state directory is nested too deep for a Unix socket. Shorten `POSTBODE_HOME`.
 - `the daemon stopped; see <log>`: the daemon quit while a command was waiting. The log says why.
 - `<account> is offline (<reason>); retrying at HH:MM`: that account could not reach its server. Everything else keeps syncing.
+- `<account> is restarting`: `config.toml` changed that account and its old sync thread is still finishing. Try again in a moment.
 - After an upgrade, the next command notices the old daemon, stops it and starts the new one. A daemon started by the service is restarted by launchd or systemd.
 - `the daemon is version X, newer than this postbode (Y); restart this program`: a window or MCP server from before an upgrade is still open. It leaves the newer daemon alone; restart it.

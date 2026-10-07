@@ -171,6 +171,15 @@ impl Engine {
             .collect()
     }
 
+    /// Whether the account is configured but has no thread yet, as while its old thread ends after a config change.
+    pub fn is_restarting(&self, account: &str) -> bool {
+        self.wanted.iter().any(|wanted| wanted.name == account)
+            && !self
+                .threads
+                .iter()
+                .any(|thread| thread.config.name == account)
+    }
+
     /// Queues the command and wakes the account's IDLE; false when the account is not running.
     pub fn send(&self, account: &str, request: RequestId, command: Command) -> bool {
         let job = Job { request, command };
