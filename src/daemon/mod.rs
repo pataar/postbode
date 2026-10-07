@@ -1,7 +1,7 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Write};
+use std::fs::{self, File, TryLockError};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -138,13 +138,30 @@ fn truncate_large_log(log: &Path) -> io::Result<()> {
     }
 }
 
+/// Locks `path` and writes our pid there; held until the returned file drops.
 fn take_daemon_lock(path: &Path) -> anyhow::Result<File> {
-    match engine::lock_pid_file(path)? {
-        Ok(file) => Ok(file),
-        Err(pid) => bail!(
-            "already running (pid {})",
-            pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
-        ),
+    let mut file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => {
+            file.set_len(0)?;
+            write!(file, "{}", std::process::id())?;
+            Ok(file)
+        }
+        Err(TryLockError::WouldBlock) => {
+            let mut pid = String::new();
+            file.read_to_string(&mut pid)?;
+            let pid: Option<u32> = pid.trim().parse().ok();
+            bail!(
+                "already running (pid {})",
+                pid.map_or_else(|| "unknown".to_string(), |pid| pid.to_string())
+            )
+        }
+        Err(TryLockError::Error(e)) => Err(e.into()),
     }
 }
 
@@ -240,7 +257,7 @@ fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Res
     let mut watch = ConfigWatch::new(paths.config_file());
     let config = Config::load(&paths.config_file())?;
     migrate_stores(&config, paths);
-    let (engine, events) = Engine::start_with(&config, paths, options.connect.clone());
+    let (engine, events) = Engine::start(&config, paths, options.connect.clone());
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
         hub: Mutex::new(Hub::new()),

@@ -1,7 +1,4 @@
-//! Runs one sync thread per account and routes commands to them; the entry point for front ends.
-use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
-use std::path::Path;
+//! Runs one sync thread per account and routes commands to them; the daemon runs it.
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -110,15 +107,7 @@ pub struct Engine {
 
 impl Engine {
     /// Spawns a sync thread per account.
-    pub fn start(config: &Config, paths: &Paths) -> (Engine, Receiver<Event>) {
-        Engine::start_with(config, paths, imap_connector())
-    }
-
-    pub fn start_with(
-        config: &Config,
-        paths: &Paths,
-        connect: Connector,
-    ) -> (Engine, Receiver<Event>) {
+    pub fn start(config: &Config, paths: &Paths, connect: Connector) -> (Engine, Receiver<Event>) {
         let (events, received) = mpsc::channel();
         let spawner = Spawner {
             paths: paths.clone(),
@@ -195,11 +184,6 @@ impl Engine {
                 sent
             })
     }
-
-    /// Stops the threads, like dropping the engine.
-    pub fn stop(self) {
-        drop(self);
-    }
 }
 
 impl Drop for Engine {
@@ -210,29 +194,6 @@ impl Drop for Engine {
         for (_, handle) in self.stopping.drain(..) {
             let _ = handle.join();
         }
-    }
-}
-
-/// Takes an exclusive lock on `path` and writes our pid there, or reads the pid of the process holding it.
-pub fn lock_pid_file(path: &Path) -> io::Result<Result<File, Option<u32>>> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)?;
-    match file.try_lock() {
-        Ok(()) => {
-            file.set_len(0)?;
-            write!(file, "{}", std::process::id())?;
-            Ok(Ok(file))
-        }
-        Err(TryLockError::WouldBlock) => {
-            let mut pid = String::new();
-            file.read_to_string(&mut pid)?;
-            Ok(Err(pid.trim().parse().ok()))
-        }
-        Err(TryLockError::Error(e)) => Err(e),
     }
 }
 
@@ -263,13 +224,9 @@ mod tests {
     #[test]
     fn every_configured_account_starts() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = Paths::under(dir.path());
         let config = config_of(&["home", "work"]);
-        let (first, _first_events) = Engine::start(&config, &paths);
-        let (second, _second_events) = Engine::start(&config, &paths);
-        for engine in [&first, &second] {
-            assert_eq!(engine.accounts(), ["home", "work"]);
-        }
+        let (engine, _events) = Engine::start(&config, &Paths::under(dir.path()), imap_connector());
+        assert_eq!(engine.accounts(), ["home", "work"]);
     }
 
     #[test]
@@ -279,7 +236,7 @@ mod tests {
             accounts: vec![offline_account("work")],
             ..Default::default()
         };
-        let (engine, events) = Engine::start(&config, &Paths::under(dir.path()));
+        let (engine, events) = Engine::start(&config, &Paths::under(dir.path()), imap_connector());
         assert_eq!(engine.accounts(), ["work"]);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -295,7 +252,7 @@ mod tests {
         assert!(engine.send("work", 1, Command::SyncNow));
         assert!(!engine.send("nope", 2, Command::SyncNow));
         let started = std::time::Instant::now();
-        engine.stop();
+        drop(engine);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
@@ -307,7 +264,7 @@ mod tests {
             accounts: vec![offline_account("work")],
             ..Default::default()
         };
-        let (engine, events) = Engine::start(&config, &paths);
+        let (engine, events) = Engine::start(&config, &paths, imap_connector());
         let started = std::time::Instant::now();
         drop(engine);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
@@ -326,7 +283,7 @@ mod tests {
             accounts: vec![offline_account("work")],
             ..Default::default()
         };
-        let (engine, events) = Engine::start(&config, &Paths::under(dir.path()));
+        let (engine, events) = Engine::start(&config, &Paths::under(dir.path()), imap_connector());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut failed = None;
         while failed.is_none() {
@@ -394,8 +351,7 @@ mod tests {
             Ok(Box::new(RecordingOps::new().with_folder("INBOX", None)) as Box<dyn MailOps>)
         });
         let mut config = config_of(&["a"]);
-        let (mut engine, _events) =
-            Engine::start_with(&config, &Paths::under(dir.path()), connector);
+        let (mut engine, _events) = Engine::start(&config, &Paths::under(dir.path()), connector);
         assert_eq!(log.recv_timeout(WAIT).unwrap(), "connecting 120");
         config.accounts[0].sync_interval_secs = 300;
         let started = std::time::Instant::now();
@@ -421,8 +377,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (connector, connected) = recording_connector();
         let mut config = config_of(&["a", "b"]);
-        let (mut engine, _events) =
-            Engine::start_with(&config, &Paths::under(dir.path()), connector);
+        let (mut engine, _events) = Engine::start(&config, &Paths::under(dir.path()), connector);
         let mut first_connections = [
             connected.recv_timeout(WAIT).unwrap(),
             connected.recv_timeout(WAIT).unwrap(),
@@ -452,11 +407,11 @@ mod tests {
     }
 
     #[test]
-    fn a_command_reaches_the_account_thread_through_start_with() {
+    fn a_command_reaches_the_account_thread() {
         let dir = tempfile::tempdir().unwrap();
         let (connector, _connected) = recording_connector();
         let (engine, events) =
-            Engine::start_with(&config_of(&["a"]), &Paths::under(dir.path()), connector);
+            Engine::start(&config_of(&["a"]), &Paths::under(dir.path()), connector);
         assert!(engine.send("a", 11, Command::SyncNow));
         let deadline = std::time::Instant::now() + WAIT;
         loop {

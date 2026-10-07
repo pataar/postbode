@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use postbode::config::{AccountConfig, Config, PasswordSource};
 use postbode::credentials::Secret;
-use postbode::engine::Engine;
+use postbode::engine::{Engine, imap_connector};
 use postbode::mail_ops::imap::ImapOps;
 use postbode::mail_ops::{Envelope, IdleOutcome, MailOps};
 use postbode::paths::Paths;
@@ -510,7 +510,7 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
         accounts: vec![account.clone()],
         ..Default::default()
     };
-    let (engine, events) = Engine::start(&config, &Paths::under(home.path()));
+    let (engine, events) = Engine::start(&config, &Paths::under(home.path()), imap_connector());
     let wait = |wanted: &dyn Fn(&Event) -> bool| {
         loop {
             let event = events
@@ -548,7 +548,7 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
         sent.elapsed()
     );
     assert!(matches!(done, Event::ActionDone { results, .. } if results == [(1, Ok(1))]));
-    engine.stop();
+    drop(engine);
 }
 
 /// The binary behind a script that sets the idle exit to 1 s; tests cannot set environment variables without unsafe.
