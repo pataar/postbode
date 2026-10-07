@@ -147,6 +147,11 @@ impl Config {
                     "account '{name}': set `address` because the username is not an email address"
                 )));
             }
+            if account.password == (PasswordSource::Keyring { keyring: false }) {
+                return Err(ConfigError::Invalid(format!(
+                    "account '{name}': `password = {{ keyring = false }}` has no meaning; use `{{ keyring = true }}` or a `command`"
+                )));
+            }
             if let Some(ca_file) = &account.ca_file
                 && !ca_file.is_absolute()
             {
@@ -284,6 +289,15 @@ notify = false
         assert!(matches!(Config::parse(&dup), Err(ConfigError::Invalid(_))));
         let bad = SAMPLE.replace("name = \"home\"", "name = \"ho/me\"");
         assert!(matches!(Config::parse(&bad), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_keyring_false() {
+        let bad = SAMPLE.replace("{ keyring = true }", "{ keyring = false }");
+        assert!(
+            matches!(Config::parse(&bad), Err(ConfigError::Invalid(e)) if e.contains("keyring = false")),
+            "keyring = false must not quietly use the keyring"
+        );
     }
 
     #[test]
