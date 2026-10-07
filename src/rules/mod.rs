@@ -169,8 +169,11 @@ fn default_true() -> bool {
 /// JSON Schema of rules.toml; a proposal for `rules propose` is one entry of `rules`.
 pub fn schema() -> String {
     let schema = schemars::schema_for!(RuleFile);
-    // `{:#}` pretty-prints a JSON value like `to_string_pretty`, without a serializer that could fail.
-    format!("{:#}\n", schema.as_value())
+    // Schema's own Serialize puts `$schema` and `title` first, unlike `{:#}` on its value. Serializing an
+    // in-memory schema to a String can't fail: no I/O, and every map key is a string.
+    #[allow(clippy::expect_used)]
+    let text = serde_json::to_string_pretty(&schema).expect("a schema serializes");
+    text + "\n"
 }
 
 pub fn parse(text: &str) -> Result<RuleFile, RulesError> {
