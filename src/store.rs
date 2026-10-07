@@ -258,6 +258,15 @@ impl Store {
         self.set_folder_uid(folder, "rules_uid", uid)
     }
 
+    /// The highest uid new-mail notifications have covered in `folder`; 0 when unknown.
+    pub fn notified_uid(&self, folder: &str) -> Result<u32, StoreError> {
+        self.folder_uid(folder, "notified_uid")
+    }
+
+    pub fn set_notified_uid(&self, folder: &str, uid: u32) -> Result<(), StoreError> {
+        self.set_folder_uid(folder, "notified_uid", uid)
+    }
+
     /// A uid column of the `folders` row; 0 when the folder is untracked.
     fn folder_uid(&self, folder: &str, column: &'static str) -> Result<u32, StoreError> {
         Ok(self
@@ -989,6 +998,22 @@ mod tests {
         assert_eq!((inbox.uidvalidity, inbox.last_uid), (7, 42));
         assert_eq!(s.initial_uid_next("INBOX").unwrap(), 0);
         assert_eq!(s.rules_uid("INBOX").unwrap(), 42);
+    }
+
+    #[test]
+    fn migration_003_counts_mail_the_rules_saw_as_notified() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Store::migrations().to_version(&mut conn, 2).unwrap();
+        conn.execute(
+            "INSERT INTO folders (name, uidvalidity, last_uid, rules_uid) VALUES ('INBOX', 7, 42, 40)",
+            [],
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.rules_uid("INBOX").unwrap(), 40);
+        assert_eq!(s.notified_uid("INBOX").unwrap(), 40);
+        s.set_notified_uid("INBOX", 42).unwrap();
+        assert_eq!(s.notified_uid("INBOX").unwrap(), 42);
     }
 
     #[test]

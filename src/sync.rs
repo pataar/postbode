@@ -374,6 +374,7 @@ pub fn sync_folder_with(
         if starts_tracking {
             store.set_initial_uid_next(&folder.name, uids.last().map_or(0, |uid| uid + 1))?;
             store.set_rules_uid(&folder.name, 0)?;
+            store.set_notified_uid(&folder.name, 0)?;
         }
         let present: Vec<u32> = updates.iter().map(|u| u.uid).collect();
         for u in &updates {
@@ -620,7 +621,7 @@ pub fn run_rules_with(
         report(Activity::RunningRules {
             folder: folder.clone(),
         });
-        let rules_uid = store.rules_uid(&folder)?;
+        let (rules_uid, notified_uid) = (store.rules_uid(&folder)?, store.notified_uid(&folder)?);
         let unseen = unseen_by_rules(store, &stored)?;
         let fresh = |uid: u32| mode == Mode::Normal && unseen(uid);
         let messages = store.messages_in_folder(&folder)?;
@@ -663,14 +664,19 @@ pub fn run_rules_with(
                     }
                 }
             }
-            if is_fresh && plan.notify && folder == "INBOX" {
+            if is_fresh && msg.uid > notified_uid && plan.notify && folder == "INBOX" {
                 run.events.push(new_mail(account, &msg));
             }
         }
         if mode == Mode::Normal
-            && let Some(highest_uid) = highest_uid.filter(|&uid| uid > rules_uid)
+            && let Some(highest_uid) = highest_uid
         {
-            store.set_rules_uid(&folder, highest_uid)?;
+            if highest_uid > rules_uid {
+                store.set_rules_uid(&folder, highest_uid)?;
+            }
+            if highest_uid > notified_uid {
+                store.set_notified_uid(&folder, highest_uid)?;
+            }
         }
     }
     if mode == Mode::Normal {
@@ -1041,8 +1047,6 @@ struct LoadedRules {
     last_good: Option<Vec<CompiledRule>>,
     /// The error of the last load, so each bad edit is reported once rather than every pass.
     error: Option<String>,
-    /// INBOX uids notified while no rules ran, so the rules catching up do not notify them again.
-    notified: Vec<u32>,
 }
 
 impl LoadedRules {
@@ -1077,7 +1081,7 @@ impl LoadedRules {
 
     /// Runs the last good rules. With none it only notifies, leaving the mail unseen so the rules catch up on it.
     fn run(
-        &mut self,
+        &self,
         ops: &mut dyn MailOps,
         store: &Store,
         trash: &Trash,
@@ -1086,13 +1090,12 @@ impl LoadedRules {
         report: &mut dyn FnMut(Activity),
     ) -> Result<RulesRun, SyncError> {
         let Some(rules) = &self.last_good else {
-            let events = self.notify_unruled(store, account, identity)?;
             return Ok(RulesRun {
-                events,
+                events: notify_unruled(store, account, identity)?,
                 ..RulesRun::default()
             });
         };
-        let mut run = run_rules_with(
+        run_rules_with(
             ops,
             store,
             trash,
@@ -1102,44 +1105,43 @@ impl LoadedRules {
             Mode::Normal,
             now(),
             report,
-        )?;
-        let notified = std::mem::take(&mut self.notified);
-        run.events.retain(|event| {
-            !matches!(event, Event::NewMail { folder, uid, .. } if folder == "INBOX" && notified.contains(uid))
-        });
-        Ok(run)
+        )
     }
+}
 
-    /// NewMail for each fresh INBOX message not notified yet, as the account's notify setting says.
-    fn notify_unruled(
-        &mut self,
-        store: &Store,
-        account: &AccountConfig,
-        identity: &Identity,
-    ) -> Result<Vec<Event>, SyncError> {
-        let Some(inbox) = store.folder("INBOX")? else {
-            return Ok(Vec::new());
-        };
-        let fresh = unseen_by_rules(store, &inbox)?;
-        let ctx = Context {
-            account: &account.name,
-            identity,
-            now: now(),
-            mode: Mode::Normal,
-            notify_default: account.notify,
-        };
-        let mut events = Vec::new();
-        for msg in store.messages_in_folder("INBOX")? {
-            if fresh(msg.uid)
-                && !self.notified.contains(&msg.uid)
-                && evaluate(&[], &msg, &ctx).notify
-            {
-                self.notified.push(msg.uid);
-                events.push(new_mail(account, &msg));
-            }
-        }
-        Ok(events)
+/// NewMail for fresh INBOX mail no notification covered yet, as the account's notify setting says. Moves only the
+/// notified mark, so the rules still catch up on that mail.
+fn notify_unruled(
+    store: &Store,
+    account: &AccountConfig,
+    identity: &Identity,
+) -> Result<Vec<Event>, SyncError> {
+    let Some(inbox) = store.folder("INBOX")? else {
+        return Ok(Vec::new());
+    };
+    let unseen = unseen_by_rules(store, &inbox)?;
+    let notified_uid = store.notified_uid("INBOX")?;
+    let ctx = Context {
+        account: &account.name,
+        identity,
+        now: now(),
+        mode: Mode::Normal,
+        notify_default: account.notify,
+    };
+    let messages = store.messages_in_folder("INBOX")?;
+    let events = messages
+        .iter()
+        .filter(|msg| unseen(msg.uid) && msg.uid > notified_uid && evaluate(&[], msg, &ctx).notify)
+        .map(|msg| new_mail(account, msg))
+        .collect();
+    if let Some(highest_uid) = messages
+        .last()
+        .map(|msg| msg.uid.min(inbox.last_uid))
+        .filter(|&uid| uid > notified_uid)
+    {
+        store.set_notified_uid("INBOX", highest_uid)?;
     }
+    Ok(events)
 }
 
 /// What one account's passes share: its store, trash and identity.
@@ -2213,7 +2215,8 @@ mod tests {
         "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n";
 
     #[test]
-    fn mail_that_arrives_while_the_rules_file_is_invalid_gets_the_rules_once_it_is_fixed() {
+    fn mail_that_arrives_while_the_rules_file_is_invalid_notifies_once_across_restarts_and_gets_the_rules_once_fixed()
+     {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let acct = account();
@@ -2232,11 +2235,18 @@ mod tests {
         );
         let commands = std::sync::mpsc::channel::<Job>().1;
         let stop = AtomicBool::new(false);
-        let mut carried = Carried::default();
         let (tx, rx) = std::sync::mpsc::channel();
+        // Each pass starts from nothing carried over, like the first pass of a restarted daemon or account thread.
         for _ in 0..2 {
             state
-                .pass(&mut ops, true, &mut carried, &tx, &commands, &stop)
+                .pass(
+                    &mut ops,
+                    true,
+                    &mut Carried::default(),
+                    &tx,
+                    &commands,
+                    &stop,
+                )
                 .unwrap();
         }
         write_rules(
@@ -2244,7 +2254,14 @@ mod tests {
             "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
         );
         state
-            .pass(&mut ops, true, &mut carried, &tx, &commands, &stop)
+            .pass(
+                &mut ops,
+                true,
+                &mut Carried::default(),
+                &tx,
+                &commands,
+                &stop,
+            )
             .unwrap();
         let message = state.store.message("INBOX", 3).unwrap().unwrap();
         assert!(message.flags.contains("\\Flagged"), "{message:?}");
