@@ -48,6 +48,9 @@ POSTBODE_TEST_IMAP_HOST=localhost cargo test --test imap_live
 
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
 
+## Model-based sync tests
+`tests/sync_model.rs` runs random server events and sync passes against `RecordingOps`; search deeper with `PROPTEST_CASES=2000 cargo test --features testing --test sync_model`.
+
 ## Build speed
 `mise install` brings kache, cargo-nextest and actionlint. Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
 

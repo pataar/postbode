@@ -354,8 +354,15 @@ pub fn sync_folder_with(
         _ => (0, true),
     };
 
-    let updates = if last_uid > 0 {
-        ops.fetch_flags(last_uid)?
+    // A rule move on a UIDPLUS server stores its row above last_uid; check up to there too, or a row whose message is
+    // gone before the folder's next new mail would stay.
+    let flags_upto = if starts_tracking {
+        0
+    } else {
+        last_uid.max(store.highest_uid(&folder.name)?)
+    };
+    let updates = if flags_upto > 0 {
+        ops.fetch_flags(flags_upto)?
     } else {
         Vec::new()
     };
@@ -385,8 +392,8 @@ pub fn sync_folder_with(
         for u in &updates {
             store.update_flags(&folder.name, u.uid, &u.flags.join(" "))?;
         }
-        if last_uid > 0 {
-            store.remove_missing(&folder.name, last_uid, &present)?;
+        if flags_upto > 0 {
+            store.remove_missing(&folder.name, flags_upto, &present)?;
         }
         Ok::<_, SyncError>(())
     })?;
@@ -1689,6 +1696,34 @@ mod tests {
         .unwrap();
         assert_eq!(run.events.len(), 1, "{:?}", run.events);
         assert!(matches!(&run.events[0], Event::NewMail { uid: 1, .. }));
+    }
+
+    /// Found by tests/sync_model.rs: such a row stayed until the next new mail reached the folder.
+    #[test]
+    fn row_a_uidplus_move_stored_above_last_uid_goes_when_its_message_does() {
+        let mut ops = RecordingOps::new()
+            .with_folder("INBOX", None)
+            .with_folder("Lists", None);
+        ops.add_mail(
+            "INBOX",
+            1,
+            10 * H,
+            &headers("news@x", "deals", "n1@x"),
+            None,
+        );
+        let store = Store::open_in_memory().unwrap();
+        sync_all(&mut ops, &store).unwrap();
+        // A rule moved it on a UIDPLUS server, so its row followed to Lists/1, above Lists' last_uid of 0.
+        ops.select("INBOX").unwrap();
+        ops.move_message(1, "Lists").unwrap();
+        store
+            .move_message_row("INBOX", 1, "Lists", Some(1))
+            .unwrap();
+        // Another client deletes it before any other mail reaches Lists.
+        ops.mail.get_mut("Lists").unwrap().clear();
+        sync_all(&mut ops, &store).unwrap();
+        assert!(store.message("Lists", 1).unwrap().is_none());
+        assert_eq!(store.message_count("Lists").unwrap(), 0);
     }
 
     #[test]
