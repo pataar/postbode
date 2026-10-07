@@ -177,7 +177,7 @@ pub enum Command {
     Apply {
         folder: String,
         uids: Vec<u32>,
-        #[serde(with = "wire_action")]
+        #[serde(with = "ActionDef")]
         action: Action,
         by: String,
     },
@@ -197,57 +197,20 @@ pub enum Command {
     SyncNow,
 }
 
-/// `Action` skips its user-only variants in rules.toml, so the wire carries them through this mirror.
-mod wire_action {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    use crate::rules::Action;
-
-    #[derive(Serialize, Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    enum Wire {
-        Archive,
-        Delete,
-        Flag,
-        MarkRead,
-        MarkUnread,
-        Move(String),
-        Notify,
-        Silent,
-        Trash,
-        Unflag,
-    }
-
-    pub fn serialize<S: Serializer>(action: &Action, serializer: S) -> Result<S::Ok, S::Error> {
-        match action.clone() {
-            Action::Archive => Wire::Archive,
-            Action::Delete => Wire::Delete,
-            Action::Flag => Wire::Flag,
-            Action::MarkRead => Wire::MarkRead,
-            Action::MarkUnread => Wire::MarkUnread,
-            Action::Move(folder) => Wire::Move(folder),
-            Action::Notify => Wire::Notify,
-            Action::Silent => Wire::Silent,
-            Action::Trash => Wire::Trash,
-            Action::Unflag => Wire::Unflag,
-        }
-        .serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Action, D::Error> {
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::Archive => Action::Archive,
-            Wire::Delete => Action::Delete,
-            Wire::Flag => Action::Flag,
-            Wire::MarkRead => Action::MarkRead,
-            Wire::MarkUnread => Action::MarkUnread,
-            Wire::Move(folder) => Action::Move(folder),
-            Wire::Notify => Action::Notify,
-            Wire::Silent => Action::Silent,
-            Wire::Trash => Action::Trash,
-            Wire::Unflag => Action::Unflag,
-        })
-    }
+/// `Action` skips its user-only variants in rules.toml, so the wire derives them separately.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "Action", rename_all = "snake_case")]
+enum ActionDef {
+    Archive,
+    Delete,
+    Flag,
+    MarkRead,
+    MarkUnread,
+    Move(String),
+    Notify,
+    Silent,
+    Trash,
+    Unflag,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
