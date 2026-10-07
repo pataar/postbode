@@ -4,6 +4,8 @@ mod body;
 mod folders;
 mod list;
 mod rules;
+#[cfg(test)]
+mod snapshots;
 mod status;
 #[cfg(test)]
 mod test_support;

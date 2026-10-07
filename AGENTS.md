@@ -32,6 +32,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - Every new dependency has a one-line reason in `Cargo.toml`
 - Do not broaden a task into adjacent features
 - After changing CLI flags or rule types, run `POSTBODE_BLESS=1 cargo test` to regenerate `docs/src/cli.md` and `docs/src/rules.schema.json`, and commit them
+- After GUI work, run `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots` on Linux with lavapipe (`mesa-vulkan-drivers`) and look at the changed PNGs in `tests/snapshots/`
 - Prose lives in `docs/src/`; `README.md` contains `docs/src/index.md` verbatim
 
 ## Privacy
