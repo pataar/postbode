@@ -1,13 +1,13 @@
 //! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::actions;
 use crate::config::{AccountConfig, Config};
 use crate::daemon::Client;
-use crate::daemon::client::STOPPED;
+use crate::daemon::client::Stopped;
 use crate::message;
 use crate::output;
 use crate::paths::Paths;
@@ -83,18 +83,24 @@ impl Backend {
     fn forget_if_stopped<T>(&self, client: &Arc<Client>, result: &Result<T>) {
         let stopped = result
             .as_ref()
-            .is_err_and(|e| e.to_string().starts_with(STOPPED));
+            .is_err_and(|e| e.chain().any(|cause| cause.is::<Stopped>()));
         let mut slot = self.client.lock().unwrap_or_else(|e| e.into_inner());
         if stopped && slot.as_ref().is_some_and(|held| Arc::ptr_eq(held, client)) {
             *slot = None;
         }
     }
 
-    fn request(&self, account: &str, command: Command) -> Result<Event> {
+    /// The daemon's reply to `command`, as far as `pick` takes it; any other reply is an error.
+    fn request<T>(
+        &self,
+        account: &str,
+        command: Command,
+        pick: impl FnOnce(Event) -> Result<T, Event>,
+    ) -> Result<T> {
         let client = self.client()?;
         let result = client.request(account, command);
         self.forget_if_stopped(&client, &result);
-        result
+        pick(result?).map_err(|reply| anyhow!("unexpected reply from the daemon: {reply:?}"))
     }
 
     /// The message's raw bytes; only a body not stored yet needs the daemon.
@@ -295,10 +301,10 @@ impl Backend {
             action: action.clone(),
             by: by.into(),
         };
-        let reply = self.request(&acc.name, command)?;
-        let Event::ActionDone { results, .. } = reply else {
-            bail!("unexpected reply from the daemon: {reply:?}");
-        };
+        let results = self.request(&acc.name, command, |reply| match reply {
+            Event::ActionDone { results, .. } => Ok(results),
+            other => Err(other),
+        })?;
         let failed: Vec<Value> = results
             .iter()
             .filter_map(|(uid, result)| {
@@ -335,10 +341,14 @@ impl Backend {
                 json!({ "account": acc.name, "file": file, "dry_run": true, "would": format!("restore to {folder}") }),
             );
         }
-        let reply = self.request(&acc.name, Command::Restore { file: path })?;
-        let Event::Restored { folder, .. } = reply else {
-            bail!("unexpected reply from the daemon: {reply:?}");
-        };
+        let folder = self.request(
+            &acc.name,
+            Command::Restore { file: path },
+            |reply| match reply {
+                Event::Restored { folder, .. } => Ok(folder),
+                other => Err(other),
+            },
+        )?;
         Ok(json!({ "account": acc.name, "restored_to": folder }))
     }
 
@@ -346,13 +356,16 @@ impl Backend {
     pub fn sync(&self, account: Option<&str>) -> Result<Vec<Value>> {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
-            rows.push(match self.request(&acc.name, Command::SyncNow) {
-                Ok(Event::Synced {
+            let synced = self.request(&acc.name, Command::SyncNow, |reply| match reply {
+                Event::Synced {
                     new_messages,
                     actions,
                     ..
-                }) => json!({ "account": acc.name, "new_messages": new_messages, "actions": actions, "errors": [] }),
-                Ok(other) => json!({ "account": acc.name, "error": format!("unexpected reply from the daemon: {other:?}") }),
+                } => Ok((new_messages, actions)),
+                other => Err(other),
+            });
+            rows.push(match synced {
+                Ok((new_messages, actions)) => json!({ "account": acc.name, "new_messages": new_messages, "actions": actions, "errors": [] }),
                 Err(e) => json!({ "account": acc.name, "error": format!("{e:#}") }),
             });
         }

@@ -27,12 +27,22 @@ use crate::sync::{Command, Event};
 
 pub const NO_REPLY: &str =
     "no reply from the daemon within 120 s; the command may still run, see `postbode log`";
-/// What every error of a lost daemon starts with.
-pub const STOPPED: &str = "the daemon stopped";
 const LOG_TAIL_LINES: usize = 20;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_millis(100);
 const START_WAIT: Duration = Duration::from_secs(5);
+
+/// The error of a request that lost its daemon; a caller holding the client should reconnect.
+#[derive(Debug)]
+pub struct Stopped(String);
+
+impl fmt::Display for Stopped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Stopped {}
 
 pub struct Client {
     transport: Transport,
@@ -332,7 +342,10 @@ impl Client {
     }
 
     fn stopped(&self) -> anyhow::Error {
-        anyhow!("{STOPPED}; see {}", self.log.display())
+        anyhow::Error::new(Stopped(format!(
+            "the daemon stopped; see {}",
+            self.log.display()
+        )))
     }
 }
 

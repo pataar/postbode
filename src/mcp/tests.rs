@@ -897,6 +897,24 @@ async fn trash_restore_goes_through_the_daemon() {
     );
 }
 
+#[tokio::test]
+async fn a_narrowed_backend_syncs_its_account_only_and_refuses_the_other() {
+    let fx = fixture_with_daemon(&["home", "work"], recording_connector());
+    let client = connect(&fx, "read, mail:modify", &["work"]).await;
+    let report = rows(&call(&client, "sync", json!({})).await);
+    assert_eq!(
+        report,
+        vec![json!({ "account": "work", "new_messages": 0, "actions": 0, "errors": [] })]
+    );
+    let refused = call(
+        &client,
+        "archive",
+        json!({ "account": "home", "uids": [1] }),
+    )
+    .await;
+    assert!(error_text(&refused).contains("no account named 'home'"));
+}
+
 #[test]
 fn a_backend_reconnects_after_the_daemon_stopped() {
     let mut first = TestDaemon::start();
