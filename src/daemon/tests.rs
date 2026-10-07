@@ -618,3 +618,33 @@ mod client {
         }
     }
 }
+
+#[test]
+fn new_mail_notifies_even_on_an_account_with_notify_off() {
+    let shared = super::Shared {
+        engine: std::sync::Mutex::new(None),
+        hub: std::sync::Mutex::new(super::Hub::new()),
+    };
+    let (events, received) = std::sync::mpsc::channel();
+    events
+        .send(Event::NewMail {
+            account: "work".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            from: "bob@example.com".into(),
+            subject: "hi".into(),
+        })
+        .unwrap();
+    drop(events);
+    let notified = std::sync::Mutex::new(Vec::new());
+    super::route_events(&shared, received, false, |from, subject| {
+        notified
+            .lock()
+            .unwrap()
+            .push((from.to_string(), subject.to_string()))
+    });
+    assert_eq!(
+        notified.into_inner().unwrap(),
+        [("bob@example.com".to_string(), "hi".to_string())]
+    );
+}

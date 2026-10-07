@@ -1,5 +1,5 @@
 //! The one process that owns the engine, serving it to the GUI, CLI and MCP over a private Unix socket.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -159,8 +159,6 @@ struct Hub {
     clients: HashMap<ClientId, ClientConn>,
     last_client_left: Instant,
     next_request: RequestId,
-    /// Accounts whose new mail gets a desktop notification.
-    notify: HashSet<String>,
     /// The daemon's request id to the client that sent it and that client's own id.
     pending: HashMap<RequestId, (ClientId, u64)>,
     shutdown: bool,
@@ -168,6 +166,19 @@ struct Hub {
 }
 
 impl Hub {
+    fn new() -> Hub {
+        let started = Instant::now();
+        Hub {
+            activity: HashMap::new(),
+            clients: HashMap::new(),
+            last_client_left: started,
+            next_request: 0,
+            pending: HashMap::new(),
+            shutdown: false,
+            started,
+        }
+    }
+
     fn send(&self, client: ClientId, message: &DaemonMessage) {
         let Some(conn) = self.clients.get(&client) else {
             return;
@@ -206,39 +217,25 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn notifying(config: &Config) -> HashSet<String> {
-    config
-        .accounts
-        .iter()
-        .filter(|account| account.notify)
-        .map(|account| account.name.clone())
-        .collect()
-}
-
 fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Result<()> {
     let mut watch = ConfigWatch::new(paths.config_file());
     let config = Config::load(&paths.config_file())?;
     migrate_stores(&config, paths);
     let (engine, events) = Engine::start_with(&config, paths, options.connect.clone());
-    let started = Instant::now();
     let shared = Arc::new(Shared {
         engine: Mutex::new(Some(engine)),
-        hub: Mutex::new(Hub {
-            activity: HashMap::new(),
-            clients: HashMap::new(),
-            last_client_left: started,
-            next_request: 0,
-            notify: notifying(&config),
-            pending: HashMap::new(),
-            shutdown: false,
-            started,
-        }),
+        hub: Mutex::new(Hub::new()),
     });
+    let notify: fn(&str, &str) = if options.notify {
+        crate::notify::new_mail
+    } else {
+        |_, _| {}
+    };
     let router = std::thread::Builder::new()
         .name("daemon-events".into())
         .spawn({
             let shared = shared.clone();
-            move || route_events(&shared, events, options.report, options.notify)
+            move || route_events(&shared, events, options.report, notify)
         })?;
     let connections = accept_until_done(&shared, &listener, &mut watch, options.idle_exit);
     stop(&shared, router, connections);
@@ -338,7 +335,6 @@ fn apply_config(shared: &Shared, config: &Config) {
     if let Some(engine) = lock(&shared.engine).as_mut() {
         engine.apply_config(config);
     }
-    lock(&shared.hub).notify = notifying(config);
 }
 
 /// Stops the engine, delivers the replies its threads still send, then closes every connection.
@@ -366,13 +362,19 @@ fn stop(shared: &Shared, router: JoinHandle<()>, connections: Vec<Connection>) {
     }
 }
 
-fn route_events(shared: &Shared, events: Receiver<Event>, report_events: bool, notify: bool) {
+fn route_events(
+    shared: &Shared,
+    events: Receiver<Event>,
+    report_events: bool,
+    notify: impl Fn(&str, &str),
+) {
     for event in events {
         if report_events {
             report(&event);
         }
-        if notify {
-            notify_new_mail(shared, &event);
+        // The sync sends NewMail only for mail that should notify, rules included.
+        if let Event::NewMail { from, subject, .. } = &event {
+            notify(from, subject);
         }
         let mut hub = lock(&shared.hub);
         if let Event::Activity { account, activity } = &event {
@@ -384,21 +386,6 @@ fn route_events(shared: &Shared, events: Receiver<Event>, report_events: bool, n
             }
         }
         hub.broadcast(&event);
-    }
-}
-
-fn notify_new_mail(shared: &Shared, event: &Event) {
-    let Event::NewMail {
-        account,
-        from,
-        subject,
-        ..
-    } = event
-    else {
-        return;
-    };
-    if lock(&shared.hub).notify.contains(account) {
-        crate::notify::new_mail(from, subject);
     }
 }
 
