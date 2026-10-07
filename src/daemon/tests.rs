@@ -297,6 +297,30 @@ fn a_config_change_starts_an_added_account() {
 }
 
 #[test]
+fn a_rules_change_syncs_every_account() {
+    let daemon = TestDaemon::start();
+    let mut watcher = subscribed(daemon.client());
+    let rules = daemon.paths.rules_file();
+    fs::write(&rules, "").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&rules)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(10))
+        .unwrap();
+
+    let mut synced = std::collections::BTreeSet::new();
+    while synced.len() < 2 {
+        if let Event::Synced { account, .. } = watcher.event_where(
+            |event| matches!(event, Event::Synced { requests, .. } if requests.contains(&0)),
+        ) {
+            synced.insert(account);
+        }
+    }
+    assert_eq!(synced, ["play".to_string(), "work".to_string()].into());
+}
+
+#[test]
 fn a_socket_path_too_long_is_refused_naming_it() {
     let home = tempfile::tempdir().unwrap();
     let long: PathBuf = home.path().join("x".repeat(120));
