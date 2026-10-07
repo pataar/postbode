@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::engine::{self, Connector, Engine, StartState};
 use crate::message::clean;
 use crate::paths::{self, Paths};
+use crate::store::Store;
 use crate::sync::{self, Activity, Command, Event, RequestId};
 use wire::{AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status};
 
@@ -216,6 +217,7 @@ fn notifying(config: &Config) -> HashSet<String> {
 fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Result<()> {
     let mut watch = ConfigWatch::new(paths.config_file());
     let config = Config::load(&paths.config_file())?;
+    migrate_stores(&config, paths);
     let (engine, events) = Engine::start_with(&config, paths, options.connect.clone());
     let started = Instant::now();
     let shared = Arc::new(Shared {
@@ -240,6 +242,16 @@ fn serve(paths: &Paths, options: Options, listener: UnixListener) -> anyhow::Res
     let connections = accept_until_done(&shared, &listener, &mut watch, options.idle_exit);
     stop(&shared, router, connections);
     Ok(())
+}
+
+/// Clients open the stores as soon as the daemon answers, so every migration has to be done before it does; a store
+/// that fails to open fails again in its account's thread, which reports it.
+fn migrate_stores(config: &Config, paths: &Paths) {
+    for account in &config.accounts {
+        if let Err(e) = Store::open(&paths.mail_db(&account.name)) {
+            log::warn!("[{}] could not open the store: {e}", account.name);
+        }
+    }
 }
 
 struct ConfigWatch {

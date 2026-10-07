@@ -150,6 +150,16 @@ fn subscribers_see_another_clients_action() {
 }
 
 #[test]
+fn every_store_is_migrated_before_the_first_hello() {
+    // Offline accounts never reach their own store open, so only the daemon's start can have made these.
+    let daemon = TestDaemon::start_with(options(offline_connector(), None));
+    let _client = daemon.client();
+    for name in ["play", "work"] {
+        assert!(daemon.paths.mail_db(name).exists(), "{name} has no store");
+    }
+}
+
+#[test]
 fn an_offline_account_refuses_commands_with_its_reason() {
     let daemon = TestDaemon::start_with(options(offline_connector(), None));
     let mut client = daemon.client();
