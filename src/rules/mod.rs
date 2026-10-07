@@ -277,6 +277,9 @@ impl CompiledRule {
     }
 }
 
+/// Longest rule name, account or folder; agents propose rules, so no field may grow without bound.
+const MAX_NAME_CHARS: usize = 255;
+
 pub fn compile(file: &RuleFile) -> Result<Vec<CompiledRule>, RulesError> {
     let mut names = std::collections::HashSet::new();
     file.rules
@@ -347,6 +350,14 @@ fn compile_rule(
         if value.chars().any(char::is_control) {
             return Err(invalid(&format!(
                 "{field} must not contain control characters"
+            )));
+        }
+        if value.trim().is_empty() {
+            return Err(invalid(&format!("{field} must not be empty")));
+        }
+        if value.chars().count() > MAX_NAME_CHARS {
+            return Err(invalid(&format!(
+                "{field} must be at most {MAX_NAME_CHARS} characters"
             )));
         }
     }
@@ -585,6 +596,47 @@ actions = [{ move = "Shopping" }, "notify"]
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_blank_and_overlong_names_and_folders() {
+        let long = "a".repeat(MAX_NAME_CHARS + 1);
+        let rule = |extra: &str, name: &str, target: &str| {
+            format!(
+                "[[rules]]\nname = \"{name}\"\n{extra}match.seen = true\nactions = [{{ move = \"{target}\" }}]\n"
+            )
+        };
+        let cases = [
+            (
+                rule("folder = \"\"\n", "x", "Done"),
+                "folder must not be empty",
+            ),
+            (
+                rule("folder = \"   \"\n", "x", "Done"),
+                "folder must not be empty",
+            ),
+            (
+                rule("account = \" \"\n", "x", "Done"),
+                "account must not be empty",
+            ),
+            (
+                rule(&format!("folder = \"{long}\"\n"), "x", "Done"),
+                "folder must be at most 255",
+            ),
+            (rule("", &long, "Done"), "name must be at most 255"),
+            (rule("", "x", &long), "move folder must be at most 255"),
+        ];
+        for (text, want) in cases {
+            match parse(&text).and_then(|f| compile(&f)) {
+                Err(RulesError::Invalid { reason, .. }) => {
+                    assert!(reason.contains(want), "{reason} should contain {want}")
+                }
+                other => panic!("expected Invalid ({want}), got {other:?}"),
+            }
+        }
+        // Exactly at the limit is fine.
+        let at_limit = "a".repeat(MAX_NAME_CHARS);
+        compile(&parse(&rule("", &at_limit, &at_limit)).unwrap()).unwrap();
     }
 
     #[test]
