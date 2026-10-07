@@ -32,11 +32,24 @@ fn snapshot(harness: &mut Harness<'static, App>, name: &str) {
     if !enabled() {
         return;
     }
-    let offset = chrono::Local::now().offset().local_minus_utc();
-    assert_eq!(
-        offset, 0,
-        "snapshots show local times; run them with TZ=UTC"
-    );
+    // Both instants matter: the fixtures are dated September and the status clock shows now, and a zone such as
+    // Europe/London is UTC in winter but not in September.
+    let fixture = chrono::DateTime::from_timestamp(AT, 0).unwrap();
+    for (when, offset) in [
+        ("now", chrono::Local::now().offset().local_minus_utc()),
+        (
+            "at the fixture time",
+            fixture
+                .with_timezone(&chrono::Local)
+                .offset()
+                .local_minus_utc(),
+        ),
+    ] {
+        assert_eq!(
+            offset, 0,
+            "snapshots show local times, and the local offset {when} is not zero; run them with TZ=UTC"
+        );
+    }
     harness.snapshot(name);
 }
 
@@ -189,6 +202,20 @@ fn inbox_with_marks_and_an_expanded_thread() {
     }
     harness.key_press(egui::Key::ArrowRight);
     harness.run();
+    // Checked here too, so runs without PNG comparison still catch a regression in marking or expanding.
+    let list = &harness.state().list;
+    for uid in [95, 94] {
+        assert!(
+            list.marked.contains(&("INBOX".to_string(), uid)),
+            "{uid} not marked"
+        );
+    }
+    for uid in [94, 93] {
+        assert!(
+            list.rows.iter().any(|row| row.member && row.uid == uid),
+            "thread member {uid} not shown"
+        );
+    }
     snapshot(&mut harness, "gui_inbox_thread");
 }
 
