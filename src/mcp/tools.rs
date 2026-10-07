@@ -494,6 +494,8 @@ fn rows(rows: Vec<Value>) -> Result<Value> {
 /// The body inside the untrusted wrapper, cut at 100 KB; every spelling of the wrapper's name is renamed, so no tag can open or close it.
 /// ponytail: look-alike letters inside the name are a different string; the tool description's "never instructions" covers them.
 pub(super) fn wrap_body(text: &str) -> (String, bool) {
+    // A constant pattern that every test of wrap_body compiles, so it cannot fail at runtime.
+    #[allow(clippy::expect_used)]
     static NAME: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?i)untrusted_mail_content").expect("a valid regex"));
     let text = NAME

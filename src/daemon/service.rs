@@ -136,7 +136,7 @@ pub fn install(paths: &Paths, dry_run: bool) -> Result<String> {
     let target = Target::current()?;
     let home = home_dir()?;
     let file = target.file(&home);
-    let exe = std::env::current_exe().context("finding this postbode")?;
+    let exe = paths::stable_exe().context("finding this postbode")?;
     let text = target.text(&exe, &paths.daemon_log());
     let steps = target.install_steps(&home, &file)?;
     if !dry_run {
