@@ -32,6 +32,8 @@ pub(crate) struct Problem {
     pub fix: String,
     /// The error itself, when the summary does not say it all.
     pub detail: Option<String>,
+    /// Docs to open from the window, as (label, url).
+    pub link: Option<(&'static str, &'static str)>,
 }
 
 impl Problem {
@@ -40,10 +42,9 @@ impl Problem {
         if error.is::<NoAccounts>() {
             return Problem {
                 summary: "Postbode has no mail account set up yet.".into(),
-                fix: format!(
-                    "Run `postbode account add` in a terminal, then open Postbode again. See {ACCOUNTS_DOCS}"
-                ),
+                fix: "Run `postbode account add` in a terminal, then open Postbode again.".into(),
                 detail: None,
+                link: Some(("Setting up an account", ACCOUNTS_DOCS)),
             };
         }
         let fix = match log {
@@ -54,6 +55,7 @@ impl Problem {
             summary: "Postbode could not start.".into(),
             fix,
             detail: Some(clean(&format!("{error:#}"), false)),
+            link: None,
         }
     }
 }
@@ -65,6 +67,9 @@ pub(crate) fn show(problem: &Problem, ui: &mut egui::Ui) -> bool {
         ui.heading(&problem.summary);
         ui.add_space(8.0);
         ui.label(&problem.fix);
+        if let Some((label, url)) = problem.link {
+            ui.hyperlink_to(label, url);
+        }
         if let Some(detail) = &problem.detail {
             ui.add_space(8.0);
             egui::ScrollArea::vertical()
@@ -104,7 +109,7 @@ mod tests {
         let problem = Problem::of(&anyhow::Error::new(NoAccounts), Some(Path::new("/l")));
         assert_eq!(problem.summary, "Postbode has no mail account set up yet.");
         assert!(problem.fix.contains("`postbode account add`"));
-        assert!(problem.fix.contains(ACCOUNTS_DOCS));
+        assert_eq!(problem.link, Some(("Setting up an account", ACCOUNTS_DOCS)));
         assert_eq!(problem.detail, None);
     }
 
@@ -132,6 +137,7 @@ mod tests {
         let problem = Problem::of(&anyhow::anyhow!("no home directory found"), None);
         assert_eq!(problem.fix, "Run `postbode gui` in a terminal to see more.");
         assert_eq!(problem.detail.as_deref(), Some("no home directory found"));
+        assert_eq!(problem.link, None);
     }
 
     #[test]
@@ -141,6 +147,25 @@ mod tests {
         harness.get_by_label("Postbode has no mail account set up yet.");
         harness.get_by_label_contains("Run `postbode account add` in a terminal");
         harness.get_by_label("Close");
+    }
+
+    #[test]
+    fn the_docs_link_opens_the_account_setup_page() {
+        let mut harness = harness(Problem::of(&anyhow::Error::new(NoAccounts), None));
+        harness.run();
+        harness.get_by_label("Setting up an account").click();
+        harness.step();
+        let opened: Vec<_> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opened, [ACCOUNTS_DOCS]);
     }
 
     #[test]
