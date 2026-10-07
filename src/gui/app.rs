@@ -1119,12 +1119,11 @@ impl App {
         }
     }
 
-    /// Rules act on mail synced after they change, so every running account syncs at once.
+    /// Reloads the rules view; the daemon notices the change itself and syncs every account.
     fn rules_changed(&mut self) {
         let path = self.paths.rules_file();
         self.rules_mtime = mtime(&path);
         self.rules = RulesState::load(&path, std::mem::take(&mut self.rules.rules));
-        self.sync_all();
     }
 
     fn edit_rules(&mut self, edit: impl FnOnce(&Path) -> Result<(), RulesError>) {

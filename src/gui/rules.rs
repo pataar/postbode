@@ -331,7 +331,7 @@ mod tests {
                 .unwrap()
                 .starts_with("# keep me\n")
         );
-        assert_eq!(wires.sent(), [("work".to_string(), Command::SyncNow)]);
+        assert!(wires.sent().is_empty());
         assert!(harness.query_by_label("Approve").is_none());
     }
 
@@ -347,11 +347,11 @@ mod tests {
                 .unwrap()
                 .starts_with("# keep me\n")
         );
-        assert_eq!(wires.sent(), [("work".to_string(), Command::SyncNow)]);
+        assert!(wires.sent().is_empty());
     }
 
     #[test]
-    fn an_edit_from_outside_reloads_the_view_and_syncs() {
+    fn an_edit_from_outside_reloads_the_view() {
         let fx = Fixture::new(&["work"]);
         let (mut harness, wires) = rules_view(&fx);
         let more = format!(
@@ -361,7 +361,7 @@ mod tests {
         touch(&fx.paths.rules_file());
         poll(&mut harness);
         assert!(harness.query_by_label("receipts").is_some());
-        assert_eq!(wires.sent(), [("work".to_string(), Command::SyncNow)]);
+        assert!(wires.sent().is_empty());
     }
 
     #[test]
