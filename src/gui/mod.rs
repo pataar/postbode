@@ -20,7 +20,7 @@ use crate::sync::Event;
 
 pub use app::App;
 
-/// The window icon: `assets/icon.svg` rendered to PNG (see AGENTS.md).
+/// The window icon: `assets/icon.svg` rendered to PNG by `packaging/icons.sh`.
 const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 
 /// Opens the window and returns when it closes.
