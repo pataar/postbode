@@ -21,6 +21,8 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 | `match` | required | Conditions that must all hold. At least one. |
 | `actions` | required | What to do. At least one. |
 
+`name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
+
 ## Conditions
 
 Text conditions take exactly one of:
