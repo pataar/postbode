@@ -115,6 +115,42 @@ fn write_atomic_in(path: &Path, bytes: &[u8], private_dir: bool) -> io::Result<(
     write_file_atomic(path, bytes)
 }
 
+/// This binary's path for files that outlive the process (service file, MCP host config). On Linux `current_exe`
+/// resolves symlinks, so a Homebrew install reports its versioned keg, which `brew upgrade` later deletes.
+pub fn stable_exe() -> io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    Ok(match homebrew_opt_path(&exe) {
+        Some(opt) if same_file(&opt, &exe) => opt,
+        _ => exe,
+    })
+}
+
+/// `<prefix>/Cellar/<formula>/<version>/<rest>` becomes `<prefix>/opt/<formula>/<rest>`, Homebrew's link to the
+/// current keg.
+fn homebrew_opt_path(exe: &Path) -> Option<PathBuf> {
+    let parts: Vec<_> = exe.components().collect();
+    let cellar = parts.iter().rposition(|c| c.as_os_str() == "Cellar")?;
+    let (prefix, rest) = parts.split_at(cellar);
+    let [_cellar, formula, _version, rest @ ..] = rest else {
+        return None;
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let mut opt: PathBuf = prefix.iter().collect();
+    opt.push("opt");
+    opt.push(formula);
+    opt.extend(rest);
+    Some(opt)
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 fn write_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
 
@@ -223,6 +259,52 @@ mod tests {
         p.ensure_account("personal").unwrap();
         assert!(p.trash_dir("work").is_dir());
         assert!(p.trash_dir("personal").is_dir());
+    }
+
+    #[test]
+    fn homebrew_keg_path_maps_to_opt() {
+        let opt = |p: &str| homebrew_opt_path(Path::new(p));
+        assert_eq!(
+            opt("/home/linuxbrew/.linuxbrew/Cellar/postbode/0.3.0/bin/postbode"),
+            Some(PathBuf::from(
+                "/home/linuxbrew/.linuxbrew/opt/postbode/bin/postbode"
+            ))
+        );
+        assert_eq!(
+            opt("/opt/homebrew/Cellar/postbode/0.3.0_1/bin/postbode"),
+            Some(PathBuf::from("/opt/homebrew/opt/postbode/bin/postbode"))
+        );
+        assert_eq!(opt("/home/me/.cargo/bin/postbode"), None);
+        assert_eq!(opt("/opt/homebrew/Cellar/postbode/0.3.0"), None);
+        assert_eq!(opt("/opt/homebrew/Cellar/postbode"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opt_link_is_used_only_when_it_is_the_same_binary() {
+        let root = tempfile::tempdir().unwrap();
+        let keg = |v: &str| {
+            root.path()
+                .join(format!("Cellar/postbode/{v}/bin/postbode"))
+        };
+        for v in ["0.3.0", "0.4.0"] {
+            fs::create_dir_all(keg(v).parent().unwrap()).unwrap();
+            fs::write(keg(v), v).unwrap();
+        }
+        fs::create_dir_all(root.path().join("opt")).unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("Cellar/postbode/0.4.0"),
+            root.path().join("opt/postbode"),
+        )
+        .unwrap();
+        let opt = homebrew_opt_path(&keg("0.4.0")).unwrap();
+        assert_eq!(opt, root.path().join("opt/postbode/bin/postbode"));
+        assert!(same_file(&opt, &keg("0.4.0")));
+        // An older keg still running after an upgrade keeps its own path rather than pointing at another version.
+        assert!(!same_file(
+            &homebrew_opt_path(&keg("0.3.0")).unwrap(),
+            &keg("0.3.0")
+        ));
     }
 
     #[cfg(unix)]
