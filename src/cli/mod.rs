@@ -712,8 +712,8 @@ fn print_status(status: &Status) {
 fn account_line(account: &AccountStatus) -> String {
     let name = &account.name;
     match &account.activity {
-        Some(activity) => format!("{name}  running  {activity}"),
-        None => format!("{name}  running"),
+        Some(activity) => format!("{name}  {activity}"),
+        None => format!("{name}  starting"),
     }
 }
 

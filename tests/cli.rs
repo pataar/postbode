@@ -738,7 +738,10 @@ fn daemon_status_shows_pid_version_and_accounts() {
         "{stdout}"
     );
     assert!(
-        stdout.lines().any(|line| line.starts_with("work  running")),
+        stdout
+            .lines()
+            .skip(1)
+            .any(|line| line.starts_with("work  ") && !line.contains("running")),
         "{stdout}"
     );
     assert!(postbode(home.path(), &["daemon", "stop"]).status.success());

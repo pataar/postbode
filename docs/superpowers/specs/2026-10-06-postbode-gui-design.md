@@ -228,6 +228,7 @@ The status bar has one line per account built from its latest `Activity`:
 | `RunningCommand` | work: archiving 3 messages |
 | `Idle` | work: up to date · 12:04 |
 | `Offline` | work: offline (timeout) · retry 12:09 |
+| `NotRunning` | work: not running (could not start its sync thread: …), in red |
 
 The line also shows queued commands ("2 queued"), counted by the app as sent minus finished. Clicking the bar opens the last 50 activity and error lines with times.
 

@@ -47,7 +47,7 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 |---|---|
 | `postbode run` | The daemon in the foreground. It never idles out, logs to stderr, and Ctrl-C stops it. It still prints `[account] new mail from …` and `synced: N new` lines. |
 | `postbode run --idle-exit SECS` (hidden) | What auto-start spawns: a new process group, stdin from `/dev/null`, stdout and stderr appended to `<state>/daemon.log`. That log is truncated at start once it exceeds 1 MB. |
-| `postbode daemon status` | Shows pid, version, uptime, connected clients, and each account's state (running, offline with its reason and next retry, or failed with its reason). |
+| `postbode daemon status` | Shows pid, version, uptime, connected clients, and each account's latest activity, such as `up to date · 12:04`, `offline (<reason>) · retry 12:09`, or `not running (<reason>)` when its sync thread could not be spawned. |
 | `postbode daemon stop` | Sends `shutdown` and waits up to 5 s for the socket to close. |
 | `postbode service install\|remove [--dry-run]` | Described in §8. |
 
@@ -130,7 +130,7 @@ A reply carries the client's own `id`; the `request` inside an event is the daem
 
 **Immediate error replies.**
 - unknown account: `no account named 'x'`;
-- an account whose sync thread could not be spawned: `x is not running` (the spawn failure itself arrives as an `Error` event);
+- an account whose sync thread could not be spawned: `x is not running` (the spawn failure itself arrives as an `Error` event, and as a `NotRunning` activity the daemon keeps for `status`);
 - an account between threads after a config change, while its old thread finishes: `x is restarting`;
 - an account that is offline: its reason and next retry time.
 

@@ -174,6 +174,10 @@ pub enum Activity {
         reason: String,
         retry_at: i64,
     },
+    /// The account has no sync thread, so it never syncs until the daemon restarts or its config changes.
+    NotRunning {
+        reason: String,
+    },
 }
 
 impl fmt::Display for Activity {
@@ -207,6 +211,7 @@ impl fmt::Display for Activity {
                     clock(*retry_at)
                 )
             }
+            Activity::NotRunning { reason } => format!("not running ({})", clean(reason, false)),
         };
         f.write_str(&text)
     }
@@ -1597,6 +1602,12 @@ mod tests {
                     retry_at: 1_790_000_300,
                 },
                 format!("offline (timeout) · retry {}", clock(1_790_000_300)),
+            ),
+            (
+                Activity::NotRunning {
+                    reason: "out of threads".into(),
+                },
+                "not running (out of threads)".into(),
             ),
         ];
         for (activity, text) in cases {

@@ -39,7 +39,7 @@ fn line_color(
     palette: &theme::Palette,
 ) -> Option<egui::Color32> {
     match (&account.error, &account.activity) {
-        (Some(_), _) => Some(error_color),
+        (Some(_), _) | (None, Some(Activity::NotRunning { .. })) => Some(error_color),
         (None, Some(Activity::Idle { .. })) => Some(palette.success),
         _ => None,
     }
@@ -228,6 +228,32 @@ mod tests {
         harness.run();
         let line = format!("work: offline (timeout) · retry {}", clock(1_790_000_300));
         assert!(harness.query_by_label(&line).is_some());
+    }
+
+    #[test]
+    fn an_account_that_is_not_running_says_why_in_red_without_a_spinner() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, wires) = fx.harness();
+        let activity = Activity::NotRunning {
+            reason: "could not start its sync thread".into(),
+        };
+        wires
+            .events
+            .send(Event::Activity {
+                account: "work".into(),
+                activity,
+            })
+            .unwrap();
+        harness.run_ok();
+        assert!(
+            harness
+                .query_by_label("work: not running (could not start its sync thread)")
+                .is_some()
+        );
+        let account = &harness.state().accounts[0];
+        assert!(!account.busy());
+        let (error_color, palette) = (egui::Color32::RED, &theme::MOCHA);
+        assert_eq!(line_color(account, error_color, palette), Some(error_color));
     }
 
     #[test]

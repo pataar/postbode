@@ -94,7 +94,9 @@ impl Account {
     pub fn busy(&self) -> bool {
         !matches!(
             self.activity,
-            None | Some(Activity::Idle { .. } | Activity::Offline { .. })
+            None | Some(
+                Activity::Idle { .. } | Activity::NotRunning { .. } | Activity::Offline { .. }
+            )
         )
     }
 

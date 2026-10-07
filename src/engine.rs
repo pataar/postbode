@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 use crate::config::{AccountConfig, Config};
 use crate::mail_ops::MailOps;
 use crate::paths::Paths;
-use crate::sync::{self, Command, Event, Job, RequestId, SyncError};
+use crate::sync::{self, Activity, Command, Event, Job, RequestId, SyncError};
 
 pub type Connector =
     Arc<dyn Fn(&AccountConfig) -> Result<Box<dyn MailOps>, SyncError> + Send + Sync>;
@@ -86,9 +86,15 @@ impl Spawner {
                 thread.handle = Some(handle);
             }
             Err(e) => {
+                let reason = format!("could not start its sync thread: {e}");
                 let _ = self.events.send(Event::Error {
                     account: name.clone(),
-                    message: format!("could not start its sync thread: {e}"),
+                    message: reason.clone(),
+                });
+                // The daemon keeps the last activity, so status and windows that connect later still see why.
+                let _ = self.events.send(Event::Activity {
+                    account: name.clone(),
+                    activity: Activity::NotRunning { reason },
                 });
             }
         }
@@ -210,7 +216,6 @@ impl Drop for Engine {
 mod tests {
     use super::*;
     use crate::config::{AccountConfig, PasswordSource};
-    use crate::sync::Activity;
 
     fn offline_account(name: &str) -> AccountConfig {
         AccountConfig {
