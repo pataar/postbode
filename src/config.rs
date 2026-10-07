@@ -147,6 +147,11 @@ impl Config {
                     "account '{name}': set `address` because the username is not an email address"
                 )));
             }
+            if account.password == (PasswordSource::Keyring { keyring: false }) {
+                return Err(ConfigError::Invalid(format!(
+                    "account '{name}': `password = {{ keyring = false }}` has no meaning; use `{{ keyring = true }}` or a `command`"
+                )));
+            }
             if let Some(ca_file) = &account.ca_file
                 && !ca_file.is_absolute()
             {
@@ -181,6 +186,23 @@ pub fn save_theme(path: &Path, theme: Theme) -> Result<(), ConfigError> {
 }
 
 impl AccountConfig {
+    /// An account with the defaults config.toml gives the settings it leaves out.
+    pub fn new(name: &str, host: &str, username: &str, password: PasswordSource) -> AccountConfig {
+        AccountConfig {
+            name: name.into(),
+            host: host.into(),
+            port: default_port(),
+            username: username.into(),
+            password,
+            address: None,
+            aliases: Vec::new(),
+            sync_interval_secs: default_sync_interval(),
+            trash_retention_days: default_retention(),
+            notify: default_true(),
+            ca_file: None,
+        }
+    }
+
     pub fn address(&self) -> &str {
         self.address.as_deref().unwrap_or(&self.username)
     }
@@ -262,6 +284,20 @@ notify = false
     }
 
     #[test]
+    fn new_gives_the_defaults_config_toml_gives() {
+        let cfg = Config::parse(SAMPLE).unwrap();
+        let mut work = cfg.account("work").unwrap().clone();
+        work.aliases.clear();
+        let new = AccountConfig::new(
+            "work",
+            "imap.example.com",
+            "pieter@example.com",
+            PasswordSource::Keyring { keyring: true },
+        );
+        assert_eq!(new, work);
+    }
+
+    #[test]
     fn address_defaults_to_username_when_it_is_an_email() {
         let cfg = Config::parse(SAMPLE).unwrap();
         assert_eq!(cfg.account("work").unwrap().address(), "pieter@example.com");
@@ -284,6 +320,15 @@ notify = false
         assert!(matches!(Config::parse(&dup), Err(ConfigError::Invalid(_))));
         let bad = SAMPLE.replace("name = \"home\"", "name = \"ho/me\"");
         assert!(matches!(Config::parse(&bad), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn rejects_keyring_false() {
+        let bad = SAMPLE.replace("{ keyring = true }", "{ keyring = false }");
+        assert!(
+            matches!(Config::parse(&bad), Err(ConfigError::Invalid(e)) if e.contains("keyring = false")),
+            "keyring = false must not quietly use the keyring"
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! A connection to the daemon: requests with replies, fire-and-forget sends, and the event subscription.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
@@ -18,11 +18,11 @@ use anyhow::{Context, anyhow, bail};
 
 use super::lock;
 use super::wire::{
-    self, AccountStatus, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status, VERSION,
+    self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status, VERSION,
 };
 use crate::paths::{self, Paths};
 use crate::store::{Message, Store};
-use crate::sync::{Command, Event};
+use crate::sync::{Command, Event, RequestId};
 
 pub const NO_REPLY: &str =
     "no reply from the daemon within 120 s; the command may still run, see `postbode log`";
@@ -72,6 +72,7 @@ pub struct Client {
 
 enum Transport {
     Socket(Mutex<UnixStream>),
+    #[cfg(test)]
     Memory {
         accounts: Vec<String>,
         commands: Sender<(String, Command)>,
@@ -79,10 +80,23 @@ enum Transport {
     },
 }
 
+impl Transport {
+    /// The daemon connection; None for a test's in-memory client.
+    fn socket(&self) -> Option<&Mutex<UnixStream>> {
+        match self {
+            Transport::Socket(stream) => Some(stream),
+            #[cfg(test)]
+            Transport::Memory { .. } => None,
+        }
+    }
+}
+
 /// What the reader thread delivers to; `closed` once the daemon hung up.
 #[derive(Default)]
 struct Inbox {
     closed: bool,
+    /// The daemon's ids of our own `ActionDone`s already published, whose broadcast copies are dropped.
+    own: HashSet<RequestId>,
     /// The account of each `send` still unanswered, so a refusal can name it.
     sent: HashMap<u64, String>,
     subscriber: Option<Sender<Event>>,
@@ -90,8 +104,9 @@ struct Inbox {
 }
 
 impl Inbox {
-    /// A reply to one of our `send`s goes to the subscriber with request 0, which marks it as this client's own; the
-    /// daemon's broadcast of the same outcome carries the daemon's id.
+    /// A reply to one of our `send`s goes to the subscriber with request 0, which marks it as this client's own. The
+    /// daemon broadcasts the same outcome right after; `receive` drops that copy of an `ActionDone`, and a failure's copy
+    /// carries the daemon's id.
     fn deliver(&mut self, id: u64, outcome: Outcome) {
         let account = self.sent.remove(&id);
         if let Some(waiter) = self.waiters.remove(&id) {
@@ -109,15 +124,28 @@ impl Inbox {
                 account,
                 folder,
                 results,
-                ..
-            })) => self.publish(Event::ActionDone {
-                account,
-                folder,
-                results,
-                request: 0,
-            }),
+                request,
+            })) => {
+                self.own.insert(request);
+                self.publish(Event::ActionDone {
+                    account,
+                    folder,
+                    results,
+                    request: 0,
+                });
+            }
             Outcome::Ok(_) => {}
         }
+    }
+
+    /// A broadcast event, unless it is the copy of our own `ActionDone` that `deliver` already published.
+    fn receive(&mut self, event: Event) {
+        if let Event::ActionDone { request, .. } = &event
+            && self.own.remove(request)
+        {
+            return;
+        }
+        self.publish(event);
     }
 
     fn publish(&mut self, event: Event) {
@@ -245,7 +273,8 @@ impl LazyClient {
 
 impl Client {
     /// Connects to a running daemon; Err when none answers or it is another version.
-    pub fn connect(paths: &Paths) -> anyhow::Result<Client> {
+    #[cfg(test)]
+    pub(crate) fn connect(paths: &Paths) -> anyhow::Result<Client> {
         Ok(connect_as(paths, VERSION, false)?)
     }
 
@@ -312,7 +341,8 @@ impl Client {
         self.request_until(account, command, timeout)
     }
 
-    pub fn request_within(
+    #[cfg(test)]
+    pub(crate) fn request_within(
         &self,
         account: &str,
         command: Command,
@@ -340,11 +370,12 @@ impl Client {
 
     /// Sends without waiting; a refusal arrives as `Event::CommandFailed` on the subscription.
     pub fn send(&self, account: &str, command: Command) -> bool {
-        let stream = match &self.transport {
-            Transport::Memory { commands, .. } => {
-                return commands.send((account.into(), command)).is_ok();
-            }
-            Transport::Socket(stream) => stream,
+        #[cfg(test)]
+        if let Transport::Memory { commands, .. } = &self.transport {
+            return commands.send((account.into(), command)).is_ok();
+        }
+        let Some(stream) = self.transport.socket() else {
+            return false;
         };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = ClientMessage::Command {
@@ -379,6 +410,7 @@ impl Client {
 
     /// Every broadcast event from now on, plus refusals of `send`. Call once.
     pub fn subscribe(&self) -> anyhow::Result<Receiver<Event>> {
+        #[cfg(test)]
         if let Transport::Memory { events, .. } = &self.transport {
             return lock(events)
                 .take()
@@ -400,6 +432,7 @@ impl Client {
     }
 
     pub fn status(&self) -> anyhow::Result<Status> {
+        #[cfg(test)]
         if let Transport::Memory { accounts, .. } = &self.transport {
             return Ok(memory_status(accounts));
         }
@@ -429,7 +462,10 @@ impl Client {
     }
 
     /// A client with no daemon behind it: commands appear on the returned receiver, events are injected by the test.
-    pub fn in_memory(accounts: &[&str]) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
+    #[cfg(test)]
+    pub(crate) fn in_memory(
+        accounts: &[&str],
+    ) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
         let (commands, sent) = mpsc::channel();
         let (inject, events) = mpsc::channel();
         let client = Client {
@@ -451,7 +487,7 @@ impl Client {
         with_id: impl FnOnce(u64) -> ClientMessage,
         timeout: Option<Duration>,
     ) -> anyhow::Result<Payload> {
-        let Transport::Socket(stream) = &self.transport else {
+        let Some(stream) = self.transport.socket() else {
             bail!("in-memory client has no daemon");
         };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -493,7 +529,7 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        if let Transport::Socket(stream) = &self.transport {
+        if let Some(stream) = self.transport.socket() {
             let _ = lock(stream).shutdown(Shutdown::Both);
         }
     }
@@ -514,7 +550,9 @@ fn encode_failure(error: &io::Error) -> String {
     format!("could not encode the request: {error}")
 }
 
+#[cfg(test)]
 fn memory_status(accounts: &[String]) -> Status {
+    use super::wire::AccountStatus;
     Status {
         pid: std::process::id(),
         version: VERSION.into(),
@@ -613,7 +651,7 @@ fn read_messages(reader: &mut BufReader<UnixStream>, inbox: &Mutex<Inbox>) {
         let Ok(line) = line else { break };
         match serde_json::from_str(&line) {
             Ok(DaemonMessage::Reply { id, outcome }) => lock(inbox).deliver(id, outcome),
-            Ok(DaemonMessage::Event(event)) => lock(inbox).publish(event),
+            Ok(DaemonMessage::Event(event)) => lock(inbox).receive(event),
             Ok(DaemonMessage::Hello { .. }) => {}
             Err(e) => log::warn!("unreadable message from the daemon: {e}"),
         }

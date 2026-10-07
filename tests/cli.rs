@@ -792,6 +792,15 @@ fn daemon_stop_without_a_daemon_says_so() {
     );
 }
 
+/// A login service restarts a daemon that exits, so one without accounts has to keep serving.
+#[test]
+fn run_serves_without_accounts() {
+    let home = tempfile::tempdir().unwrap();
+    let out = postbode(home.path(), &["run", "--idle-exit", "1"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+}
+
 #[test]
 fn run_refuses_a_second_daemon() {
     let (home, _store) = seeded_home(&[]);

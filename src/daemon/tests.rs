@@ -297,6 +297,25 @@ fn a_config_change_starts_an_added_account() {
 }
 
 #[test]
+fn a_daemon_without_accounts_serves_and_starts_one_added_later() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    let daemon = TestDaemon::serve(home, paths, options(recording_connector(), None));
+    assert!(status_of(&mut daemon.client()).accounts.is_empty());
+
+    write_config(&daemon.paths);
+    fs::File::options()
+        .write(true)
+        .open(daemon.paths.config_file())
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(10))
+        .unwrap();
+    status_until(&mut daemon.client(), |status| {
+        status.accounts.iter().any(|account| account.name == "work")
+    });
+}
+
+#[test]
 fn a_rules_change_syncs_every_account() {
     let daemon = TestDaemon::start();
     let mut watcher = subscribed(daemon.client());
@@ -565,7 +584,7 @@ mod client {
     }
 
     #[test]
-    fn a_sends_own_completion_arrives_as_request_zero_beside_the_broadcast() {
+    fn a_sends_own_completion_arrives_once_as_request_zero() {
         let daemon = TestDaemon::start_with(options(one_message_connector(), None));
         let client = Client::connect(&daemon.paths).unwrap();
         client.request("work", Command::SyncNow).unwrap();
@@ -577,17 +596,16 @@ mod client {
             by: "gui".into(),
         };
         assert!(client.send("work", apply));
-        let mut requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
+        // A sync after the action ends the stream of events that could carry a copy.
+        assert!(client.send("work", Command::SyncNow));
+        let requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
+            .take_while(|event| !matches!(event, Event::Synced { .. }))
             .filter_map(|event| match event {
                 Event::ActionDone { request, .. } => Some(request),
                 _ => None,
             })
-            .take(2)
             .collect();
-        requests.sort_unstable();
-        assert_eq!(requests.len(), 2, "{requests:?}");
-        assert_eq!(requests[0], 0);
-        assert_ne!(requests[1], 0);
+        assert_eq!(requests, [0]);
     }
 
     #[test]
