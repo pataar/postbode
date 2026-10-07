@@ -415,6 +415,33 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_applied_or_bodies_fetched_reloads_the_shown_folder() {
+        let completions = [
+            Event::BodiesFetched {
+                account: "work".into(),
+                request: 1,
+                fetched: 1,
+            },
+            Event::RuleApplied {
+                account: "work".into(),
+                request: 2,
+                evaluated: 1,
+                actions: 1,
+                errors: vec![],
+            },
+        ];
+        for (uid, completion) in (1..).zip(completions) {
+            let fx = Fixture::new(&["work"]);
+            let (mut harness, wires) = fx.harness();
+            fx.add("work", message("INBOX", uid, "written by the daemon"));
+            assert!(harness.state().list.rows.is_empty());
+            wires.events.send(completion).unwrap();
+            harness.run();
+            assert_eq!(harness.state().list.rows.len(), 1);
+        }
+    }
+
+    #[test]
     fn choosing_dark_applies_it_and_writes_it_keeping_comments() {
         let fx = Fixture::new(&["work"]);
         let (mut harness, _wires) = fx.harness();

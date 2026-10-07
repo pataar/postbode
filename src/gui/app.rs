@@ -485,7 +485,7 @@ impl App {
                 }
                 account.activity = Some(activity);
             }
-            Event::BodiesFetched { .. } | Event::NewMail { .. } | Event::RuleApplied { .. } => {}
+            Event::NewMail { .. } => {}
             Event::CommandFailed { message, .. } => {
                 // A refusal carries no uids, so every edit of the account goes and the store shows what is true.
                 let account = &mut self.accounts[index];
@@ -495,7 +495,9 @@ impl App {
                 self.refresh(index);
             }
             Event::Error { message, .. } => self.note_error(Some(index), message),
-            Event::Synced { .. } => self.refresh(index),
+            Event::BodiesFetched { .. } | Event::RuleApplied { .. } | Event::Synced { .. } => {
+                self.refresh(index)
+            }
             Event::ActionDone {
                 folder, results, ..
             } => {
