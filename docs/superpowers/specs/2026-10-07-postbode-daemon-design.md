@@ -136,7 +136,7 @@ A reply carries the client's own `id`; the `request` inside an event is the daem
 
 Commands already queued when an account goes offline are failed with the same text.
 
-**Timeouts.** The CLI and the MCP backend wait up to 120 s for a reply, then report "no reply from the daemon".
+**Timeouts.** The CLI and the MCP backend wait up to 120 s for a reply, then report "no reply from the daemon". `SyncNow`, `FetchBodies` and `ApplyRule` can run longer and wait until the reply comes or the daemon goes away.
 
 ## 6. Clients
 

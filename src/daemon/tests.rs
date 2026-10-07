@@ -431,7 +431,7 @@ mod client {
     use std::time::Duration;
 
     use super::super::Client;
-    use super::super::client::{LazyClient, NO_REPLY, connect_as};
+    use super::super::client::{LazyClient, NO_REPLY, connect_as, reply_timeout};
     use super::super::test_support::{TestDaemon, WAIT, options, recording_connector};
     use super::super::wire::{self, DaemonMessage};
     use crate::engine::Connector;
@@ -538,6 +538,49 @@ mod client {
                 message: "no account named 'nope'".into(),
             })
         );
+    }
+
+    #[test]
+    fn a_sends_own_completion_arrives_as_request_zero_beside_the_broadcast() {
+        let daemon = TestDaemon::start_with(options(one_message_connector(), None));
+        let client = Client::connect(&daemon.paths).unwrap();
+        client.request("work", Command::SyncNow).unwrap();
+        let events = client.subscribe().unwrap();
+        let apply = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1],
+            action: crate::rules::Action::MarkRead,
+            by: "gui".into(),
+        };
+        assert!(client.send("work", apply));
+        let mut requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
+            .filter_map(|event| match event {
+                Event::ActionDone { request, .. } => Some(request),
+                _ => None,
+            })
+            .take(2)
+            .collect();
+        requests.sort_unstable();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert_eq!(requests[0], 0);
+        assert_ne!(requests[1], 0);
+    }
+
+    #[test]
+    fn long_commands_wait_for_their_reply_without_a_deadline() {
+        let unbounded = [
+            Command::ApplyRule { name: "r".into() },
+            Command::FetchBodies { folder: None },
+            Command::SyncNow,
+        ];
+        for command in unbounded {
+            assert_eq!(reply_timeout(&command), None, "{command:?}");
+        }
+        let fetch = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 1,
+        };
+        assert_eq!(reply_timeout(&fetch), Some(Duration::from_secs(120)));
     }
 
     #[test]

@@ -90,16 +90,33 @@ struct Inbox {
 }
 
 impl Inbox {
+    /// A reply to one of our `send`s goes to the subscriber with request 0, which marks it as this client's own; the
+    /// daemon's broadcast of the same outcome carries the daemon's id.
     fn deliver(&mut self, id: u64, outcome: Outcome) {
         let account = self.sent.remove(&id);
         if let Some(waiter) = self.waiters.remove(&id) {
             let _ = waiter.send(outcome);
-        } else if let (Some(account), Outcome::Error(message)) = (account, outcome) {
-            self.publish(Event::CommandFailed {
+            return;
+        }
+        let Some(account) = account else { return };
+        match outcome {
+            Outcome::Error(message) => self.publish(Event::CommandFailed {
                 account,
                 request: 0,
                 message,
-            });
+            }),
+            Outcome::Ok(Payload::Event(Event::ActionDone {
+                account,
+                folder,
+                results,
+                ..
+            })) => self.publish(Event::ActionDone {
+                account,
+                folder,
+                results,
+                request: 0,
+            }),
+            Outcome::Ok(_) => {}
         }
     }
 
@@ -289,9 +306,10 @@ impl Client {
         lock(&self.inbox).closed
     }
 
-    /// Sends and waits up to 120 s for the reply.
+    /// Sends and waits for the reply, up to 120 s unless `reply_timeout` says the command may take longer.
     pub fn request(&self, account: &str, command: Command) -> anyhow::Result<Event> {
-        self.request_within(account, command, REPLY_TIMEOUT)
+        let timeout = reply_timeout(&command);
+        self.request_until(account, command, timeout)
     }
 
     pub fn request_within(
@@ -299,6 +317,15 @@ impl Client {
         account: &str,
         command: Command,
         timeout: Duration,
+    ) -> anyhow::Result<Event> {
+        self.request_until(account, command, Some(timeout))
+    }
+
+    fn request_until(
+        &self,
+        account: &str,
+        command: Command,
+        timeout: Option<Duration>,
     ) -> anyhow::Result<Event> {
         let message = |id| ClientMessage::Command {
             id,
@@ -365,7 +392,7 @@ impl Client {
             }
             inbox.subscriber = Some(subscriber);
         }
-        if let Err(e) = self.call(|id| ClientMessage::Subscribe { id }, REPLY_TIMEOUT) {
+        if let Err(e) = self.call(|id| ClientMessage::Subscribe { id }, Some(REPLY_TIMEOUT)) {
             lock(&self.inbox).subscriber = None;
             return Err(e);
         }
@@ -376,14 +403,14 @@ impl Client {
         if let Transport::Memory { accounts, .. } = &self.transport {
             return Ok(memory_status(accounts));
         }
-        match self.call(|id| ClientMessage::Status { id }, REPLY_TIMEOUT)? {
+        match self.call(|id| ClientMessage::Status { id }, Some(REPLY_TIMEOUT))? {
             Payload::Status(status) => Ok(status),
             other => bail!("unexpected reply from the daemon: {other:?}"),
         }
     }
 
     pub fn shutdown(&self) -> anyhow::Result<()> {
-        self.call(|id| ClientMessage::Shutdown { id }, REPLY_TIMEOUT)?;
+        self.call(|id| ClientMessage::Shutdown { id }, Some(REPLY_TIMEOUT))?;
         Ok(())
     }
 
@@ -418,11 +445,11 @@ impl Client {
         (client, sent, inject)
     }
 
-    /// Sends the message `with_id` builds and waits for its reply.
+    /// Sends the message `with_id` builds and waits for its reply; without a timeout only a lost daemon ends the wait.
     fn call(
         &self,
         with_id: impl FnOnce(u64) -> ClientMessage,
-        timeout: Duration,
+        timeout: Option<Duration>,
     ) -> anyhow::Result<Payload> {
         let Transport::Socket(stream) = &self.transport else {
             bail!("in-memory client has no daemon");
@@ -441,7 +468,11 @@ impl Client {
             lock(&self.inbox).waiters.remove(&id);
             return Err(self.stopped());
         }
-        match reply.recv_timeout(timeout) {
+        let received = match timeout {
+            Some(timeout) => reply.recv_timeout(timeout),
+            None => reply.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match received {
             Ok(Outcome::Ok(payload)) => Ok(payload),
             Ok(Outcome::Error(message)) => Err(anyhow!(message)),
             Err(RecvTimeoutError::Timeout) => {
@@ -464,6 +495,17 @@ impl Drop for Client {
     fn drop(&mut self) {
         if let Transport::Socket(stream) = &self.transport {
             let _ = lock(stream).shutdown(Shutdown::Both);
+        }
+    }
+}
+
+/// How long `request` waits: a sync pass, a body fetch over a folder or a rule over stored mail can outlast 120 s, and
+/// giving up early would drop the client and let an auto-started daemon idle out mid-run.
+pub(super) fn reply_timeout(command: &Command) -> Option<Duration> {
+    match command {
+        Command::ApplyRule { .. } | Command::FetchBodies { .. } | Command::SyncNow => None,
+        Command::Apply { .. } | Command::FetchBody { .. } | Command::Restore { .. } => {
+            Some(REPLY_TIMEOUT)
         }
     }
 }
