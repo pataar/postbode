@@ -360,12 +360,13 @@ impl Backend {
                 Event::Synced {
                     new_messages,
                     actions,
+                    errors,
                     ..
-                } => Ok((new_messages, actions)),
+                } => Ok((new_messages, actions, errors)),
                 other => Err(other),
             });
             rows.push(match synced {
-                Ok((new_messages, actions)) => json!({ "account": acc.name, "new_messages": new_messages, "actions": actions, "errors": [] }),
+                Ok((new_messages, actions, errors)) => json!({ "account": acc.name, "new_messages": new_messages, "actions": actions, "errors": errors }),
                 Err(e) => json!({ "account": acc.name, "error": format!("{e:#}") }),
             });
         }

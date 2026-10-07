@@ -838,6 +838,23 @@ async fn sync_sends_sync_now_and_reports_the_synced_reply() {
 }
 
 #[tokio::test]
+async fn sync_reports_the_errors_of_its_pass() {
+    let fx = fixture_with_daemon(&["work"], recording_connector());
+    std::fs::write(
+        fx.paths.rules_file(),
+        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+    )
+    .unwrap();
+    let client = connect(&fx, "read", &[]).await;
+    let report = rows(&call(&client, "sync", json!({})).await);
+    let errors = report[0]["errors"].as_array().unwrap();
+    assert!(
+        errors.len() == 1 && errors[0].as_str().unwrap().starts_with("rule 'x': "),
+        "{report:?}"
+    );
+}
+
+#[tokio::test]
 async fn sync_reports_a_refusal_as_the_accounts_error() {
     let fx = fixture_with_daemon(&["work"], offline_connector());
     let client = connect(&fx, "read", &[]).await;

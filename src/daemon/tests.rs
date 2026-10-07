@@ -335,6 +335,7 @@ fn wire_messages_round_trip() {
         new_messages: 2,
         actions: 1,
         requests: vec![3],
+        errors: vec![],
     };
     let clients = [
         ClientMessage::Hello {
@@ -425,6 +426,7 @@ fn reporting_errors_leaves_senders_and_subjects_out_of_the_log() {
         new_messages: 1,
         actions: 0,
         requests: vec![],
+        errors: vec![],
     };
     let error = Event::Error {
         account: "work".into(),

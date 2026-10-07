@@ -103,6 +103,8 @@ pub enum Event {
         new_messages: usize,
         actions: usize,
         requests: Vec<RequestId>,
+        /// The errors this pass also sent as `Error` events, and the rules file's while it is invalid.
+        errors: Vec<String>,
     },
 }
 
@@ -952,14 +954,14 @@ impl<'a> AccountSync<'a> {
                 self.rules_error = None;
             }
             Err(e) => {
-                let error = e.to_string();
+                let kept = if self.rules.is_empty() {
+                    "running no rules until it is fixed"
+                } else {
+                    "keeping the previous rules"
+                };
+                let error = format!("{e}; {kept}");
                 if self.rules_error.as_ref() != Some(&error) {
-                    let kept = if self.rules.is_empty() {
-                        "running no rules until it is fixed"
-                    } else {
-                        "keeping the previous rules"
-                    };
-                    let _ = events.send(account_error(self.account, format!("{error}; {kept}")));
+                    let _ = events.send(account_error(self.account, error.clone()));
                 }
                 self.rules_error = Some(error);
             }
@@ -1025,11 +1027,12 @@ impl<'a> AccountSync<'a> {
         if let Some(e) = lost {
             return Err(e);
         }
-        let (new, sync_errors) = synced?;
-        for message in sync_errors {
-            let _ = events.send(account_error(account, message));
+        let (new, mut errors) = synced?;
+        for message in &errors {
+            let _ = events.send(account_error(account, message.clone()));
         }
         self.reload_rules(events);
+        errors.extend(self.rules_error.clone());
         let run = run_rules_with(
             ops,
             &self.store,
@@ -1044,6 +1047,9 @@ impl<'a> AccountSync<'a> {
             },
         )?;
         for event in run.events {
+            if let Event::Error { message, .. } = &event {
+                errors.push(message.clone());
+            }
             let _ = events.send(event);
         }
         let _ = events.send(Event::Synced {
@@ -1051,6 +1057,7 @@ impl<'a> AccountSync<'a> {
             new_messages: new.len(),
             actions: run.actions,
             requests: sync_requests.drain(..answering).collect(),
+            errors,
         });
         Ok(pending_full)
     }
@@ -3593,6 +3600,7 @@ mod tests {
                 new_messages: 1,
                 actions: 0,
                 requests: vec![2],
+                errors: vec![],
             },
             Event::CommandFailed {
                 account: "a".into(),
@@ -3655,6 +3663,7 @@ mod tests {
             new_messages: 0,
             actions: 0,
             requests: vec![1, 2],
+            errors: vec![],
         };
         let new_mail = Event::NewMail {
             account: "a".into(),

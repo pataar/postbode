@@ -1482,6 +1482,7 @@ mod tests {
                 new_messages: 0,
                 actions: 0,
                 requests: vec![],
+                errors: vec![],
             })
             .unwrap();
         harness.run();

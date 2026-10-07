@@ -407,6 +407,7 @@ mod tests {
                 new_messages: 1,
                 actions: 0,
                 requests: vec![],
+                errors: vec![],
             })
             .unwrap();
         harness.run();

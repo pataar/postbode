@@ -587,6 +587,7 @@ mod tests {
                 new_messages: 1,
                 actions: 0,
                 requests: vec![],
+                errors: vec![],
             })
             .unwrap();
         at(&mut harness, 10.0);
@@ -728,6 +729,7 @@ mod tests {
                 new_messages: 1,
                 actions: 0,
                 requests: vec![],
+                errors: vec![],
             })
             .unwrap();
         harness.step();
