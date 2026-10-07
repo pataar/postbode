@@ -4,22 +4,23 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 
 ## Module map
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
-- `paths` platform dirs, atomic writes
 - `config` accounts and identity (address + aliases)
 - `credentials` keyring or password command; `Secret` has no Debug
-- `engine` one sync thread per account, the per-account lock, commands in and events out; what `run` and the GUI use
-- `gui` the egui window (feature `gui`, on by default): `app` holds state and is the only code that changes it, the view modules draw and return `UiAction`s; tests use `test_support::Fixture` with `egui_kittest`
+- `daemon` the background process that owns sync and IMAP: `mod.rs` the server (socket, lock, log, idle exit), `wire` the JSON-lines protocol, `client` what front ends use (CLI, GUI, MCP; auto-starts the daemon), `service` launchd and systemd
+- `engine` one sync thread per account, commands in and events out; what the daemon runs
+- `gui` the egui window (feature `gui`, on by default), which talks to the daemon through `daemon::Client`: `app` holds state and is the only code that changes it, the view modules draw and return `UiAction`s; tests use `test_support::Fixture` with `egui_kittest`
 - `help` help texts shared by the CLI and the MCP tool descriptions
+- `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
+- `main` + `cli/` clap only; no logic
 - `mcp` the MCP server (feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or IMAP, `install` registers hosts
 - `message` header parsing, thread id, body text
 - `notify` desktop notifications for new mail
 - `output` JSON rows shared by `--json` and MCP results
-- `store` one SQLite file per account; migrations in `migrations/`
+- `paths` platform dirs, atomic writes
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
-- `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
-- `trash` `.eml` backups before any rule delete
+- `store` one SQLite file per account; migrations in `migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
-- `main` + `cli/` clap only; no logic
+- `trash` `.eml` backups before any rule delete
 
 ## Definition of done
 - `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` all pass

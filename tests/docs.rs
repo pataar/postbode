@@ -92,3 +92,21 @@ fn mcp_page_scope_table_lists_every_scope() {
         );
     }
 }
+
+#[test]
+fn the_daemon_page_names_every_daemon_command() {
+    let page = read("docs/src/daemon.md");
+    for command in [
+        "postbode run",
+        "postbode daemon status",
+        "postbode daemon stop",
+        "postbode service install",
+        "postbode service remove",
+        "daemon.log",
+    ] {
+        assert!(
+            page.contains(command),
+            "docs/src/daemon.md does not mention {command}"
+        );
+    }
+}
