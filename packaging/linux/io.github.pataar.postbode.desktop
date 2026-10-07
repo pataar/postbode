@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Postbode
+GenericName=Mail Client
+Comment=Read and sort your mail
+Exec=postbode gui
+TryExec=postbode
+Icon=io.github.pataar.postbode
+Terminal=false
+StartupNotify=true
+StartupWMClass=io.github.pataar.postbode
+Categories=Network;Email;
+Keywords=mail;email;IMAP;inbox;rules;
