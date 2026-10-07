@@ -98,6 +98,8 @@ mod recording {
         pub fail_next: Option<MailError>,
         /// With no queued outcome, `idle` sets this flag and returns instead of waiting for a wake-up.
         pub shutdown_when_idle_empty: Option<Arc<AtomicBool>>,
+        /// Listing folders sets this flag, like a stop arriving in the middle of a pass.
+        pub shutdown_on_list_folders: Option<Arc<AtomicBool>>,
         /// A non-zero value becomes INBOX's uidvalidity at its next select; a test can set it while the fake is borrowed.
         pub next_inbox_uidvalidity: Option<Arc<AtomicU32>>,
         envelope_fetches: usize,
@@ -117,6 +119,7 @@ mod recording {
                 fail_fetch_after: None,
                 fail_next: None,
                 shutdown_when_idle_empty: None,
+                shutdown_on_list_folders: None,
                 next_inbox_uidvalidity: None,
                 envelope_fetches: 0,
                 selected: String::new(),
@@ -175,6 +178,9 @@ mod recording {
     impl MailOps for RecordingOps {
         fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
             self.calls.push("list_folders".into());
+            if let Some(shutdown) = &self.shutdown_on_list_folders {
+                shutdown.store(true, Ordering::Release);
+            }
             Ok(self.folders.clone())
         }
 

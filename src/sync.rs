@@ -1110,8 +1110,8 @@ pub fn run_loop_with(
             backoff = Duration::from_secs(5);
         }
         match result {
-            Ok(()) => return,
-            Err(_) if shutdown.load(Ordering::Acquire) => return,
+            Ok(()) => break,
+            Err(_) if shutdown.load(Ordering::Acquire) => break,
             Err(e) => {
                 let _ = events.send(Event::Error {
                     account: account.name.clone(),
@@ -1124,18 +1124,37 @@ pub fn run_loop_with(
                         retry_at: now() + backoff.as_secs() as i64,
                     },
                 });
-                let queued = std::iter::from_fn(|| commands.try_recv().ok().map(|job| job.request));
-                for request in sync_requests.drain(..).chain(queued) {
-                    let _ = events.send(Event::CommandFailed {
-                        account: account.name.clone(),
-                        request,
-                        message: e.to_string(),
-                    });
-                }
+                fail_requests(
+                    &account,
+                    &events,
+                    &commands,
+                    &mut sync_requests,
+                    &e.to_string(),
+                );
                 sleep(backoff);
                 backoff = (backoff * 2).min(Duration::from_secs(300));
             }
         }
+    }
+    let stopped = format!("{} stopped", account.name);
+    fail_requests(&account, &events, &commands, &mut sync_requests, &stopped);
+}
+
+/// Fails the held `SyncNow` requests and every queued job, so each request still gets its one answer.
+fn fail_requests(
+    account: &AccountConfig,
+    events: &Sender<Event>,
+    commands: &Receiver<Job>,
+    sync_requests: &mut Vec<RequestId>,
+    message: &str,
+) {
+    let queued = std::iter::from_fn(|| commands.try_recv().ok().map(|job| job.request));
+    for request in sync_requests.drain(..).chain(queued) {
+        let _ = events.send(Event::CommandFailed {
+            account: account.name.clone(),
+            request,
+            message: message.to_string(),
+        });
     }
 }
 
@@ -3630,5 +3649,78 @@ mod tests {
             .collect();
         failed.sort_unstable();
         assert_eq!(failed, vec![7, 8], "{events:?}");
+    }
+
+    fn failures_of(events: &[Event]) -> Vec<(RequestId, String)> {
+        let mut failed: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::CommandFailed {
+                    request, message, ..
+                } => Some((*request, message.clone())),
+                _ => None,
+            })
+            .collect();
+        failed.sort();
+        failed
+    }
+
+    #[test]
+    fn a_stop_mid_pass_fails_the_held_sync_now_as_stopped() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(sync_now(7)).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_on_list_folders = Some(shutdown.clone());
+        run_loop_with(
+            account(),
+            Paths::under(dir.path()),
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| panic!("a stop is not a failure"),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert_eq!(
+            failures_of(&events),
+            [(7, "work stopped".to_string())],
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_stop_fails_queued_jobs_as_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(sync_now(3)).unwrap();
+        commands_tx
+            .send(Job {
+                request: 4,
+                command: Command::ApplyRule { name: "x".into() },
+            })
+            .unwrap();
+        run_loop_with(
+            account(),
+            Paths::under(dir.path()),
+            tx,
+            Arc::new(AtomicBool::new(true)),
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || panic!("a stopped loop does not connect"),
+            |_| panic!("a stop is not a failure"),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert_eq!(
+            failures_of(&events),
+            [
+                (3, "work stopped".to_string()),
+                (4, "work stopped".to_string())
+            ]
+        );
     }
 }
