@@ -1,5 +1,5 @@
 //! A connection to the daemon: requests with replies, fire-and-forget sends, and the event subscription.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
@@ -23,7 +23,7 @@ use super::wire::{
 use crate::paths::{self, Paths};
 use crate::rules::Action;
 use crate::store::{Message, Store};
-use crate::sync::{Command, Event, EventResults};
+use crate::sync::{Command, Event, EventResults, RequestId};
 
 pub const NO_REPLY: &str =
     "no reply from the daemon within 120 s; the command may still run, see `postbode log`";
@@ -84,6 +84,8 @@ enum Transport {
 #[derive(Default)]
 struct Inbox {
     closed: bool,
+    /// The daemon's ids of our own `ActionDone`s already published, whose broadcast copies are dropped.
+    own: HashSet<RequestId>,
     /// The account of each `send` still unanswered, so a refusal can name it.
     sent: HashMap<u64, String>,
     subscriber: Option<Sender<Event>>,
@@ -91,8 +93,9 @@ struct Inbox {
 }
 
 impl Inbox {
-    /// A reply to one of our `send`s goes to the subscriber with request 0, which marks it as this client's own; the
-    /// daemon's broadcast of the same outcome carries the daemon's id.
+    /// A reply to one of our `send`s goes to the subscriber with request 0, which marks it as this client's own. The
+    /// daemon broadcasts the same outcome right after; `receive` drops that copy of an `ActionDone`, and a failure's copy
+    /// carries the daemon's id.
     fn deliver(&mut self, id: u64, outcome: Outcome) {
         let account = self.sent.remove(&id);
         if let Some(waiter) = self.waiters.remove(&id) {
@@ -110,15 +113,28 @@ impl Inbox {
                 account,
                 folder,
                 results,
-                ..
-            })) => self.publish(Event::ActionDone {
-                account,
-                folder,
-                results,
-                request: 0,
-            }),
+                request,
+            })) => {
+                self.own.insert(request);
+                self.publish(Event::ActionDone {
+                    account,
+                    folder,
+                    results,
+                    request: 0,
+                });
+            }
             Outcome::Ok(_) => {}
         }
+    }
+
+    /// A broadcast event, unless it is the copy of our own `ActionDone` that `deliver` already published.
+    fn receive(&mut self, event: Event) {
+        if let Event::ActionDone { request, .. } = &event
+            && self.own.remove(request)
+        {
+            return;
+        }
+        self.publish(event);
     }
 
     fn publish(&mut self, event: Event) {
@@ -643,7 +659,7 @@ fn read_messages(reader: &mut BufReader<UnixStream>, inbox: &Mutex<Inbox>) {
         let Ok(line) = line else { break };
         match serde_json::from_str(&line) {
             Ok(DaemonMessage::Reply { id, outcome }) => lock(inbox).deliver(id, outcome),
-            Ok(DaemonMessage::Event(event)) => lock(inbox).publish(event),
+            Ok(DaemonMessage::Event(event)) => lock(inbox).receive(event),
             Ok(DaemonMessage::Hello { .. }) => {}
             Err(e) => log::warn!("unreadable message from the daemon: {e}"),
         }

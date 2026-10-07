@@ -97,9 +97,7 @@ pub fn report(event: &Event) {
         Event::CommandFailed {
             account, message, ..
         }
-        | Event::Error { account, message } => {
-            eprintln!("[{account}] error: {}", clean(message, false))
-        }
+        | Event::Error { account, message } => report_error(account, message),
         Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
         Event::ActionDone { .. }
         | Event::BodiesFetched { .. }
@@ -107,6 +105,11 @@ pub fn report(event: &Event) {
         | Event::Restored { .. }
         | Event::RuleApplied { .. } => {}
     }
+}
+
+/// The `[account] error: …` line `report` prints for a failure.
+pub fn report_error(account: &str, message: &str) {
+    eprintln!("[{account}] error: {}", clean(message, false));
 }
 
 fn truncate_large_log(log: &Path) -> io::Result<()> {
