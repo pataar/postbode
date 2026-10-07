@@ -116,7 +116,7 @@ With more than one visible account, every tool that acts on one message needs `a
 
 ## With the mail window open
 
-The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postbode daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes within about two seconds, so an archived message disappears from the list.
+The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postbode daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list.
 
 ## Troubleshooting
 

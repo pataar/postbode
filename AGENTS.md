@@ -12,7 +12,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `help` help texts shared by the CLI and the MCP tool descriptions
 - `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
 - `main` + `cli/` clap only; no logic
-- `mcp` the MCP server (feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or IMAP, `install` registers hosts
+- `mcp` the MCP server (feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or the daemon, `install` registers hosts
 - `message` header parsing, thread id, body text
 - `notify` desktop notifications for new mail
 - `output` JSON rows shared by `--json` and MCP results
