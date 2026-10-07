@@ -76,10 +76,11 @@ impl Target {
         }
     }
 
-    fn text(self, exe: &Path, log: &Path) -> String {
+    /// `postbode_home` is the `POSTBODE_HOME` the service's daemon has to use, when one is set.
+    fn text(self, exe: &Path, log: &Path, postbode_home: Option<&Path>) -> String {
         match self {
-            Target::Launchd => plist(exe, log),
-            Target::Systemd => unit(exe),
+            Target::Launchd => plist(exe, log, postbode_home),
+            Target::Systemd => unit(exe, postbode_home),
         }
     }
 
@@ -137,7 +138,7 @@ pub fn install(paths: &Paths, dry_run: bool) -> Result<String> {
     let home = home_dir()?;
     let file = target.file(&home);
     let exe = paths::stable_exe().context("finding this postbode")?;
-    let text = target.text(&exe, &paths.daemon_log());
+    let text = target.text(&exe, &paths.daemon_log(), paths.home.as_deref());
     let steps = target.install_steps(&home, &file)?;
     if !dry_run {
         stop_running_daemon(paths)?;
@@ -229,19 +230,44 @@ fn xml_escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-pub fn plist(exe: &Path, log: &Path) -> String {
-    plist_with_path(exe, log, std::env::var("PATH").ok().as_deref())
+pub fn plist(exe: &Path, log: &Path, postbode_home: Option<&Path>) -> String {
+    plist_with_path(
+        exe,
+        log,
+        std::env::var("PATH").ok().as_deref(),
+        postbode_home,
+    )
 }
 
-fn plist_with_path(exe: &Path, log: &Path, path: Option<&str>) -> String {
+fn plist_with_path(
+    exe: &Path,
+    log: &Path,
+    path: Option<&str>,
+    postbode_home: Option<&Path>,
+) -> String {
     let exe = xml_escape(&exe.to_string_lossy());
     let log = xml_escape(&log.to_string_lossy());
-    let environment = path.map_or_else(String::new, |path| {
-        format!(
-            "    <key>EnvironmentVariables</key>\n    <dict>\n        <key>PATH</key>\n        <string>{}</string>\n    </dict>\n",
-            xml_escape(path)
-        )
-    });
+    let variables: Vec<(&str, String)> = [
+        path.map(|path| ("PATH", path.to_string())),
+        postbode_home.map(|home| ("POSTBODE_HOME", home.to_string_lossy().into_owned())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let environment = if variables.is_empty() {
+        String::new()
+    } else {
+        let entries: String = variables
+            .iter()
+            .map(|(key, value)| {
+                format!(
+                    "        <key>{key}</key>\n        <string>{}</string>\n",
+                    xml_escape(value)
+                )
+            })
+            .collect();
+        format!("    <key>EnvironmentVariables</key>\n    <dict>\n{entries}    </dict>\n")
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -268,16 +294,27 @@ fn plist_with_path(exe: &Path, log: &Path, path: Option<&str>) -> String {
     )
 }
 
-/// systemd expands `%` specifiers and unquotes `"` and `\` in ExecStart, so a path needs all three escaped.
-pub fn unit(exe: &Path) -> String {
-    let exe = exe
-        .to_string_lossy()
+pub fn unit(exe: &Path, postbode_home: Option<&Path>) -> String {
+    let exe = systemd_quoted(&exe.to_string_lossy());
+    let environment = postbode_home.map_or_else(String::new, |home| {
+        format!(
+            "Environment={}\n",
+            systemd_quoted(&format!("POSTBODE_HOME={}", home.to_string_lossy()))
+        )
+    });
+    format!(
+        "[Unit]\nDescription=Postbode mail sync\n\n[Service]\n{environment}ExecStart={exe} run\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
+    )
+}
+
+/// systemd expands `%` specifiers and unquotes `"` and `\` in ExecStart and Environment, so a value needs all three
+/// escaped inside its quotes.
+fn systemd_quoted(text: &str) -> String {
+    let escaped = text
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('%', "%%");
-    format!(
-        "[Unit]\nDescription=Postbode mail sync\n\n[Service]\nExecStart=\"{exe}\" run\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
-    )
+    format!("\"{escaped}\"")
 }
 
 #[cfg(test)]
@@ -289,6 +326,7 @@ mod tests {
         let text = plist(
             Path::new("/opt/homebrew/bin/postbode"),
             Path::new("/Users/me/Library/Application Support/postbode/daemon.log"),
+            None,
         );
         for needle in [
             "<string>nl.pataar.postbode</string>",
@@ -305,14 +343,14 @@ mod tests {
 
     #[test]
     fn the_plist_escapes_xml_in_paths() {
-        let text = plist(Path::new("/a&b/postbode"), Path::new("/x/<log>"));
+        let text = plist(Path::new("/a&b/postbode"), Path::new("/x/<log>"), None);
         assert!(text.contains("/a&amp;b/postbode"), "{text}");
         assert!(text.contains("/x/&lt;log&gt;"), "{text}");
     }
 
     #[test]
     fn the_systemd_unit_always_restarts() {
-        let text = unit(Path::new("/home/me/.cargo/bin/postbode"));
+        let text = unit(Path::new("/home/me/.cargo/bin/postbode"), None);
         assert!(text.contains("ExecStart=\"/home/me/.cargo/bin/postbode\" run"));
         assert!(text.contains("Restart=always\nRestartSec=10\n"));
         assert!(text.contains("WantedBy=default.target"));
@@ -320,7 +358,7 @@ mod tests {
 
     #[test]
     fn the_systemd_exec_start_survives_spaces_and_percent_signs() {
-        let text = unit(Path::new("/home/me/my bin/50%/postbode"));
+        let text = unit(Path::new("/home/me/my bin/50%/postbode"), None);
         assert!(
             text.contains("ExecStart=\"/home/me/my bin/50%%/postbode\" run"),
             "{text}"
@@ -329,9 +367,30 @@ mod tests {
 
     #[test]
     fn the_plist_has_no_environment_without_a_path() {
-        let text = plist_with_path(Path::new("/bin/postbode"), Path::new("/x/log"), None);
+        let text = plist_with_path(Path::new("/bin/postbode"), Path::new("/x/log"), None, None);
         assert!(!text.contains("EnvironmentVariables"), "{text}");
         assert!(text.contains("</dict>\n</plist>"), "{text}");
+    }
+
+    #[test]
+    fn the_service_keeps_a_postbode_home() {
+        let home = Path::new("/tmp/50% <me>");
+        let text = plist_with_path(
+            Path::new("/bin/postbode"),
+            Path::new("/x/log"),
+            Some("/bin"),
+            Some(home),
+        );
+        assert!(
+            text.contains("<key>PATH</key>\n        <string>/bin</string>\n        <key>POSTBODE_HOME</key>\n        <string>/tmp/50% &lt;me&gt;</string>\n    </dict>"),
+            "{text}"
+        );
+        let text = unit(Path::new("/bin/postbode"), Some(home));
+        assert!(
+            text.contains("Environment=\"POSTBODE_HOME=/tmp/50%% <me>\"\nExecStart="),
+            "{text}"
+        );
+        assert!(!unit(Path::new("/bin/postbode"), None).contains("Environment="));
     }
 
     #[test]
