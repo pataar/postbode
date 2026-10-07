@@ -18,7 +18,7 @@ use anyhow::{Context, anyhow, bail};
 
 use super::lock;
 use super::wire::{
-    self, AccountStatus, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status, VERSION,
+    self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status, VERSION,
 };
 use crate::paths::{self, Paths};
 use crate::store::{Message, Store};
@@ -72,11 +72,23 @@ pub struct Client {
 
 enum Transport {
     Socket(Mutex<UnixStream>),
+    #[cfg(test)]
     Memory {
         accounts: Vec<String>,
         commands: Sender<(String, Command)>,
         events: Mutex<Option<Receiver<Event>>>,
     },
+}
+
+impl Transport {
+    /// The daemon connection; None for a test's in-memory client.
+    fn socket(&self) -> Option<&Mutex<UnixStream>> {
+        match self {
+            Transport::Socket(stream) => Some(stream),
+            #[cfg(test)]
+            Transport::Memory { .. } => None,
+        }
+    }
 }
 
 /// What the reader thread delivers to; `closed` once the daemon hung up.
@@ -261,7 +273,8 @@ impl LazyClient {
 
 impl Client {
     /// Connects to a running daemon; Err when none answers or it is another version.
-    pub fn connect(paths: &Paths) -> anyhow::Result<Client> {
+    #[cfg(test)]
+    pub(crate) fn connect(paths: &Paths) -> anyhow::Result<Client> {
         Ok(connect_as(paths, VERSION, false)?)
     }
 
@@ -328,7 +341,8 @@ impl Client {
         self.request_until(account, command, timeout)
     }
 
-    pub fn request_within(
+    #[cfg(test)]
+    pub(crate) fn request_within(
         &self,
         account: &str,
         command: Command,
@@ -356,11 +370,12 @@ impl Client {
 
     /// Sends without waiting; a refusal arrives as `Event::CommandFailed` on the subscription.
     pub fn send(&self, account: &str, command: Command) -> bool {
-        let stream = match &self.transport {
-            Transport::Memory { commands, .. } => {
-                return commands.send((account.into(), command)).is_ok();
-            }
-            Transport::Socket(stream) => stream,
+        #[cfg(test)]
+        if let Transport::Memory { commands, .. } = &self.transport {
+            return commands.send((account.into(), command)).is_ok();
+        }
+        let Some(stream) = self.transport.socket() else {
+            return false;
         };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = ClientMessage::Command {
@@ -395,6 +410,7 @@ impl Client {
 
     /// Every broadcast event from now on, plus refusals of `send`. Call once.
     pub fn subscribe(&self) -> anyhow::Result<Receiver<Event>> {
+        #[cfg(test)]
         if let Transport::Memory { events, .. } = &self.transport {
             return lock(events)
                 .take()
@@ -416,6 +432,7 @@ impl Client {
     }
 
     pub fn status(&self) -> anyhow::Result<Status> {
+        #[cfg(test)]
         if let Transport::Memory { accounts, .. } = &self.transport {
             return Ok(memory_status(accounts));
         }
@@ -445,7 +462,10 @@ impl Client {
     }
 
     /// A client with no daemon behind it: commands appear on the returned receiver, events are injected by the test.
-    pub fn in_memory(accounts: &[&str]) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
+    #[cfg(test)]
+    pub(crate) fn in_memory(
+        accounts: &[&str],
+    ) -> (Client, Receiver<(String, Command)>, Sender<Event>) {
         let (commands, sent) = mpsc::channel();
         let (inject, events) = mpsc::channel();
         let client = Client {
@@ -467,7 +487,7 @@ impl Client {
         with_id: impl FnOnce(u64) -> ClientMessage,
         timeout: Option<Duration>,
     ) -> anyhow::Result<Payload> {
-        let Transport::Socket(stream) = &self.transport else {
+        let Some(stream) = self.transport.socket() else {
             bail!("in-memory client has no daemon");
         };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -509,7 +529,7 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        if let Transport::Socket(stream) = &self.transport {
+        if let Some(stream) = self.transport.socket() {
             let _ = lock(stream).shutdown(Shutdown::Both);
         }
     }
@@ -530,7 +550,9 @@ fn encode_failure(error: &io::Error) -> String {
     format!("could not encode the request: {error}")
 }
 
+#[cfg(test)]
 fn memory_status(accounts: &[String]) -> Status {
+    use super::wire::AccountStatus;
     Status {
         pid: std::process::id(),
         version: VERSION.into(),

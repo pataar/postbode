@@ -322,6 +322,7 @@ pub fn now() -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(any(test, feature = "testing"))]
 pub fn sync_folder(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -475,6 +476,7 @@ fn to_message(folder: &str, env: Envelope) -> Message {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 pub fn sync_all(
     ops: &mut dyn MailOps,
     store: &Store,
@@ -1262,6 +1264,7 @@ impl<'a> AccountSync<'a> {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 pub fn run_once(
     account: &AccountConfig,
     paths: &Paths,
