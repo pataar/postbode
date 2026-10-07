@@ -458,22 +458,6 @@ pub fn load_rules_for(
     Ok(compiled)
 }
 
-/// Reloads the rules file; on any error logs it and returns `previous` unchanged.
-pub fn reload_rules(
-    store: &Store,
-    path: &Path,
-    now: i64,
-    previous: Vec<CompiledRule>,
-) -> Vec<CompiledRule> {
-    match load_rules_for(store, path, now) {
-        Ok(rules) => rules,
-        Err(e) => {
-            log::error!("{e}; keeping the previous rules");
-            previous
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn run_rules(
     ops: &mut dyn MailOps,
@@ -935,22 +919,51 @@ struct AccountSync<'a> {
     identity: Identity,
     rules_path: PathBuf,
     rules: Vec<CompiledRule>,
+    /// The error of the last rules load, so each bad edit is reported once rather than every pass.
+    rules_error: Option<String>,
 }
 
 impl<'a> AccountSync<'a> {
-    fn open(account: &'a AccountConfig, paths: &Paths) -> Result<AccountSync<'a>, SyncError> {
+    /// Opens the account's store and loads the rules; an invalid rules file runs no rules and is reported.
+    fn open(
+        account: &'a AccountConfig,
+        paths: &Paths,
+        events: &Sender<Event>,
+    ) -> Result<AccountSync<'a>, SyncError> {
         paths.ensure_account(&account.name)?;
-        let store = Store::open(&paths.mail_db(&account.name))?;
-        let rules_path = paths.rules_file();
-        let rules = load_rules_for(&store, &rules_path, now())?;
-        Ok(AccountSync {
+        let mut sync = AccountSync {
             account,
             trash: Trash::new(paths.trash_dir(&account.name)),
             identity: account.identity()?,
-            store,
-            rules_path,
-            rules,
-        })
+            store: Store::open(&paths.mail_db(&account.name))?,
+            rules_path: paths.rules_file(),
+            rules: Vec::new(),
+            rules_error: None,
+        };
+        sync.reload_rules(events);
+        Ok(sync)
+    }
+
+    /// Loads the rules file again; when it is invalid keeps the last good rules and reports a new error once.
+    fn reload_rules(&mut self, events: &Sender<Event>) {
+        match load_rules_for(&self.store, &self.rules_path, now()) {
+            Ok(rules) => {
+                self.rules = rules;
+                self.rules_error = None;
+            }
+            Err(e) => {
+                let error = e.to_string();
+                if self.rules_error.as_ref() != Some(&error) {
+                    let kept = if self.rules.is_empty() {
+                        "running no rules until it is fixed"
+                    } else {
+                        "keeping the previous rules"
+                    };
+                    let _ = events.send(account_error(self.account, format!("{error}; {kept}")));
+                }
+                self.rules_error = Some(error);
+            }
+        }
     }
 
     /// Syncs every folder (`full`) or only INBOX, reloads the rules, runs them and sends the events. A full pass
@@ -1016,8 +1029,7 @@ impl<'a> AccountSync<'a> {
         for message in sync_errors {
             let _ = events.send(account_error(account, message));
         }
-        let previous = std::mem::take(&mut self.rules);
-        self.rules = reload_rules(&self.store, &self.rules_path, now(), previous);
+        self.reload_rules(events);
         let run = run_rules_with(
             ops,
             &self.store,
@@ -1051,7 +1063,7 @@ pub fn run_once(
 ) -> Result<(), SyncError> {
     let mut ops = connect(account)?;
     let (_, no_commands) = std::sync::mpsc::channel();
-    AccountSync::open(account, paths)?.pass(
+    AccountSync::open(account, paths, events)?.pass(
         &mut ops,
         true,
         &mut Vec::new(),
@@ -1196,7 +1208,7 @@ fn run_session(
         activity: Activity::Connecting,
     });
     let mut ops = connect()?;
-    let mut state = AccountSync::open(account, paths)?;
+    let mut state = AccountSync::open(account, paths, events)?;
     let interval = Duration::from_secs(account.sync_interval_secs.max(10));
     let mut last_purge = 0i64;
     let mut full = true;
@@ -1760,11 +1772,28 @@ mod tests {
             "[[rules]]\nname = \"a\"\nmatch.from = { regex = \"(\" }\nactions = [\"flag\"]\n",
         )
         .unwrap();
-        let current = reload_rules(&store, &path, 200, good.clone());
-        assert_eq!(current.len(), 1);
+        let (events, reported) = std::sync::mpsc::channel();
+        let account = account();
+        let mut sync = AccountSync {
+            account: &account,
+            store,
+            trash: Trash::new(dir.path().join("trash")),
+            identity: account.identity().unwrap(),
+            rules_path: path,
+            rules: good,
+            rules_error: None,
+        };
+        sync.reload_rules(&events);
+        sync.reload_rules(&events);
+        assert_eq!(sync.rules.len(), 1);
         assert!(
-            current[0].rule.matches.seen.is_some(),
+            sync.rules[0].rule.matches.seen.is_some(),
             "previous rules kept after a bad edit"
+        );
+        let errors: Vec<Event> = reported.try_iter().collect();
+        assert!(
+            matches!(errors.as_slice(), [Event::Error { message, .. }] if message.ends_with("; keeping the previous rules")),
+            "{errors:?}"
         );
     }
 
@@ -1807,6 +1836,50 @@ mod tests {
             !events.iter().any(|e| matches!(e, Event::Error { .. })),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn an_invalid_rules_file_syncs_without_rules_and_says_so_once() {
+        let mut ops = ops_with_inbox();
+        ops.idle_outcomes.push_back(IdleOutcome::NewMail);
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        paths.ensure_account("work").unwrap();
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(
+            paths.rules_file(),
+            "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_when_idle_empty = Some(shutdown.clone());
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            std::sync::mpsc::channel::<Job>().1,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        let errors: Vec<&String> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Error { message, .. } => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "{events:?}");
+        assert!(errors[0].contains("rule 'x'"), "{errors:?}");
+        let passes = events
+            .iter()
+            .filter(|e| matches!(e, Event::Synced { .. }))
+            .count();
+        assert_eq!(passes, 2, "{events:?}");
     }
 
     #[test]
@@ -2786,7 +2859,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let acct = account();
-        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut state = AccountSync::open(&acct, &paths, &std::sync::mpsc::channel().0).unwrap();
         let mut inner = ops_with_inbox();
         sync_all(&mut inner, &state.store).unwrap();
         inner.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);
@@ -2843,7 +2916,7 @@ mod tests {
             std::fs::write(paths.rules_file(), rules).unwrap();
         }
         let acct = account();
-        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut state = AccountSync::open(&acct, &paths, &std::sync::mpsc::channel().0).unwrap();
         let mut inner = ops_with_inbox().with_folder("Later", None);
         sync_all(&mut inner, &state.store).unwrap();
         inner.add_mail(
@@ -2896,7 +2969,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let acct = account();
-        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut state = AccountSync::open(&acct, &paths, &std::sync::mpsc::channel().0).unwrap();
         let mut ops = RecordingOps::new().with_folder("INBOX", None);
         let commands = std::sync::mpsc::channel::<Job>().1;
         let stop = AtomicBool::new(false);
@@ -2925,7 +2998,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let acct = account();
-        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut state = AccountSync::open(&acct, &paths, &std::sync::mpsc::channel().0).unwrap();
         let mut ops = ops_with_inbox();
         let commands = std::sync::mpsc::channel::<Job>().1;
         let stop = AtomicBool::new(false);
@@ -2947,7 +3020,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         let acct = account();
-        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut state = AccountSync::open(&acct, &paths, &std::sync::mpsc::channel().0).unwrap();
         let mut ops = ops_with_inbox();
         sync_all(&mut ops, &state.store).unwrap();
         ops.add_mail("INBOX", 3, 12 * H, &headers("bob@x", "new", "m3@x"), None);

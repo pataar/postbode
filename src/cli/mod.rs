@@ -936,7 +936,6 @@ fn cmd_run(config: &Config, paths: &Paths, idle_exit: Option<u64>) -> Result<()>
     if config.accounts.is_empty() {
         bail!("no accounts configured; run `postbode account add`");
     }
-    compiled_rules(paths, None)?;
     // Test hook: lets tests idle an auto-started daemon out in seconds.
     let override_secs = std::env::var("POSTBODE_IDLE_EXIT_SECS")
         .ok()

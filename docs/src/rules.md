@@ -1,6 +1,6 @@
 # Rules
 
-Rules live in `rules.toml` next to `config.toml`. Postbode reads the file on every sync. A file that fails to validate is rejected as a whole, and the previous rules stay active. `postbode rules check` validates the file; `postbode rules test` shows what each rule would do to the mail Postbode has cached.
+Rules live in `rules.toml` next to `config.toml`. Postbode reads the file on every sync. A file that fails to validate is rejected as a whole, and the previous rules stay active; when there are none, no rules run until the file is fixed. Each account reports the error once, and syncing and actions carry on. `postbode rules check` validates the file; `postbode rules test` shows what each rule would do to the mail Postbode has cached.
 
 ```toml
 [[rules]]

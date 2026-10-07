@@ -264,37 +264,17 @@ fn rules_test_with_unknown_name_fails() {
 }
 
 #[test]
-fn run_refuses_to_start_with_invalid_rules() {
-    use std::time::{Duration, Instant};
-
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(home.path().join("config")).unwrap();
-    std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
+fn an_invalid_rules_file_still_lets_actions_reach_the_daemon() {
+    let (home, _store) = seeded_home(&[message(1, "a@example.com", "Hello")]);
     std::fs::write(
-        home.path().join("config/rules.toml"),
+        Paths::under(home.path()).rules_file(),
         "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
     )
     .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
-        .arg("run")
-        .env("POSTBODE_HOME", home.path())
-        .env("RUST_LOG", "error")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let started = Instant::now();
-    while child.try_wait().unwrap().is_none() {
-        if started.elapsed() > Duration::from_secs(10) {
-            child.kill().unwrap();
-            panic!("`postbode run` kept running with an invalid rules.toml");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let out = child.wait_with_output().unwrap();
-    assert!(!out.status.success());
+    let out = postbode(home.path(), &["archive", "1"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("rule 'x'"), "{stderr}");
+    assert!(stderr.contains("work is offline ("), "{stderr}");
+    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
 }
 
 #[test]

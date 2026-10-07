@@ -70,6 +70,7 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 - The daemon checks the modification time of `config.toml` every 2 s.
 - An added, removed or changed account starts, stops or restarts that account's thread; the others keep running. A restarted account's new thread starts only once its old one ended, and the daemon never waits for that.
 - An invalid config keeps the running accounts and logs the error.
+- An invalid rules.toml never stops the daemon or its start: each account runs its last good rules, or none, and sends one `Event::Error` per bad load.
 
 **Upgrades.**
 - If `hello` shows a different protocol or crate version, the client sends `shutdown`, waits for the socket to close, and auto-starts its own binary.
