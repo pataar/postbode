@@ -385,7 +385,7 @@ Docs site: GitHub Pages from `mdbook build`, enabled when there is something wor
 
 **MCP server (phase 3).** Spec revision 2026-07-28 via `rmcp` 3.x. The server description in `server/discover` is `agent-guide.md`; tool descriptions are the same clap doc comments the CLI uses; the propose tool's `inputSchema` is the `rules schema` output. One source, three renderings. stdio transport only, no listener. The protocol is stateless, so scopes come from server configuration (`postbode mcp --scopes read,rules:propose`), not from a session. Must implement `server/discover`. Tools carry `readOnlyHint`/`destructiveHint` annotations; `tools/list` returns a deterministic order with `ttlMs`/`cacheScope`. No MCP logging feature; log to stderr. Rule creation tools write `enabled = false` proposals; `rules:write` scope is needed to write enabled rules; `mail:modify` for direct move/delete/flag tools. Message bodies in tool results are wrapped as untrusted data. The multi-round-trip pattern is the later option for "confirm this rule" through the host UI; the proposal file stays the source of truth.
 
-**Daemon split.** `run` becomes the daemon; GUI and CLI talk to it over a Unix socket with 0600 permissions. The `Command`/`Event` types from phase 2 become the wire protocol.
+**Daemon split.** `run` becomes the daemon; GUI and CLI talk to it over a Unix socket with 0600 permissions. The `Command`/`Event` types from phase 2 become the wire protocol. Designed in `2026-10-07-postbode-daemon-design.md`.
 
 **Provider adapters.** `MailOps` is the seam. Gmail and Outlook add OAuth2 token acquisition in `credentials.rs`; the IMAP flow stays.
 

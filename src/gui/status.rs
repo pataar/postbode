@@ -1,93 +1,23 @@
 //! The bottom bar: a line per account from its latest activity, the history window, and the theme switch.
-use chrono::{Local, TimeZone};
 use eframe::egui;
 
-use crate::engine::StartState;
-use crate::message::clean;
-use crate::sync::Activity;
+use crate::sync::{Activity, clock};
 
 use super::app::{Account, App, UiAction};
-use super::folders::locked_text;
 use super::theme;
 
-pub(crate) fn activity_text(activity: &Activity) -> String {
-    match activity {
-        Activity::Connecting => "connecting…".into(),
-        Activity::ListingFolders => "listing folders".into(),
-        Activity::SyncingFolder { folder, index, of } => {
-            format!("{} ({index}/{of})", clean(folder, false))
-        }
-        Activity::FetchingHeaders {
-            folder,
-            done,
-            total,
-        } => fetching(folder, "headers", *done, *total),
-        Activity::FetchingBodies {
-            folder,
-            done,
-            total,
-        } => fetching(folder, "bodies", *done, *total),
-        Activity::RunningRules { folder } => format!("running rules on {}", clean(folder, false)),
-        Activity::RunningCommand { what } => clean(what, false),
-        Activity::Idle { since } => format!("up to date · {}", clock(*since)),
-        Activity::Offline { reason, retry_at } => {
-            format!(
-                "offline ({}) · retry {}",
-                clean(reason, false),
-                clock(*retry_at)
-            )
-        }
-    }
-}
-
-/// The account's status line: its error, why it is not running, or its latest activity; plus queued commands.
+/// The account's status line: its error or its latest activity; plus queued commands.
 pub(crate) fn account_line(account: &Account) -> String {
-    let state = match (&account.error, &account.state, &account.activity) {
-        (Some(error), _, _) => error.clone(),
-        (None, StartState::Locked { pid }, _) => locked_text(*pid),
-        (None, StartState::Failed(e), _) => format!("could not start: {}", clean(e, false)),
-        (None, StartState::Running, Some(activity)) => activity_text(activity),
-        (None, StartState::Running, None) => "starting…".into(),
+    let state = match (&account.error, &account.activity) {
+        (Some(error), _) => error.clone(),
+        (None, Some(activity)) => activity.to_string(),
+        (None, None) => "starting…".into(),
     };
     let mut line = format!("{}: {state}", account.name);
     if account.queued > 0 {
         line.push_str(&format!(" · {} queued", account.queued));
     }
     line
-}
-
-pub(crate) fn local_time(ts: i64, format: &str) -> String {
-    Local
-        .timestamp_opt(ts, 0)
-        .single()
-        .map(|at| at.format(format).to_string())
-        .unwrap_or_default()
-}
-
-/// "INBOX headers 1,200 / 5,000".
-fn fetching(folder: &str, what: &str, done: usize, total: usize) -> String {
-    format!(
-        "{} {what} {} / {}",
-        clean(folder, false),
-        thousands(done),
-        thousands(total)
-    )
-}
-
-pub(crate) fn clock(ts: i64) -> String {
-    local_time(ts, "%H:%M")
-}
-
-pub(crate) fn thousands(n: usize) -> String {
-    let digits = n.to_string();
-    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
 }
 
 fn progress(activity: &Activity) -> Option<f32> {
@@ -108,9 +38,9 @@ fn line_color(
     error_color: egui::Color32,
     palette: &theme::Palette,
 ) -> Option<egui::Color32> {
-    match (&account.error, &account.state, &account.activity) {
-        (Some(_), _, _) => Some(error_color),
-        (None, StartState::Running, Some(Activity::Idle { .. })) => Some(palette.success),
+    match (&account.error, &account.activity) {
+        (Some(_), _) | (None, Some(Activity::NotRunning { .. })) => Some(error_color),
+        (None, Some(Activity::Idle { .. })) => Some(palette.success),
         _ => None,
     }
 }
@@ -231,82 +161,12 @@ pub(crate) fn show_help(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use eframe::egui;
     use egui_kittest::kittest::Queryable;
 
     use super::*;
     use crate::gui::test_support::{Fixture, message};
     use crate::sync::Event;
-
-    #[test]
-    fn thousands_groups_digits() {
-        assert_eq!(thousands(0), "0");
-        assert_eq!(thousands(999), "999");
-        assert_eq!(thousands(1_000), "1,000");
-        assert_eq!(thousands(48_213), "48,213");
-        assert_eq!(thousands(1_234_567), "1,234,567");
-    }
-
-    #[test]
-    fn activity_text_matches_the_spec_table() {
-        let folder = || "INBOX".to_string();
-        let cases = [
-            (Activity::Connecting, "connecting…".to_string()),
-            (Activity::ListingFolders, "listing folders".into()),
-            (
-                Activity::SyncingFolder {
-                    folder: "Archive".into(),
-                    index: 4,
-                    of: 12,
-                },
-                "Archive (4/12)".into(),
-            ),
-            (
-                Activity::FetchingHeaders {
-                    folder: folder(),
-                    done: 12_500,
-                    total: 48_213,
-                },
-                "INBOX headers 12,500 / 48,213".into(),
-            ),
-            (
-                Activity::FetchingBodies {
-                    folder: folder(),
-                    done: 30,
-                    total: 210,
-                },
-                "INBOX bodies 30 / 210".into(),
-            ),
-            (
-                Activity::RunningRules { folder: folder() },
-                "running rules on INBOX".into(),
-            ),
-            (
-                Activity::RunningCommand {
-                    what: "archiving 3 messages".into(),
-                },
-                "archiving 3 messages".into(),
-            ),
-            (
-                Activity::Idle {
-                    since: 1_790_000_000,
-                },
-                format!("up to date · {}", clock(1_790_000_000)),
-            ),
-            (
-                Activity::Offline {
-                    reason: "timeout".into(),
-                    retry_at: 1_790_000_300,
-                },
-                format!("offline (timeout) · retry {}", clock(1_790_000_300)),
-            ),
-        ];
-        for (activity, text) in cases {
-            assert_eq!(activity_text(&activity), text);
-        }
-    }
 
     #[test]
     fn an_up_to_date_account_line_is_green_and_an_error_wins() {
@@ -371,6 +231,32 @@ mod tests {
     }
 
     #[test]
+    fn an_account_that_is_not_running_says_why_in_red_without_a_spinner() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, wires) = fx.harness();
+        let activity = Activity::NotRunning {
+            reason: "could not start its sync thread".into(),
+        };
+        wires
+            .events
+            .send(Event::Activity {
+                account: "work".into(),
+                activity,
+            })
+            .unwrap();
+        harness.run_ok();
+        assert!(
+            harness
+                .query_by_label("work: not running (could not start its sync thread)")
+                .is_some()
+        );
+        let account = &harness.state().accounts[0];
+        assert!(!account.busy());
+        let (error_color, palette) = (egui::Color32::RED, &theme::MOCHA);
+        assert_eq!(line_color(account, error_color, palette), Some(error_color));
+    }
+
+    #[test]
     fn an_error_shows_on_the_account_line_and_in_the_history() {
         let fx = Fixture::new(&["work"]);
         let (mut harness, wires) = fx.harness();
@@ -410,6 +296,8 @@ mod tests {
                 account: "work".into(),
                 new_messages: 1,
                 actions: 0,
+                requests: vec![],
+                errors: vec![],
             })
             .unwrap();
         harness.run();
@@ -418,27 +306,30 @@ mod tests {
     }
 
     #[test]
-    fn new_mail_notifies_when_the_account_notifies() {
-        static NOTIFIED: AtomicUsize = AtomicUsize::new(0);
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().notifier = |_, _| {
-            NOTIFIED.fetch_add(1, Ordering::SeqCst);
-        };
-        let new_mail = || Event::NewMail {
-            account: "work".into(),
-            folder: "INBOX".into(),
-            uid: 1,
-            from: "a@example.com".into(),
-            subject: "hi".into(),
-        };
-        wires.events.send(new_mail()).unwrap();
-        harness.run();
-        assert_eq!(NOTIFIED.load(Ordering::SeqCst), 1);
-        harness.state_mut().accounts[0].notify = false;
-        wires.events.send(new_mail()).unwrap();
-        harness.run();
-        assert_eq!(NOTIFIED.load(Ordering::SeqCst), 1);
+    fn a_rule_applied_or_bodies_fetched_reloads_the_shown_folder() {
+        let completions = [
+            Event::BodiesFetched {
+                account: "work".into(),
+                request: 1,
+                fetched: 1,
+            },
+            Event::RuleApplied {
+                account: "work".into(),
+                request: 2,
+                evaluated: 1,
+                actions: 1,
+                errors: vec![],
+            },
+        ];
+        for (uid, completion) in (1..).zip(completions) {
+            let fx = Fixture::new(&["work"]);
+            let (mut harness, wires) = fx.harness();
+            fx.add("work", message("INBOX", uid, "written by the daemon"));
+            assert!(harness.state().list.rows.is_empty());
+            wires.events.send(completion).unwrap();
+            harness.run();
+            assert_eq!(harness.state().list.rows.len(), 1);
+        }
     }
 
     #[test]

@@ -770,6 +770,7 @@ mod tests {
             folder: "Archive".into(),
             uids: vec![3],
             action: crate::rules::Action::Archive,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), archive)]);
         harness.key_press(egui::Key::Escape);
@@ -816,6 +817,7 @@ mod tests {
             folder: "Archive".into(),
             uids: vec![3],
             action: crate::rules::Action::Move("INBOX".into()),
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), back)]);
     }

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -5,12 +6,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chrono::TimeZone;
+use serde::{Deserialize, Serialize};
+
 use crate::actions::{self, ActionError};
 use crate::config::{AccountConfig, ConfigError, Identity};
 use crate::credentials::{self, CredentialError};
 use crate::mail_ops::imap::ImapOps;
 use crate::mail_ops::{Envelope, IdleOutcome, MailError, MailOps, RemoteFolder};
-use crate::message::{body_text, parse_headers, thread_id};
+use crate::message::{body_text, clean, parse_headers, thread_id};
 use crate::paths::Paths;
 use crate::rules::apply::{ApplyError, apply, ensure_raw};
 use crate::rules::engine::{Context, Mode, evaluate, folder_needs_body};
@@ -40,9 +44,14 @@ pub enum SyncError {
     Io(#[from] io::Error),
     #[error("stopped")]
     Stopped,
+    #[error("crashed: {0}")]
+    Crashed(String),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Names one command so the event that completes it can be matched to whoever sent it.
+pub type RequestId = u64;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Activity {
         account: String,
@@ -52,15 +61,27 @@ pub enum Event {
         account: String,
         folder: String,
         results: EventResults,
+        request: RequestId,
+    },
+    BodiesFetched {
+        account: String,
+        request: RequestId,
+        fetched: usize,
     },
     BodyReady {
         account: String,
         folder: String,
         uid: u32,
+        request: RequestId,
     },
-    Restored {
+    CommandFailed {
         account: String,
-        folder: String,
+        request: RequestId,
+        message: String,
+    },
+    Error {
+        account: String,
+        message: String,
     },
     NewMail {
         account: String,
@@ -69,15 +90,42 @@ pub enum Event {
         from: String,
         subject: String,
     },
+    Restored {
+        account: String,
+        folder: String,
+        request: RequestId,
+    },
+    RuleApplied {
+        account: String,
+        request: RequestId,
+        evaluated: usize,
+        actions: usize,
+        errors: Vec<String>,
+    },
     Synced {
         account: String,
         new_messages: usize,
         actions: usize,
+        requests: Vec<RequestId>,
+        /// The errors this pass also sent as `Error` events, and the rules file's while it is invalid.
+        errors: Vec<String>,
     },
-    Error {
-        account: String,
-        message: String,
-    },
+}
+
+impl Event {
+    /// The requests this event completes, so the daemon can reply to whoever sent them.
+    pub fn request_ids(&self) -> Vec<RequestId> {
+        match self {
+            Event::ActionDone { request, .. }
+            | Event::BodiesFetched { request, .. }
+            | Event::BodyReady { request, .. }
+            | Event::CommandFailed { request, .. }
+            | Event::Restored { request, .. }
+            | Event::RuleApplied { request, .. } => vec![*request],
+            Event::Synced { requests, .. } => requests.clone(),
+            Event::Activity { .. } | Event::Error { .. } | Event::NewMail { .. } => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +142,7 @@ pub struct RulesRun {
     pub events: Vec<Event>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Activity {
     Connecting,
     ListingFolders,
@@ -126,15 +174,101 @@ pub enum Activity {
         reason: String,
         retry_at: i64,
     },
+    /// The account has no sync thread, so it never syncs until the daemon restarts or its config changes.
+    NotRunning {
+        reason: String,
+    },
 }
 
-/// Work a front end asks an account's sync thread to do on its connection.
-#[derive(Debug, Clone, PartialEq)]
+impl fmt::Display for Activity {
+    /// The status line text the window and `postbode daemon status` show.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = match self {
+            Activity::Connecting => "connecting…".into(),
+            Activity::ListingFolders => "listing folders".into(),
+            Activity::SyncingFolder { folder, index, of } => {
+                format!("{} ({index}/{of})", clean(folder, false))
+            }
+            Activity::FetchingHeaders {
+                folder,
+                done,
+                total,
+            } => fetching(folder, "headers", *done, *total),
+            Activity::FetchingBodies {
+                folder,
+                done,
+                total,
+            } => fetching(folder, "bodies", *done, *total),
+            Activity::RunningRules { folder } => {
+                format!("running rules on {}", clean(folder, false))
+            }
+            Activity::RunningCommand { what } => clean(what, false),
+            Activity::Idle { since } => format!("up to date · {}", clock(*since)),
+            Activity::Offline { reason, retry_at } => {
+                format!(
+                    "offline ({}) · retry {}",
+                    clean(reason, false),
+                    clock(*retry_at)
+                )
+            }
+            Activity::NotRunning { reason } => format!("not running ({})", clean(reason, false)),
+        };
+        f.write_str(&text)
+    }
+}
+
+/// "INBOX headers 1,200 / 5,000".
+fn fetching(folder: &str, what: &str, done: usize, total: usize) -> String {
+    format!(
+        "{} {what} {} / {}",
+        clean(folder, false),
+        thousands(done),
+        thousands(total)
+    )
+}
+
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// The timestamp in local time, in a chrono `format`.
+pub fn local_time(ts: i64, format: &str) -> String {
+    chrono::Local
+        .timestamp_opt(ts, 0)
+        .single()
+        .map(|at| at.format(format).to_string())
+        .unwrap_or_default()
+}
+
+/// `HH:MM` in local time.
+pub fn clock(ts: i64) -> String {
+    local_time(ts, "%H:%M")
+}
+
+/// Work the daemon asks an account's sync thread to do on its connection, on a client's behalf.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
+    /// `by` is logged as the action's rule name.
     Apply {
         folder: String,
         uids: Vec<u32>,
+        #[serde(with = "ActionDef")]
         action: Action,
+        by: String,
+    },
+    ApplyRule {
+        name: String,
+    },
+    FetchBodies {
+        folder: Option<String>,
     },
     FetchBody {
         folder: String,
@@ -144,6 +278,28 @@ pub enum Command {
         file: PathBuf,
     },
     SyncNow,
+}
+
+/// `Action` skips its user-only variants in rules.toml, so the wire derives them separately.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "Action", rename_all = "snake_case")]
+enum ActionDef {
+    Archive,
+    Delete,
+    Flag,
+    MarkRead,
+    MarkUnread,
+    Move(String),
+    Notify,
+    Silent,
+    Trash,
+    Unflag,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Job {
+    pub request: RequestId,
+    pub command: Command,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -223,6 +379,7 @@ pub fn sync_folder_with(
         if starts_tracking {
             store.set_initial_uid_next(&folder.name, uids.last().map_or(0, |uid| uid + 1))?;
             store.set_rules_uid(&folder.name, 0)?;
+            store.set_notified_uid(&folder.name, 0)?;
         }
         let present: Vec<u32> = updates.iter().map(|u| u.uid).collect();
         for u in &updates {
@@ -385,22 +542,6 @@ pub fn load_rules_for(
     Ok(compiled)
 }
 
-/// Reloads the rules file; on any error logs it and returns `previous` unchanged.
-pub fn reload_rules(
-    store: &Store,
-    path: &Path,
-    now: i64,
-    previous: Vec<CompiledRule>,
-) -> Vec<CompiledRule> {
-    match load_rules_for(store, path, now) {
-        Ok(rules) => rules,
-        Err(e) => {
-            log::error!("{e}; keeping the previous rules");
-            previous
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn run_rules(
     ops: &mut dyn MailOps,
@@ -485,16 +626,9 @@ pub fn run_rules_with(
         report(Activity::RunningRules {
             folder: folder.clone(),
         });
-        let (rules_uid, initial_uid_next) =
-            (store.rules_uid(&folder)?, store.initial_uid_next(&folder)?);
-        /* Fresh: not yet seen by the rules, not already on the server when the folder was first tracked, and synced.
-        A row a move stored above last_uid waits for sync, so unsynced mail below it is not marked seen too early. */
-        let fresh = |uid: u32| {
-            mode == Mode::Normal
-                && uid > rules_uid
-                && uid >= initial_uid_next
-                && uid <= stored.last_uid
-        };
+        let (rules_uid, notified_uid) = (store.rules_uid(&folder)?, store.notified_uid(&folder)?);
+        let unseen = unseen_by_rules(store, &stored)?;
+        let fresh = |uid: u32| mode == Mode::Normal && unseen(uid);
         let messages = store.messages_in_folder(&folder)?;
         let highest_uid = messages.last().map(|m| m.uid.min(stored.last_uid));
         let bodies_total = if needs_body {
@@ -535,20 +669,19 @@ pub fn run_rules_with(
                     }
                 }
             }
-            if is_fresh && plan.notify && folder == "INBOX" {
-                run.events.push(Event::NewMail {
-                    account: account.name.clone(),
-                    folder: msg.folder.clone(),
-                    uid: msg.uid,
-                    from: msg.from_addr.clone().unwrap_or_default(),
-                    subject: msg.subject.clone().unwrap_or_default(),
-                });
+            if is_fresh && msg.uid > notified_uid && plan.notify && folder == "INBOX" {
+                run.events.push(new_mail(account, &msg));
             }
         }
         if mode == Mode::Normal
-            && let Some(highest_uid) = highest_uid.filter(|&uid| uid > rules_uid)
+            && let Some(highest_uid) = highest_uid
         {
-            store.set_rules_uid(&folder, highest_uid)?;
+            if highest_uid > rules_uid {
+                store.set_rules_uid(&folder, highest_uid)?;
+            }
+            if highest_uid > notified_uid {
+                store.set_notified_uid(&folder, highest_uid)?;
+            }
         }
     }
     if mode == Mode::Normal {
@@ -557,6 +690,28 @@ pub fn run_rules_with(
         store.mark_rules_seen_except(&folders)?;
     }
     Ok(run)
+}
+
+/* Whether a uid is fresh: not yet seen by the rules, not already on the server when the folder was first tracked, and
+synced. A row a move stored above last_uid waits for sync, so unsynced mail below it is not marked seen too early. */
+fn unseen_by_rules(
+    store: &Store,
+    folder: &Folder,
+) -> Result<impl Fn(u32) -> bool + use<>, StoreError> {
+    let rules_uid = store.rules_uid(&folder.name)?;
+    let initial_uid_next = store.initial_uid_next(&folder.name)?;
+    let last_uid = folder.last_uid;
+    Ok(move |uid| uid > rules_uid && uid >= initial_uid_next && uid <= last_uid)
+}
+
+fn new_mail(account: &AccountConfig, msg: &Message) -> Event {
+    Event::NewMail {
+        account: account.name.clone(),
+        folder: msg.folder.clone(),
+        uid: msg.uid,
+        from: msg.from_addr.clone().unwrap_or_default(),
+        subject: msg.subject.clone().unwrap_or_default(),
+    }
 }
 
 fn account_error(account: &AccountConfig, message: String) -> Event {
@@ -568,95 +723,237 @@ fn account_error(account: &AccountConfig, message: String) -> Event {
 }
 
 /// Runs every queued command in arrival order. A failed command is reported and the next one runs; a lost
-/// connection ends the drain with the error, so the session reconnects.
-pub fn run_commands(
+/// connection ends the drain with the error, so the session reconnects. `SyncNow` requests go onto
+/// `carried.sync_requests` for the next full pass to answer.
+#[allow(clippy::too_many_arguments)]
+fn run_commands(
     ops: &mut dyn MailOps,
     store: &Store,
     trash: &Trash,
     account: &AccountConfig,
-    commands: &Receiver<Command>,
+    identity: &Identity,
+    rules_path: &Path,
+    commands: &Receiver<Job>,
+    carried: &mut Carried,
+    events: &Sender<Event>,
+) -> Result<CommandsRun, SyncError> {
+    let mut run = CommandsRun::default();
+    while let Ok(Job { request, command }) = commands.try_recv() {
+        if command == Command::SyncNow {
+            run.wants_full_pass = true;
+            carried.sync_requests.push(request);
+            continue;
+        }
+        carried.running = Some(request);
+        let ran = run_command(
+            ops, store, trash, account, identity, rules_path, request, command, events,
+        );
+        carried.running = None;
+        let ran = ran?;
+        run.used_connection |= ran.used_connection;
+        run.wants_full_pass |= ran.wants_full_pass;
+    }
+    Ok(run)
+}
+
+/// Runs one command other than `SyncNow` and sends its answer; `Err` only for a lost connection.
+#[allow(clippy::too_many_arguments)]
+fn run_command(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    trash: &Trash,
+    account: &AccountConfig,
+    identity: &Identity,
+    rules_path: &Path,
+    request: RequestId,
+    command: Command,
     events: &Sender<Event>,
 ) -> Result<CommandsRun, SyncError> {
     let name = || account.name.clone();
+    let failed = |request, message: String| {
+        log::warn!("{}: {message}", account.name);
+        Event::CommandFailed {
+            account: account.name.clone(),
+            request,
+            message,
+        }
+    };
     let mut run = CommandsRun::default();
-    while let Ok(command) = commands.try_recv() {
-        match command {
-            Command::SyncNow => run.wants_full_pass = true,
-            Command::Apply {
+    match command {
+        Command::SyncNow => unreachable!("run_commands holds SyncNow for the next full pass"),
+        Command::Apply {
+            folder,
+            uids,
+            action,
+            by,
+        } => {
+            run.used_connection = true;
+            let _ = events.send(Event::Activity {
+                account: name(),
+                activity: Activity::RunningCommand {
+                    what: describe(&action, uids.len()),
+                },
+            });
+            let outcome = actions::run(ops, store, trash, &folder, &uids, &action, &by, now());
+            let (results, lost) = match outcome {
+                Ok(results) => split_lost(results),
+                Err(e) => (
+                    uids.iter().map(|&uid| (uid, Err(e.to_string()))).collect(),
+                    connection_lost(&e).then_some(e),
+                ),
+            };
+            let _ = events.send(Event::ActionDone {
+                account: name(),
                 folder,
-                uids,
-                action,
-            } => {
-                run.used_connection = true;
-                let _ = events.send(Event::Activity {
-                    account: name(),
-                    activity: Activity::RunningCommand {
-                        what: describe(&action, uids.len()),
-                    },
-                });
-                let outcome = actions::run(
-                    ops,
-                    store,
-                    trash,
-                    &folder,
-                    &uids,
-                    &action,
-                    actions::RULE_NAME,
-                    now(),
-                );
-                let (results, lost) = match outcome {
-                    Ok(results) => split_lost(results),
-                    Err(e) => (
-                        uids.iter().map(|&uid| (uid, Err(e.to_string()))).collect(),
-                        connection_lost(&e).then_some(e),
-                    ),
-                };
-                let _ = events.send(Event::ActionDone {
-                    account: name(),
-                    folder,
-                    results,
-                });
-                if let Some(e) = lost {
-                    return Err(e.into());
+                results,
+                request,
+            });
+            if let Some(e) = lost {
+                return Err(e.into());
+            }
+        }
+        Command::ApplyRule { name: rule_name } => {
+            let rule = match enabled_rule(rules_path, &rule_name) {
+                Ok(rule) => rule,
+                Err(message) => {
+                    let _ = events.send(failed(request, message));
+                    return Ok(run);
+                }
+            };
+            run.used_connection = true;
+            let rules = std::slice::from_ref(&rule);
+            match run_rules(
+                ops,
+                store,
+                trash,
+                rules,
+                account,
+                identity,
+                Mode::ApplyExisting,
+                now(),
+            ) {
+                Ok(rules_run) => {
+                    let errors = rules_run
+                        .events
+                        .into_iter()
+                        .filter_map(|event| match event {
+                            Event::Error { message, .. } => Some(message),
+                            _ => None,
+                        })
+                        .collect();
+                    let _ = events.send(Event::RuleApplied {
+                        account: name(),
+                        request,
+                        evaluated: rules_run.evaluated,
+                        actions: rules_run.actions,
+                        errors,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, e.to_string()));
+                    if is_lost_connection(&e) {
+                        return Err(e);
+                    }
                 }
             }
-            Command::FetchBody { folder, uid } => {
-                run.used_connection = true;
-                match actions::fetch_body(ops, store, &folder, uid) {
-                    Ok(()) => {
-                        let _ = events.send(Event::BodyReady {
-                            account: name(),
-                            folder,
-                            uid,
-                        });
-                    }
-                    Err(e) if connection_lost(&e) => return Err(e.into()),
-                    Err(e) => {
-                        let _ = events.send(account_error(account, format!("{folder}/{uid}: {e}")));
+        }
+        Command::FetchBodies { folder } => {
+            run.used_connection = true;
+            match fetch_bodies_in(ops, store, folder.as_deref()) {
+                Ok(fetched) => {
+                    let _ = events.send(Event::BodiesFetched {
+                        account: name(),
+                        request,
+                        fetched,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, e.to_string()));
+                    if connection_lost(&e) {
+                        return Err(e.into());
                     }
                 }
             }
-            Command::Restore { file } => {
-                run.used_connection = true;
-                match trash.restore(ops, &file) {
-                    Ok(folder) => {
-                        run.wants_full_pass = true;
-                        let _ = events.send(Event::Restored {
-                            account: name(),
-                            folder,
-                        });
+        }
+        Command::FetchBody { folder, uid } => {
+            run.used_connection = true;
+            match actions::fetch_body(ops, store, &folder, uid) {
+                Ok(()) => {
+                    let _ = events.send(Event::BodyReady {
+                        account: name(),
+                        folder,
+                        uid,
+                        request,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, format!("{folder}/{uid}: {e}")));
+                    if connection_lost(&e) {
+                        return Err(e.into());
                     }
-                    Err(RestoreError::Mail(e)) if is_connection_error(&e) => {
+                }
+            }
+        }
+        Command::Restore { file } => {
+            run.used_connection = true;
+            match trash.restore(ops, &file) {
+                Ok(folder) => {
+                    run.wants_full_pass = true;
+                    let _ = events.send(Event::Restored {
+                        account: name(),
+                        folder,
+                        request,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, e.to_string()));
+                    if let RestoreError::Mail(e) = e
+                        && is_connection_error(&e)
+                    {
                         return Err(SyncError::Mail(e));
-                    }
-                    Err(e) => {
-                        let _ = events.send(account_error(account, e.to_string()));
                     }
                 }
             }
         }
     }
     Ok(run)
+}
+
+/// The compiled rule called `name`, or why it cannot run. It keeps `first_seen_at` 0, which `ApplyExisting` ignores.
+fn enabled_rule(rules_path: &Path, name: &str) -> Result<CompiledRule, String> {
+    let file = crate::rules::load(rules_path).map_err(|e| e.to_string())?;
+    let rule = crate::rules::compile(&file)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|r| r.rule.name == name)
+        .ok_or_else(|| format!("no rule named '{name}'"))?;
+    if !rule.rule.enabled {
+        return Err(format!(
+            "rule '{name}' is disabled; approve or enable it first"
+        ));
+    }
+    Ok(rule)
+}
+
+/// Downloads the missing bodies of the named folder, failing if it cannot, or of every stored folder, skipping any
+/// that fail. Only a lost connection stops the walk.
+fn fetch_bodies_in(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    folder: Option<&str>,
+) -> Result<usize, ActionError> {
+    if let Some(folder) = folder {
+        return actions::fetch_bodies(ops, store, folder, |_| {});
+    }
+    let mut fetched = 0;
+    for folder in store.folders()? {
+        match actions::fetch_bodies(ops, store, &folder.name, |_| {}) {
+            Ok(count) => fetched += count,
+            Err(e) if connection_lost(&e) => return Err(e),
+            Err(e) => log::warn!("{}: body fetch skipped: {e}", folder.name),
+        }
+    }
+    Ok(fetched)
 }
 
 fn is_connection_error(e: &MailError) -> bool {
@@ -678,7 +975,7 @@ fn connection_lost(e: &ActionError) -> bool {
     }
 }
 
-type EventResults = Vec<(u32, Result<usize, String>)>;
+pub type EventResults = Vec<(u32, Result<usize, String>)>;
 
 /// Stringifies per-uid results for the event, keeping the first connection loss so it can end the drain.
 fn split_lost(results: Vec<actions::UidResult>) -> (EventResults, Option<ActionError>) {
@@ -739,43 +1036,157 @@ fn sync_inbox_with(
     sync_folder_with(ops, store, &inbox, checkpoint)
 }
 
-/// What one account's passes share: its store, trash, identity and the last good rules.
+/// What an account's thread carries from one session to the next.
+#[derive(Default)]
+struct Carried {
+    /// `SyncNow` requests the next full pass answers.
+    sync_requests: Vec<RequestId>,
+    /// The command running now, so one that panics still gets its answer.
+    running: Option<RequestId>,
+    rules: LoadedRules,
+}
+
+#[derive(Default)]
+struct LoadedRules {
+    /// The last rules that loaded; None until some have, and while the file is invalid with no rule to fall back on.
+    last_good: Option<Vec<CompiledRule>>,
+    /// The error of the last load, so each bad edit is reported once rather than every pass.
+    error: Option<String>,
+}
+
+impl LoadedRules {
+    /// Loads the rules file again; when it is invalid keeps the last good rules and reports a new error once.
+    fn reload(
+        &mut self,
+        store: &Store,
+        path: &Path,
+        account: &AccountConfig,
+        events: &Sender<Event>,
+    ) {
+        match load_rules_for(store, path, now()) {
+            Ok(rules) => {
+                self.last_good = Some(rules);
+                self.error = None;
+            }
+            Err(e) => {
+                self.last_good = self.last_good.take().filter(|rules| !rules.is_empty());
+                let kept = if self.last_good.is_some() {
+                    "keeping the previous rules"
+                } else {
+                    "running no rules until it is fixed"
+                };
+                let error = format!("{e}; {kept}");
+                if self.error.as_ref() != Some(&error) {
+                    let _ = events.send(account_error(account, error.clone()));
+                }
+                self.error = Some(error);
+            }
+        }
+    }
+
+    /// Runs the last good rules. With none it only notifies, leaving the mail unseen so the rules catch up on it.
+    fn run(
+        &self,
+        ops: &mut dyn MailOps,
+        store: &Store,
+        trash: &Trash,
+        account: &AccountConfig,
+        identity: &Identity,
+        report: &mut dyn FnMut(Activity),
+    ) -> Result<RulesRun, SyncError> {
+        let Some(rules) = &self.last_good else {
+            return Ok(RulesRun {
+                events: notify_unruled(store, account, identity)?,
+                ..RulesRun::default()
+            });
+        };
+        run_rules_with(
+            ops,
+            store,
+            trash,
+            rules,
+            account,
+            identity,
+            Mode::Normal,
+            now(),
+            report,
+        )
+    }
+}
+
+/// NewMail for fresh INBOX mail no notification covered yet, as the account's notify setting says. Moves only the
+/// notified mark, so the rules still catch up on that mail.
+fn notify_unruled(
+    store: &Store,
+    account: &AccountConfig,
+    identity: &Identity,
+) -> Result<Vec<Event>, SyncError> {
+    let Some(inbox) = store.folder("INBOX")? else {
+        return Ok(Vec::new());
+    };
+    let unseen = unseen_by_rules(store, &inbox)?;
+    let notified_uid = store.notified_uid("INBOX")?;
+    let ctx = Context {
+        account: &account.name,
+        identity,
+        now: now(),
+        mode: Mode::Normal,
+        notify_default: account.notify,
+    };
+    let messages = store.messages_in_folder("INBOX")?;
+    let events = messages
+        .iter()
+        .filter(|msg| unseen(msg.uid) && msg.uid > notified_uid && evaluate(&[], msg, &ctx).notify)
+        .map(|msg| new_mail(account, msg))
+        .collect();
+    if let Some(highest_uid) = messages
+        .last()
+        .map(|msg| msg.uid.min(inbox.last_uid))
+        .filter(|&uid| uid > notified_uid)
+    {
+        store.set_notified_uid("INBOX", highest_uid)?;
+    }
+    Ok(events)
+}
+
+/// What one account's passes share: its store, trash and identity.
 struct AccountSync<'a> {
     account: &'a AccountConfig,
     store: Store,
     trash: Trash,
     identity: Identity,
     rules_path: PathBuf,
-    rules: Vec<CompiledRule>,
 }
 
 impl<'a> AccountSync<'a> {
     fn open(account: &'a AccountConfig, paths: &Paths) -> Result<AccountSync<'a>, SyncError> {
-        paths.ensure_account(&account.name)?;
-        let store = Store::open(&paths.mail_db(&account.name))?;
-        let rules_path = paths.rules_file();
-        let rules = load_rules_for(&store, &rules_path, now())?;
         Ok(AccountSync {
+            store: Store::open_account(paths, &account.name)?,
             account,
             trash: Trash::new(paths.trash_dir(&account.name)),
             identity: account.identity()?,
-            store,
-            rules_path,
-            rules,
+            rules_path: paths.rules_file(),
         })
     }
 
-    /// Syncs every folder (`full`) or only INBOX, reloads the rules, runs them and sends the events. Queued
-    /// commands run at the pass's checkpoints; true when one of them wants a full pass next.
+    /// Reloads the rules, syncs every folder (`full`) or only INBOX, runs the rules and sends the events. A full pass
+    /// answers the `SyncNow` requests in `carried` when it starts; ones drained at its checkpoints are kept there for
+    /// the next. Queued commands run at the checkpoints; true when one of them wants a full pass next.
     fn pass(
         &mut self,
         ops: &mut dyn MailOps,
         full: bool,
+        carried: &mut Carried,
         events: &Sender<Event>,
-        commands: &Receiver<Command>,
+        commands: &Receiver<Job>,
         shutdown: &AtomicBool,
     ) -> Result<bool, SyncError> {
+        carried
+            .rules
+            .reload(&self.store, &self.rules_path, self.account, events);
+        let answering = if full { carried.sync_requests.len() } else { 0 };
         let (account, store, trash) = (self.account, &self.store, &self.trash);
+        let (identity, rules_path) = (&self.identity, self.rules_path.as_path());
         let activity = |activity| Event::Activity {
             account: account.name.clone(),
             activity,
@@ -791,7 +1202,9 @@ impl<'a> AccountSync<'a> {
             if shutdown.load(Ordering::Acquire) {
                 return Err(SyncError::Stopped);
             }
-            match run_commands(ops, store, trash, account, commands, events) {
+            match run_commands(
+                ops, store, trash, account, identity, rules_path, commands, carried, events,
+            ) {
                 Ok(run) => {
                     pending_full |= run.wants_full_pass;
                     Ok(run.used_connection)
@@ -810,32 +1223,33 @@ impl<'a> AccountSync<'a> {
         if let Some(e) = lost {
             return Err(e);
         }
-        let (new, sync_errors) = synced?;
-        for message in sync_errors {
-            let _ = events.send(account_error(account, message));
+        let (new, mut errors) = synced?;
+        for message in &errors {
+            let _ = events.send(account_error(account, message.clone()));
         }
-        let previous = std::mem::take(&mut self.rules);
-        self.rules = reload_rules(&self.store, &self.rules_path, now(), previous);
-        let run = run_rules_with(
+        errors.extend(carried.rules.error.clone());
+        let run = carried.rules.run(
             ops,
             &self.store,
             &self.trash,
-            &self.rules,
             self.account,
             &self.identity,
-            Mode::Normal,
-            now(),
             &mut |step| {
                 let _ = events.send(activity(step));
             },
         )?;
         for event in run.events {
+            if let Event::Error { message, .. } = &event {
+                errors.push(message.clone());
+            }
             let _ = events.send(event);
         }
         let _ = events.send(Event::Synced {
             account: self.account.name.clone(),
             new_messages: new.len(),
             actions: run.actions,
+            requests: carried.sync_requests.drain(..answering).collect(),
+            errors,
         });
         Ok(pending_full)
     }
@@ -851,6 +1265,7 @@ pub fn run_once(
     AccountSync::open(account, paths)?.pass(
         &mut ops,
         true,
+        &mut Carried::default(),
         events,
         &no_commands,
         &AtomicBool::new(false),
@@ -858,24 +1273,26 @@ pub fn run_once(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_loop(
     account: AccountConfig,
     paths: Paths,
     events: Sender<Event>,
     shutdown: Arc<AtomicBool>,
-    commands: Receiver<Command>,
+    commands: Receiver<Job>,
     wake: Arc<AtomicBool>,
+    connect: impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
 ) {
     let name = account.name.clone();
     let (stop, woken) = (shutdown.clone(), wake.clone());
     run_loop_with(
-        account.clone(),
+        account,
         paths,
         events,
         shutdown,
         commands,
         wake,
-        move || Ok(Box::new(connect(&account)?) as Box<dyn MailOps>),
+        connect,
         |delay| {
             log::warn!("{name}: reconnecting in {}s", delay.as_secs());
             // Stop or a new command cuts this wait short; clearing the flag keeps later waits at full length.
@@ -897,46 +1314,94 @@ pub fn run_loop_with(
     paths: Paths,
     events: Sender<Event>,
     shutdown: Arc<AtomicBool>,
-    commands: Receiver<Command>,
+    commands: Receiver<Job>,
     wake: Arc<AtomicBool>,
     mut connect: impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
     mut sleep: impl FnMut(Duration),
 ) {
     let mut backoff = Duration::from_secs(5);
+    let mut carried = Carried::default();
     while !shutdown.load(Ordering::Acquire) {
         let mut completed_cycle = false;
-        let result = run_session(
-            &account,
-            &paths,
-            &events,
-            &shutdown,
-            &commands,
-            &wake,
-            &mut connect,
-            &mut completed_cycle,
-        );
+        // A bug in one session must still answer its requests and leave the account retrying, not silently dead.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_session(
+                &account,
+                &paths,
+                &events,
+                &shutdown,
+                &commands,
+                &wake,
+                &mut carried,
+                &mut connect,
+                &mut completed_cycle,
+            )
+        }))
+        .unwrap_or_else(|panic| Err(SyncError::Crashed(panic_message(&*panic))));
         if completed_cycle {
             backoff = Duration::from_secs(5);
         }
         match result {
-            Ok(()) => return,
-            Err(_) if shutdown.load(Ordering::Acquire) => return,
+            Ok(()) => break,
+            Err(_) if shutdown.load(Ordering::Acquire) => break,
             Err(e) => {
                 let _ = events.send(Event::Error {
                     account: account.name.clone(),
                     message: e.to_string(),
                 });
+                let (reason, retry_at) = (e.to_string(), now() + backoff.as_secs() as i64);
+                let offline = offline_message(&account.name, &reason, retry_at);
                 let _ = events.send(Event::Activity {
                     account: account.name.clone(),
-                    activity: Activity::Offline {
-                        reason: e.to_string(),
-                        retry_at: now() + backoff.as_secs() as i64,
-                    },
+                    activity: Activity::Offline { reason, retry_at },
                 });
+                fail_requests(&account, &events, &commands, &mut carried, &offline);
                 sleep(backoff);
                 backoff = (backoff * 2).min(Duration::from_secs(300));
             }
         }
+    }
+    let stopped = format!("{} stopped", account.name);
+    fail_requests(&account, &events, &commands, &mut carried, &stopped);
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|text| text.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".into())
+}
+
+/// Why an offline account cannot run a command: `<account> is offline (<reason>); retrying at <HH:MM>`, local time.
+pub fn offline_message(account: &str, reason: &str, retry_at: i64) -> String {
+    format!(
+        "{account} is offline ({reason}); retrying at {}",
+        clock(retry_at)
+    )
+}
+
+/// Fails the running command, the held `SyncNow` requests and every queued job, so each request still gets its one
+/// answer.
+fn fail_requests(
+    account: &AccountConfig,
+    events: &Sender<Event>,
+    commands: &Receiver<Job>,
+    carried: &mut Carried,
+    message: &str,
+) {
+    let held = carried
+        .running
+        .take()
+        .into_iter()
+        .chain(carried.sync_requests.drain(..));
+    let queued = std::iter::from_fn(|| commands.try_recv().ok().map(|job| job.request));
+    for request in held.chain(queued) {
+        let _ = events.send(Event::CommandFailed {
+            account: account.name.clone(),
+            request,
+            message: message.to_string(),
+        });
     }
 }
 
@@ -946,8 +1411,9 @@ fn run_session(
     paths: &Paths,
     events: &Sender<Event>,
     shutdown: &AtomicBool,
-    commands: &Receiver<Command>,
+    commands: &Receiver<Job>,
     wake: &AtomicBool,
+    carried: &mut Carried,
     connect: &mut impl FnMut() -> Result<Box<dyn MailOps>, SyncError>,
     completed_cycle: &mut bool,
 ) -> Result<(), SyncError> {
@@ -965,7 +1431,7 @@ fn run_session(
 
     while !shutdown.load(Ordering::Acquire) {
         if pass {
-            pending_full = state.pass(ops.as_mut(), full, events, commands, shutdown)?;
+            pending_full = state.pass(ops.as_mut(), full, carried, events, commands, shutdown)?;
             if now() - last_purge > 3600 {
                 match state
                     .trash
@@ -983,7 +1449,10 @@ fn run_session(
             &state.store,
             &state.trash,
             account,
+            &state.identity,
+            &state.rules_path,
             commands,
+            carried,
             events,
         )?;
         if drained.wants_full_pass || std::mem::take(&mut pending_full) {
@@ -1070,6 +1539,80 @@ mod tests {
             r.first_seen_at = store.rule_first_seen(&r.rule.name, now).unwrap();
         }
         compiled
+    }
+
+    #[test]
+    fn thousands_groups_digits() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000), "1,000");
+        assert_eq!(thousands(48_213), "48,213");
+        assert_eq!(thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn activity_text_matches_the_spec_table() {
+        let folder = || "INBOX".to_string();
+        let cases = [
+            (Activity::Connecting, "connecting…".to_string()),
+            (Activity::ListingFolders, "listing folders".into()),
+            (
+                Activity::SyncingFolder {
+                    folder: "Archive".into(),
+                    index: 4,
+                    of: 12,
+                },
+                "Archive (4/12)".into(),
+            ),
+            (
+                Activity::FetchingHeaders {
+                    folder: folder(),
+                    done: 12_500,
+                    total: 48_213,
+                },
+                "INBOX headers 12,500 / 48,213".into(),
+            ),
+            (
+                Activity::FetchingBodies {
+                    folder: folder(),
+                    done: 30,
+                    total: 210,
+                },
+                "INBOX bodies 30 / 210".into(),
+            ),
+            (
+                Activity::RunningRules { folder: folder() },
+                "running rules on INBOX".into(),
+            ),
+            (
+                Activity::RunningCommand {
+                    what: "archiving 3 messages".into(),
+                },
+                "archiving 3 messages".into(),
+            ),
+            (
+                Activity::Idle {
+                    since: 1_790_000_000,
+                },
+                format!("up to date · {}", clock(1_790_000_000)),
+            ),
+            (
+                Activity::Offline {
+                    reason: "timeout".into(),
+                    retry_at: 1_790_000_300,
+                },
+                format!("offline (timeout) · retry {}", clock(1_790_000_300)),
+            ),
+            (
+                Activity::NotRunning {
+                    reason: "out of threads".into(),
+                },
+                "not running (out of threads)".into(),
+            ),
+        ];
+        for (activity, text) in cases {
+            assert_eq!(activity.to_string(), text);
+        }
     }
 
     #[test]
@@ -1510,11 +2053,24 @@ mod tests {
             "[[rules]]\nname = \"a\"\nmatch.from = { regex = \"(\" }\nactions = [\"flag\"]\n",
         )
         .unwrap();
-        let current = reload_rules(&store, &path, 200, good.clone());
-        assert_eq!(current.len(), 1);
+        let (events, reported) = std::sync::mpsc::channel();
+        let account = account();
+        let mut rules = LoadedRules {
+            last_good: Some(good),
+            ..LoadedRules::default()
+        };
+        rules.reload(&store, &path, &account, &events);
+        rules.reload(&store, &path, &account, &events);
+        let kept = rules.last_good.unwrap();
+        assert_eq!(kept.len(), 1);
         assert!(
-            current[0].rule.matches.seen.is_some(),
+            kept[0].rule.matches.seen.is_some(),
             "previous rules kept after a bad edit"
+        );
+        let errors: Vec<Event> = reported.try_iter().collect();
+        assert!(
+            matches!(errors.as_slice(), [Event::Error { message, .. }] if message.ends_with("; keeping the previous rules")),
+            "{errors:?}"
         );
     }
 
@@ -1537,7 +2093,7 @@ mod tests {
             paths,
             tx,
             shutdown,
-            std::sync::mpsc::channel::<Command>().1,
+            std::sync::mpsc::channel::<Job>().1,
             Arc::new(AtomicBool::new(false)),
             || {
                 connects += 1;
@@ -1556,6 +2112,220 @@ mod tests {
         assert!(
             !events.iter().any(|e| matches!(e, Event::Error { .. })),
             "{events:?}"
+        );
+    }
+
+    #[test]
+    fn an_invalid_rules_file_syncs_without_rules_and_says_so_once() {
+        let mut ops = ops_with_inbox();
+        ops.idle_outcomes.push_back(IdleOutcome::NewMail);
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        paths.ensure_account("work").unwrap();
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(
+            paths.rules_file(),
+            "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_when_idle_empty = Some(shutdown.clone());
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            std::sync::mpsc::channel::<Job>().1,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        let errors: Vec<&String> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Error { message, .. } => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1, "{events:?}");
+        assert!(errors[0].contains("rule 'x'"), "{errors:?}");
+        let passes = events
+            .iter()
+            .filter(|e| matches!(e, Event::Synced { .. }))
+            .count();
+        assert_eq!(passes, 2, "{events:?}");
+    }
+
+    #[test]
+    fn a_panicking_session_fails_its_requests_and_goes_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (queue, commands) = std::sync::mpsc::channel();
+        queue
+            .send(Job {
+                request: 5,
+                command: Command::SyncNow,
+            })
+            .unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            Paths::under(dir.path()),
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || -> Result<Box<dyn MailOps>, SyncError> { panic!("a bug") },
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Activity { activity: Activity::Offline { reason, .. }, .. } if reason == "crashed: a bug")),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, Event::CommandFailed { request: 5, message, .. } if message.starts_with("work is offline (crashed: a bug)"))),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_that_panics_still_gets_its_answer() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        sync_all(&mut ops, &Store::open_account(&paths, "work").unwrap()).unwrap();
+        ops.panic_on_add_flags = true;
+        let (queue, commands) = std::sync::mpsc::channel();
+        queue.send(mark_read(1)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        let answers: Vec<&Event> = events
+            .iter()
+            .filter(|e| e.request_ids().contains(&1))
+            .collect();
+        assert!(
+            matches!(answers.as_slice(), [Event::CommandFailed { message, .. }] if message.starts_with("work is offline (crashed: add_flags panicked)")),
+            "{events:?}"
+        );
+    }
+
+    const INVALID_RULES: &str =
+        "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n";
+
+    #[test]
+    fn mail_that_arrives_while_the_rules_file_is_invalid_notifies_once_across_restarts_and_gets_the_rules_once_fixed()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let acct = account();
+        let mut state = AccountSync::open(&acct, &paths).unwrap();
+        let mut ops = ops_with_inbox();
+        sync_all(&mut ops, &state.store).unwrap();
+        // The rule ran before the bad edit, so its clock already started.
+        state.store.rule_first_seen("codes", 0).unwrap();
+        write_rules(&paths.config_dir, INVALID_RULES);
+        ops.add_mail(
+            "INBOX",
+            3,
+            12 * H,
+            &headers("bob@x", "your code", "m3@x"),
+            Some("From: bob@x\r\n\r\ncode 99"),
+        );
+        let commands = std::sync::mpsc::channel::<Job>().1;
+        let stop = AtomicBool::new(false);
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Each pass starts from nothing carried over, like the first pass of a restarted daemon or account thread.
+        for _ in 0..2 {
+            state
+                .pass(
+                    &mut ops,
+                    true,
+                    &mut Carried::default(),
+                    &tx,
+                    &commands,
+                    &stop,
+                )
+                .unwrap();
+        }
+        write_rules(
+            &paths.config_dir,
+            "[[rules]]\nname = \"codes\"\nmatch.body = { contains = \"code\" }\nactions = [\"flag\"]\n",
+        );
+        state
+            .pass(
+                &mut ops,
+                true,
+                &mut Carried::default(),
+                &tx,
+                &commands,
+                &stop,
+            )
+            .unwrap();
+        let message = state.store.message("INBOX", 3).unwrap().unwrap();
+        assert!(message.flags.contains("\\Flagged"), "{message:?}");
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert_eq!(notified(&events), [3], "{events:?}");
+    }
+
+    #[test]
+    fn the_last_good_rules_survive_a_reconnect() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        // The rule ran before, so its clock covers the mail already on the server.
+        let store = Store::open_account(&paths, "work").unwrap();
+        store.rule_first_seen("codes", 0).unwrap();
+        write_rules(&paths.config_dir, FLAG_NOREPLY);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut dropped = ops_with_inbox();
+        dropped.fail_fetch_after = Some(0);
+        let mut reconnected = ops_with_inbox();
+        reconnected.shutdown_when_idle_empty = Some(shutdown.clone());
+        let mut servers = vec![reconnected, dropped];
+        let config_dir = paths.config_dir.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            std::sync::mpsc::channel::<Job>().1,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(servers.pop().unwrap()) as Box<dyn MailOps>),
+            |_| {
+                write_rules(&config_dir, INVALID_RULES);
+            },
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::Synced { actions: 1, .. })),
+            "{events:?}"
+        );
+        assert!(
+            store
+                .message("INBOX", 2)
+                .unwrap()
+                .unwrap()
+                .flags
+                .contains("\\Flagged")
         );
     }
 
@@ -1791,7 +2561,7 @@ mod tests {
             paths.clone(),
             tx,
             shutdown,
-            std::sync::mpsc::channel::<Command>().1,
+            std::sync::mpsc::channel::<Job>().1,
             Arc::new(AtomicBool::new(false)),
             || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
             |_| panic!("the session must not fail"),
@@ -2197,7 +2967,7 @@ mod tests {
             paths,
             tx,
             shutdown,
-            std::sync::mpsc::channel::<Command>().1,
+            std::sync::mpsc::channel::<Job>().1,
             Arc::new(AtomicBool::new(false)),
             || {
                 connects += 1;
@@ -2286,13 +3056,7 @@ mod tests {
                 }
             )
         });
-        commands_tx
-            .send(Command::Apply {
-                folder: "INBOX".into(),
-                uids: vec![1],
-                action: Action::MarkRead,
-            })
-            .unwrap();
+        commands_tx.send(mark_read(1)).unwrap();
         wake.store(true, Ordering::Relaxed);
         let done = wait_for(&rx, &mut log, |e| matches!(e, Event::ActionDone { .. }));
         assert!(matches!(done, Event::ActionDone { results, .. } if results == [(1, Ok(1))]));
@@ -2364,7 +3128,7 @@ mod tests {
         let paths = Paths::under(dir.path());
         let (tx, rx) = std::sync::mpsc::channel();
         let (commands_tx, commands) = std::sync::mpsc::channel();
-        commands_tx.send(Command::SyncNow).unwrap();
+        commands_tx.send(sync_now(1)).unwrap();
         let shutdown = Arc::new(AtomicBool::new(false));
         ops.shutdown_when_idle_empty = Some(shutdown.clone());
         run_loop_with(
@@ -2412,8 +3176,13 @@ mod tests {
         let worker = {
             let (paths, shutdown, wake) =
                 (Paths::under(dir.path()), shutdown.clone(), wake.clone());
-            let commands = std::sync::mpsc::channel::<Command>().1;
-            std::thread::spawn(move || run_loop(offline, paths, tx, shutdown, commands, wake))
+            let commands = std::sync::mpsc::channel::<Job>().1;
+            std::thread::spawn(move || {
+                let account = offline.clone();
+                run_loop(offline, paths, tx, shutdown, commands, wake, move || {
+                    Ok(Box::new(connect(&account)?) as Box<dyn MailOps>)
+                })
+            })
         };
         wait_for(&rx, &mut Vec::new(), |e| {
             matches!(
@@ -2438,8 +3207,8 @@ mod tests {
     /// Queues commands and a connection failure when the pass selects `folder`, i.e. before its chunk checkpoint.
     struct QueuesCommandsOnSelect {
         inner: RecordingOps,
-        commands: std::sync::mpsc::Sender<Command>,
-        queued: Vec<Command>,
+        commands: std::sync::mpsc::Sender<Job>,
+        queued: Vec<Job>,
         folder: &'static str,
     }
 
@@ -2513,11 +3282,22 @@ mod tests {
         }
     }
 
-    fn mark_read(uid: u32) -> Command {
-        Command::Apply {
-            folder: "INBOX".into(),
-            uids: vec![uid],
-            action: Action::MarkRead,
+    fn mark_read(uid: u32) -> Job {
+        Job {
+            request: RequestId::from(uid),
+            command: Command::Apply {
+                folder: "INBOX".into(),
+                uids: vec![uid],
+                action: Action::MarkRead,
+                by: "test".into(),
+            },
+        }
+    }
+
+    fn sync_now(request: RequestId) -> Job {
+        Job {
+            request,
+            command: Command::SyncNow,
         }
     }
 
@@ -2538,7 +3318,14 @@ mod tests {
             folder: "INBOX",
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        let result = state.pass(&mut ops, true, &tx, &commands, &AtomicBool::new(false));
+        let result = state.pass(
+            &mut ops,
+            true,
+            &mut Carried::default(),
+            &tx,
+            &commands,
+            &AtomicBool::new(false),
+        );
         let error = result.unwrap_err();
         assert!(error.to_string().contains("reset"), "{error}");
         let events: Vec<Event> = rx.try_iter().collect();
@@ -2596,11 +3383,29 @@ mod tests {
         };
         let stop = AtomicBool::new(false);
         let (tx, _) = std::sync::mpsc::channel();
-        assert!(state.pass(&mut ops, true, &tx, &commands, &stop).is_err());
+        assert!(
+            state
+                .pass(
+                    &mut ops,
+                    true,
+                    &mut Carried::default(),
+                    &tx,
+                    &commands,
+                    &stop
+                )
+                .is_err()
+        );
         assert_eq!(state.store.folder("INBOX").unwrap().unwrap().last_uid, 3);
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .pass(&mut ops.inner, true, &tx, &commands, &stop)
+            .pass(
+                &mut ops.inner,
+                true,
+                &mut Carried::default(),
+                &tx,
+                &commands,
+                &stop,
+            )
             .unwrap();
         (rx.try_iter().collect(), state.store, dir)
     }
@@ -2627,19 +3432,44 @@ mod tests {
         let acct = account();
         let mut state = AccountSync::open(&acct, &paths).unwrap();
         let mut ops = RecordingOps::new().with_folder("INBOX", None);
-        let commands = std::sync::mpsc::channel::<Command>().1;
+        let commands = std::sync::mpsc::channel::<Job>().1;
         let stop = AtomicBool::new(false);
         let (tx, rx) = std::sync::mpsc::channel();
-        state.pass(&mut ops, true, &tx, &commands, &stop).unwrap();
+        state
+            .pass(
+                &mut ops,
+                true,
+                &mut Carried::default(),
+                &tx,
+                &commands,
+                &stop,
+            )
+            .unwrap();
         for uid in 1..=600 {
             let id = format!("n{uid}@x");
             ops.add_mail("INBOX", uid, 12 * H, &headers("bob@x", "new", &id), None);
         }
         ops.fail_fetch_after = Some(1);
-        let _ = state.pass(&mut ops, true, &tx, &commands, &stop);
+        let _ = state.pass(
+            &mut ops,
+            true,
+            &mut Carried::default(),
+            &tx,
+            &commands,
+            &stop,
+        );
         assert_eq!(state.store.message_count("INBOX").unwrap(), 500);
         ops.fail_fetch_after = None;
-        state.pass(&mut ops, true, &tx, &commands, &stop).unwrap();
+        state
+            .pass(
+                &mut ops,
+                true,
+                &mut Carried::default(),
+                &tx,
+                &commands,
+                &stop,
+            )
+            .unwrap();
         let mut uids = notified(&rx.try_iter().collect::<Vec<_>>());
         uids.sort_unstable();
         assert_eq!(uids, (1..=600).collect::<Vec<u32>>());
@@ -2652,11 +3482,13 @@ mod tests {
         let acct = account();
         let mut state = AccountSync::open(&acct, &paths).unwrap();
         let mut ops = ops_with_inbox();
-        let commands = std::sync::mpsc::channel::<Command>().1;
+        let commands = std::sync::mpsc::channel::<Job>().1;
         let stop = AtomicBool::new(false);
         let mut pass = |ops: &mut RecordingOps| {
             let (tx, rx) = std::sync::mpsc::channel();
-            state.pass(ops, true, &tx, &commands, &stop).unwrap();
+            state
+                .pass(ops, true, &mut Carried::default(), &tx, &commands, &stop)
+                .unwrap();
             notified(&rx.try_iter().collect::<Vec<_>>())
         };
         assert!(pass(&mut ops).is_empty());
@@ -2678,7 +3510,14 @@ mod tests {
         commands_tx.send(mark_read(1)).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         state
-            .pass(&mut ops, false, &tx, &commands, &AtomicBool::new(false))
+            .pass(
+                &mut ops,
+                false,
+                &mut Carried::default(),
+                &tx,
+                &commands,
+                &AtomicBool::new(false),
+            )
             .unwrap();
         let events: Vec<Event> = rx.try_iter().collect();
         let position = |wanted: fn(&Event) -> bool| events.iter().position(wanted).unwrap();
@@ -2702,18 +3541,44 @@ mod tests {
         (ops, store, tempfile::tempdir().unwrap())
     }
 
+    /// Runs the commands as requests 1, 2, ... against a missing rules file.
     fn drain(
         ops: &mut RecordingOps,
         store: &Store,
         trash: &Trash,
         commands: Vec<Command>,
     ) -> (Result<CommandsRun, SyncError>, Vec<Event>) {
+        let missing_rules = Path::new("/nonexistent/rules.toml");
+        drain_with_rules(ops, store, trash, missing_rules, commands)
+    }
+
+    fn drain_with_rules(
+        ops: &mut RecordingOps,
+        store: &Store,
+        trash: &Trash,
+        rules_path: &Path,
+        commands: Vec<Command>,
+    ) -> (Result<CommandsRun, SyncError>, Vec<Event>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        for c in commands {
-            tx.send(c).unwrap();
+        for (index, command) in commands.into_iter().enumerate() {
+            let request = index as RequestId + 1;
+            tx.send(Job { request, command }).unwrap();
         }
         let (events, seen) = std::sync::mpsc::channel();
-        let run = run_commands(ops, store, trash, &account(), &rx, &events);
+        let acc = account();
+        let identity = acc.identity().unwrap();
+        let mut carried = Carried::default();
+        let run = run_commands(
+            ops,
+            store,
+            trash,
+            &acc,
+            &identity,
+            rules_path,
+            &rx,
+            &mut carried,
+            &events,
+        );
         (run, seen.try_iter().collect())
     }
 
@@ -2725,13 +3590,14 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![1, 99],
             action: Action::MarkRead,
+            by: "test".into(),
         };
         let (run, events) = drain(&mut ops, &store, &trash, vec![apply, Command::SyncNow]);
         assert_eq!(
             run.unwrap(),
             CommandsRun {
                 used_connection: true,
-                wants_full_pass: true
+                wants_full_pass: true,
             }
         );
         let done = events
@@ -2773,7 +3639,8 @@ mod tests {
         assert!(events.contains(&Event::BodyReady {
             account: "work".into(),
             folder: "INBOX".into(),
-            uid: 1
+            uid: 1,
+            request: 1
         }));
     }
 
@@ -2791,7 +3658,8 @@ mod tests {
         assert!(ops.calls.iter().any(|c| c.starts_with("append INBOX")));
         assert!(events.contains(&Event::Restored {
             account: "work".into(),
-            folder: "INBOX".into()
+            folder: "INBOX".into(),
+            request: 1
         }));
     }
 
@@ -2811,7 +3679,7 @@ mod tests {
         assert!(outside.exists());
         assert!(!ops.calls.iter().any(|c| c.starts_with("append")));
         assert!(events.iter().any(
-            |e| matches!(e, Event::Error { message, .. } if message.contains("not a backup"))
+            |e| matches!(e, Event::CommandFailed { request: 1, message, .. } if message.contains("not a backup"))
         ));
     }
 
@@ -2833,7 +3701,7 @@ mod tests {
         assert!(link.is_symlink());
         assert!(!ops.calls.iter().any(|c| c.starts_with("append")));
         assert!(events.iter().any(
-            |e| matches!(e, Event::Error { message, .. } if message.contains("not a backup"))
+            |e| matches!(e, Event::CommandFailed { request: 1, message, .. } if message.contains("not a backup"))
         ));
     }
 
@@ -2846,6 +3714,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![1],
             action: Action::MarkRead,
+            by: "test".into(),
         };
         let next = Command::FetchBody {
             folder: "INBOX".into(),
@@ -2873,7 +3742,11 @@ mod tests {
         };
         let (run, events) = drain(&mut ops, &store, &trash, vec![fetch]);
         assert!(matches!(run, Err(SyncError::Action(ref e)) if e.to_string().contains("reset")));
-        assert!(!events.iter().any(|e| matches!(e, Event::Error { .. })));
+        assert!(
+            events.iter().any(|e| matches!(e,
+                Event::CommandFailed { request: 1, message, .. } if message.contains("reset"))),
+            "{events:?}"
+        );
     }
 
     #[test]
@@ -2884,7 +3757,7 @@ mod tests {
             .save("INBOX", 7, b"Subject: back\r\n\r\n", 100)
             .unwrap();
         ops.fail_next = Some(MailError::Io("reset".into()));
-        let (run, _) = drain(
+        let (run, events) = drain(
             &mut ops,
             &store,
             &trash,
@@ -2892,6 +3765,11 @@ mod tests {
         );
         assert!(matches!(run, Err(SyncError::Mail(MailError::Io(_)))));
         assert!(file.exists());
+        assert!(
+            events.iter().any(|e| matches!(e,
+                Event::CommandFailed { request: 1, message, .. } if message.contains("reset"))),
+            "{events:?}"
+        );
     }
 
     #[test]
@@ -2912,7 +3790,7 @@ mod tests {
         let (run, events) = drain(&mut ops, &store, &trash, commands);
         assert!(run.is_ok());
         assert!(events.iter().any(
-            |e| matches!(e, Event::Error { message, .. } if message.contains("INBOX/1") && message.contains("NO"))
+            |e| matches!(e, Event::CommandFailed { request: 1, message, .. } if message.contains("INBOX/1") && message.contains("NO"))
         ));
         assert!(
             events
@@ -2941,12 +3819,513 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, Event::Error { message, .. } if message.contains("INBOX/1")))
+                .any(|e| matches!(e, Event::CommandFailed { request: 1, message, .. } if message.contains("INBOX/1")))
         );
         assert!(
             events
                 .iter()
                 .any(|e| matches!(e, Event::BodyReady { uid: 2, .. }))
+        );
+    }
+
+    #[test]
+    fn a_command_failure_carries_its_request_id() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let restore = Command::Restore {
+            file: "/nope.eml".into(),
+        };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![restore]);
+        assert!(run.is_ok());
+        let failed: Vec<&Event> = events
+            .iter()
+            .filter(|e| matches!(e, Event::CommandFailed { .. }))
+            .collect();
+        assert_eq!(failed.len(), 1, "{events:?}");
+        let Event::CommandFailed {
+            account,
+            request,
+            message,
+        } = failed[0]
+        else {
+            unreachable!()
+        };
+        assert_eq!((account.as_str(), *request), ("work", 1));
+        assert_eq!(message, "/nope.eml is not a backup in this account's trash");
+    }
+
+    #[test]
+    fn sync_now_ids_come_back_on_the_synced_that_answers_them() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(sync_now(3)).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_when_idle_empty = Some(shutdown.clone());
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| panic!("the session must not fail"),
+        );
+        let answers: Vec<Vec<RequestId>> = rx
+            .try_iter()
+            .filter_map(|e| match e {
+                Event::Synced { requests, .. } => Some(requests),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answers, vec![vec![], vec![3]]);
+    }
+
+    #[test]
+    fn queued_jobs_fail_when_the_account_goes_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        let fetch = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 1,
+        };
+        commands_tx
+            .send(Job {
+                request: 5,
+                command: fetch,
+            })
+            .unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Err(SyncError::Mail(MailError::Connect("refused".into()))),
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|e| matches!(e,
+                Event::CommandFailed { request: 5, message, .. }
+                    if message.starts_with("work is offline (could not connect: refused); retrying at "))),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn apply_logs_the_requester_as_the_rule_name() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let apply = Command::Apply {
+            folder: "INBOX".into(),
+            uids: vec![1],
+            action: Action::MarkRead,
+            by: "mcp:host".into(),
+        };
+        let (_, events) = drain(&mut ops, &store, &trash, vec![apply]);
+        assert_eq!(store.log(1).unwrap()[0].rule_name, "mcp:host");
+        assert!(events.iter().any(|e| matches!(e,
+            Event::ActionDone { request: 1, results, .. } if results == &[(1, Ok(1))])));
+    }
+
+    fn write_rules(dir: &Path, toml: &str) -> PathBuf {
+        let path = dir.join("rules.toml");
+        std::fs::write(&path, toml).unwrap();
+        path
+    }
+
+    const FLAG_NOREPLY: &str = "[[rules]]\nname = \"codes\"\nmatch.from = { contains = \"noreply@\" }\nactions = [\"flag\"]\n";
+
+    #[test]
+    fn apply_rule_acts_on_stored_messages_and_reports_the_run() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let rules = write_rules(dir.path(), FLAG_NOREPLY);
+        let apply_rule = Command::ApplyRule {
+            name: "codes".into(),
+        };
+        let (run, events) = drain_with_rules(&mut ops, &store, &trash, &rules, vec![apply_rule]);
+        assert!(run.unwrap().used_connection);
+        assert!(
+            store
+                .message("INBOX", 2)
+                .unwrap()
+                .unwrap()
+                .flags
+                .contains("\\Flagged")
+        );
+        let applied = events
+            .iter()
+            .find_map(|e| match e {
+                Event::RuleApplied {
+                    request,
+                    evaluated,
+                    actions,
+                    errors,
+                    ..
+                } => Some((*request, *evaluated, *actions, errors.clone())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no RuleApplied in {events:?}"));
+        let (request, evaluated, actions, errors) = applied;
+        assert_eq!((request, actions, errors), (1, 1, Vec::new()));
+        assert!(evaluated >= 1, "evaluated {evaluated}");
+    }
+
+    #[test]
+    fn apply_rule_refuses_a_disabled_or_unknown_rule() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let rules = write_rules(
+            dir.path(),
+            &format!("{FLAG_NOREPLY}enabled = false\n").replace("codes", "pending"),
+        );
+        let commands = ["pending", "missing"].map(|name| Command::ApplyRule { name: name.into() });
+        let (run, events) = drain_with_rules(&mut ops, &store, &trash, &rules, commands.to_vec());
+        assert!(run.is_ok());
+        let failures: Vec<(RequestId, &str)> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::CommandFailed {
+                    request, message, ..
+                } => Some((*request, message.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            failures,
+            [
+                (1, "rule 'pending' is disabled; approve or enable it first"),
+                (2, "no rule named 'missing'"),
+            ]
+        );
+        assert!(
+            !store
+                .message("INBOX", 2)
+                .unwrap()
+                .unwrap()
+                .flags
+                .contains("\\Flagged")
+        );
+    }
+
+    #[test]
+    fn fetch_bodies_reports_how_many_arrived() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let fetch = Command::FetchBodies {
+            folder: Some("INBOX".into()),
+        };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![fetch]);
+        assert!(run.unwrap().used_connection);
+        assert!(events.contains(&Event::BodiesFetched {
+            account: "work".into(),
+            request: 1,
+            fetched: 2
+        }));
+        assert!(
+            store
+                .message("INBOX", 1)
+                .unwrap()
+                .unwrap()
+                .body_text
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn fetch_bodies_without_a_folder_covers_every_stored_folder() {
+        let (mut ops, store, dir) = synced();
+        ops.add_mail(
+            "Trash",
+            1,
+            10 * H,
+            &headers("carol@x", "old", "t1@x"),
+            Some("From: carol@x\r\n\r\nbye"),
+        );
+        let trash = Trash::new(dir.path().to_path_buf());
+        sync_all(&mut ops, &store).unwrap();
+        let (_, events) = drain(
+            &mut ops,
+            &store,
+            &trash,
+            vec![Command::FetchBodies { folder: None }],
+        );
+        assert!(events.contains(&Event::BodiesFetched {
+            account: "work".into(),
+            request: 1,
+            fetched: 3
+        }));
+    }
+
+    #[test]
+    fn events_and_commands_round_trip_as_json() {
+        for event in [
+            Event::Synced {
+                account: "a".into(),
+                new_messages: 1,
+                actions: 0,
+                requests: vec![2],
+                errors: vec![],
+            },
+            Event::CommandFailed {
+                account: "a".into(),
+                request: 9,
+                message: "x".into(),
+            },
+            Event::ActionDone {
+                account: "a".into(),
+                folder: "INBOX".into(),
+                results: vec![(1, Ok(1)), (2, Err("e".into()))],
+                request: 4,
+            },
+        ] {
+            let text = serde_json::to_string(&event).unwrap();
+            assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), event);
+        }
+        let job = Job {
+            request: 1,
+            command: Command::Apply {
+                folder: "INBOX".into(),
+                uids: vec![1],
+                action: Action::Archive,
+                by: "cli".into(),
+            },
+        };
+        let text = serde_json::to_string(&job).unwrap();
+        assert_eq!(serde_json::from_str::<Job>(&text).unwrap(), job);
+    }
+
+    #[test]
+    fn every_action_a_front_end_can_send_survives_the_wire() {
+        for action in [
+            Action::Archive,
+            Action::Delete,
+            Action::Flag,
+            Action::MarkRead,
+            Action::MarkUnread,
+            Action::Move("Lists/rust".into()),
+            Action::Notify,
+            Action::Silent,
+            Action::Trash,
+            Action::Unflag,
+        ] {
+            let command = Command::Apply {
+                folder: "INBOX".into(),
+                uids: vec![1],
+                action,
+                by: "cli".into(),
+            };
+            let text = serde_json::to_string(&command)
+                .unwrap_or_else(|e| panic!("{command:?} does not serialize: {e}"));
+            assert_eq!(serde_json::from_str::<Command>(&text).unwrap(), command);
+        }
+    }
+
+    #[test]
+    fn request_ids_name_what_an_event_completes() {
+        let synced = Event::Synced {
+            account: "a".into(),
+            new_messages: 0,
+            actions: 0,
+            requests: vec![1, 2],
+            errors: vec![],
+        };
+        let new_mail = Event::NewMail {
+            account: "a".into(),
+            folder: "INBOX".into(),
+            uid: 1,
+            from: String::new(),
+            subject: String::new(),
+        };
+        let restored = Event::Restored {
+            account: "a".into(),
+            folder: "INBOX".into(),
+            request: 8,
+        };
+        assert_eq!(synced.request_ids(), vec![1, 2]);
+        assert_eq!(restored.request_ids(), vec![8]);
+        assert!(new_mail.request_ids().is_empty());
+    }
+
+    #[test]
+    fn fetch_bodies_for_a_named_folder_fails_when_that_folder_cannot_be_fetched() {
+        let (mut ops, store, dir) = synced();
+        let trash = Trash::new(dir.path().to_path_buf());
+        ops.uidvalidity.insert("INBOX".into(), 9);
+        let fetch = Command::FetchBodies {
+            folder: Some("INBOX".into()),
+        };
+        let (run, events) = drain(&mut ops, &store, &trash, vec![fetch]);
+        assert!(run.is_ok());
+        assert!(
+            events.iter().any(|e| matches!(e,
+                Event::CommandFailed { request: 1, message, .. } if message.contains("INBOX"))),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::BodiesFetched { .. }))
+        );
+    }
+
+    #[test]
+    fn a_session_that_fails_mid_pass_fails_the_sync_now_ids_it_holds() {
+        let mut ops = ops_with_inbox();
+        ops.fail_fetch_after = Some(0);
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(sync_now(6)).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        let failed: Vec<RequestId> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::CommandFailed { request, .. } => Some(*request),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failed, vec![6], "{events:?}");
+        assert!(!events.iter().any(|e| matches!(e, Event::Synced { .. })));
+    }
+
+    #[test]
+    fn a_lost_connection_later_in_a_drain_still_fails_the_sync_now_drained_before_it() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        paths.ensure_account("work").unwrap();
+        sync_all(&mut ops, &Store::open(&paths.mail_db("work")).unwrap()).unwrap();
+        ops.fail_next = Some(MailError::Io("reset".into()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(sync_now(7)).unwrap();
+        let fetch = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 1,
+        };
+        let fetch = Job {
+            request: 8,
+            command: fetch,
+        };
+        commands_tx.send(fetch).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        let mut failed: Vec<RequestId> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::CommandFailed { request, .. } => Some(*request),
+                _ => None,
+            })
+            .collect();
+        failed.sort_unstable();
+        assert_eq!(failed, vec![7, 8], "{events:?}");
+    }
+
+    fn failures_of(events: &[Event]) -> Vec<(RequestId, String)> {
+        let mut failed: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::CommandFailed {
+                    request, message, ..
+                } => Some((*request, message.clone())),
+                _ => None,
+            })
+            .collect();
+        failed.sort();
+        failed
+    }
+
+    #[test]
+    fn a_stop_mid_pass_fails_the_held_sync_now_as_stopped() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(sync_now(7)).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        ops.shutdown_on_list_folders = Some(shutdown.clone());
+        run_loop_with(
+            account(),
+            Paths::under(dir.path()),
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| panic!("a stop is not a failure"),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert_eq!(
+            failures_of(&events),
+            [(7, "work stopped".to_string())],
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_stop_fails_queued_jobs_as_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(sync_now(3)).unwrap();
+        commands_tx
+            .send(Job {
+                request: 4,
+                command: Command::ApplyRule { name: "x".into() },
+            })
+            .unwrap();
+        run_loop_with(
+            account(),
+            Paths::under(dir.path()),
+            tx,
+            Arc::new(AtomicBool::new(true)),
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || panic!("a stopped loop does not connect"),
+            |_| panic!("a stop is not a failure"),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert_eq!(
+            failures_of(&events),
+            [
+                (3, "work stopped".to_string()),
+                (4, "work stopped".to_string())
+            ]
         );
     }
 }

@@ -28,7 +28,8 @@ actions = ["delete"]
 
 ```sh
 postbode rules test       # dry run: what would each rule do?
-postbode run              # keep syncing, apply rules, notify on new mail
+postbode run              # keep syncing and applying rules in the foreground
+postbode service install  # run in the background at login
 ```
 
 Deleted mail is kept as `.eml` for 30 days: `postbode trash list` and `postbode trash restore FILE`.

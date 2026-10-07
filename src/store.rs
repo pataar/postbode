@@ -6,6 +6,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use rusqlite_migration::Migrations;
 use serde::{Deserialize, Serialize};
 
+use crate::paths::Paths;
+
 static MIGRATIONS_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/migrations");
 
 #[derive(Debug, thiserror::Error)]
@@ -176,11 +178,10 @@ impl Store {
         Store::init(conn)
     }
 
-    /// Changes when another connection commits to this database; this connection's own writes leave it alone.
-    pub fn data_version(&self) -> Result<i64, StoreError> {
-        Ok(self
-            .conn
-            .query_row("PRAGMA data_version", [], |r| r.get(0))?)
+    /// The account's store, in its private directory.
+    pub fn open_account(paths: &Paths, account: &str) -> Result<Store, StoreError> {
+        paths.ensure_account(account)?;
+        Store::open(&paths.mail_db(account))
     }
 
     pub fn open_in_memory() -> Result<Store, StoreError> {
@@ -191,7 +192,7 @@ impl Store {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        // The CLI writes (direct actions, body fetches) while `postbode run` may hold the write lock.
+        // Clients migrate and write rule clocks while the daemon may hold the write lock.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Store::migrations().to_latest(&mut conn)?;
         Ok(Store { conn })
@@ -255,6 +256,15 @@ impl Store {
 
     pub fn set_rules_uid(&self, folder: &str, uid: u32) -> Result<(), StoreError> {
         self.set_folder_uid(folder, "rules_uid", uid)
+    }
+
+    /// The highest uid new-mail notifications have covered in `folder`; 0 when unknown.
+    pub fn notified_uid(&self, folder: &str) -> Result<u32, StoreError> {
+        self.folder_uid(folder, "notified_uid")
+    }
+
+    pub fn set_notified_uid(&self, folder: &str, uid: u32) -> Result<(), StoreError> {
+        self.set_folder_uid(folder, "notified_uid", uid)
     }
 
     /// A uid column of the `folders` row; 0 when the folder is untracked.
@@ -609,6 +619,16 @@ fn quote_words(query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_account_makes_the_account_directory_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        Store::open_account(&paths, "work").unwrap();
+        let meta = std::fs::metadata(paths.account_dir("work")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
 
     fn msg(folder: &str, uid: u32, internaldate: i64) -> Message {
         Message {
@@ -981,6 +1001,22 @@ mod tests {
     }
 
     #[test]
+    fn migration_003_counts_mail_the_rules_saw_as_notified() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Store::migrations().to_version(&mut conn, 2).unwrap();
+        conn.execute(
+            "INSERT INTO folders (name, uidvalidity, last_uid, rules_uid) VALUES ('INBOX', 7, 42, 40)",
+            [],
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.rules_uid("INBOX").unwrap(), 40);
+        assert_eq!(s.notified_uid("INBOX").unwrap(), 40);
+        s.set_notified_uid("INBOX", 42).unwrap();
+        assert_eq!(s.notified_uid("INBOX").unwrap(), 42);
+    }
+
+    #[test]
     fn rules_uid_round_trips_and_survives_upsert() {
         let s = store_with_inbox();
         assert_eq!(s.rules_uid("INBOX").unwrap(), 0);
@@ -1101,24 +1137,5 @@ mod tests {
         let latest = &s.thread_summaries("INBOX", 10).unwrap()[0].latest;
         assert_eq!((latest.from.as_str(), latest.subject.as_str()), ("", ""));
         assert!(!latest.is_seen() && !latest.is_flagged());
-    }
-
-    #[test]
-    fn data_version_moves_on_another_connections_write_only() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("mail.db");
-        let ours = Store::open(&path).unwrap();
-        let theirs = Store::open(&path).unwrap();
-        let folder = |name: &str| Folder {
-            name: name.into(),
-            uidvalidity: 1,
-            last_uid: 0,
-            special_use: None,
-        };
-        let before = ours.data_version().unwrap();
-        ours.upsert_folder(&folder("A")).unwrap();
-        assert_eq!(ours.data_version().unwrap(), before);
-        theirs.upsert_folder(&folder("B")).unwrap();
-        assert_ne!(ours.data_version().unwrap(), before);
     }
 }

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use postbode::config::{AccountConfig, Config, PasswordSource};
 use postbode::credentials::Secret;
-use postbode::engine::Engine;
+use postbode::engine::{Engine, imap_connector};
 use postbode::mail_ops::imap::ImapOps;
 use postbode::mail_ops::{Envelope, IdleOutcome, MailOps};
 use postbode::paths::Paths;
@@ -195,6 +195,7 @@ fn postbode(home: &Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
         .args(args)
         .env("POSTBODE_HOME", home)
+        .env("POSTBODE_IDLE_EXIT_SECS", "1")
         .env("RUST_LOG", "error")
         .output()
         .unwrap()
@@ -299,6 +300,95 @@ fn cli_delete_moves_to_the_trash_folder() {
     ops.select("INBOX").unwrap();
     assert!(all_envelopes(&mut ops).is_empty(), "still in INBOX");
     ops.select("Trash").unwrap();
+    assert_eq!(all_envelopes(&mut ops).len(), 1);
+}
+
+#[test]
+fn cli_actions_are_logged_as_cli_through_the_daemon() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "cli-logged");
+    let home = home_with(&account, "");
+    connect(&account)
+        .append("INBOX", &mail("file me"), &[])
+        .unwrap();
+    for args in [&["sync"][..], &["archive", "1"][..]] {
+        let out = postbode(home.path(), args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let paths = Paths::under(home.path());
+    let store = Store::open(&paths.mail_db(&account.name)).unwrap();
+    assert_eq!(store.log(1).unwrap()[0].rule_name, "cli");
+    let pid = std::fs::read_to_string(paths.daemon_lock()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while paths.daemon_socket().exists() || alive(pid.trim()) {
+        assert!(
+            Instant::now() < deadline,
+            "the auto-started daemon (pid {pid}) did not idle out"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn alive(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[test]
+fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
+    let Some(host) = host() else { return };
+    let account = account(&host, PORT, "cli-restore");
+    let home = home_with(
+        &account,
+        "[[rules]]\nname = \"codes\"\nmatch.subject = { contains = \"sign-in code\" }\nactions = [\"delete\"]\n",
+    );
+    connect(&account)
+        .append("INBOX", &mail("Your sign-in code"), &[])
+        .unwrap();
+    wait_past_the_rule_clock();
+    let success = |args: &[&str]| {
+        let out = postbode(home.path(), args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    success(&["sync"]);
+    assert!(success(&["search", "--bodies", "Body"]).contains("INBOX/1"));
+    assert!(success(&["show", "1", "--raw"]).contains("Body of Your sign-in code"));
+    assert!(success(&["rules", "apply-existing", "codes"]).contains("live: 1 actions on"));
+
+    let trash_dir = Paths::under(home.path()).trash_dir(&account.name);
+    let backup = std::fs::read_dir(&trash_dir)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap();
+    let restored = std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .args(["trash", "restore"])
+        .arg(backup.file_name())
+        .current_dir(&trash_dir)
+        .env("POSTBODE_HOME", home.path())
+        .env("POSTBODE_IDLE_EXIT_SECS", "1")
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let mut ops = connect(&account);
+    ops.select("INBOX").unwrap();
     assert_eq!(all_envelopes(&mut ops).len(), 1);
 }
 
@@ -420,7 +510,7 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
         accounts: vec![account.clone()],
         ..Default::default()
     };
-    let (engine, events) = Engine::start(&config, &Paths::under(home.path()));
+    let (engine, events) = Engine::start(&config, &Paths::under(home.path()), imap_connector());
     let wait = |wanted: &dyn Fn(&Event) -> bool| {
         loop {
             let event = events
@@ -443,10 +533,12 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
     let sent = Instant::now();
     assert!(engine.send(
         &account.name,
+        1,
         Command::Apply {
             folder: "INBOX".into(),
             uids: vec![1],
             action: Action::MarkRead,
+            by: "gui".into(),
         }
     ));
     let done = wait(&|e| matches!(e, Event::ActionDone { .. }));
@@ -456,14 +548,42 @@ fn a_command_wakes_idle_and_runs_within_two_seconds() {
         sent.elapsed()
     );
     assert!(matches!(done, Event::ActionDone { results, .. } if results == [(1, Ok(1))]));
-    engine.stop();
+    drop(engine);
 }
 
+/// The binary behind a script that sets the idle exit to 1 s; tests cannot set environment variables without unsafe.
+#[cfg(feature = "mcp")]
+fn idling_exe() -> &'static Path {
+    use std::sync::OnceLock;
+    static SCRIPT: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    &SCRIPT
+        .get_or_init(|| {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let script = dir.path().join("postbode");
+            let text = format!(
+                "#!/bin/sh\nPOSTBODE_IDLE_EXIT_SECS=1 exec '{}' \"$@\"\n",
+                env!("CARGO_BIN_EXE_postbode")
+            );
+            std::fs::write(&script, text).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (dir, script)
+        })
+        .1
+}
+
+/// A backend on a daemon this test starts, which exits a second after the backend is dropped.
 #[cfg(feature = "mcp")]
 fn backend(home: &Path) -> postbode::mcp::Backend {
     let paths = Paths::under(home);
     let config = Config::load(&paths.config_file()).unwrap();
-    postbode::mcp::Backend::new(&config, &paths, &[]).unwrap()
+    let client = postbode::daemon::Client::connect_or_start_with(
+        &paths,
+        idling_exe(),
+        postbode::daemon::wire::VERSION,
+    )
+    .unwrap();
+    postbode::mcp::Backend::with_client(&config, &paths, &[], client).unwrap()
 }
 
 #[cfg(feature = "mcp")]

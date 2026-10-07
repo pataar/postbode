@@ -1,17 +1,18 @@
-//! A temp Postbode home with stores and a detached engine, for the GUI tests.
-use std::sync::mpsc::{self, Receiver, Sender};
+//! A temp Postbode home with stores and an in-memory daemon client, for the GUI tests.
+use std::sync::mpsc::{Receiver, Sender};
 
 use eframe::egui;
 use egui_kittest::Harness;
 use tempfile::TempDir;
 
 use crate::config::Config;
-use crate::engine::Engine;
+use crate::daemon::Client;
 use crate::paths::Paths;
 use crate::store::{Folder, Message, Store};
 use crate::sync::{Command, Event};
 
 use super::App;
+use super::app::session;
 
 pub(crate) struct Fixture {
     pub accounts: Vec<String>,
@@ -19,7 +20,8 @@ pub(crate) struct Fixture {
     _dir: TempDir,
 }
 
-/// The app's ends of the detached engine: the commands it sent, and a sender for test events.
+/// The daemon's ends of the app's client: the commands it sent, and a sender for test events; dropping `events` reads
+/// as the daemon going away.
 pub(crate) struct Wires {
     pub commands: Receiver<(String, Command)>,
     pub events: Sender<Event>,
@@ -83,10 +85,10 @@ impl Fixture {
     pub fn harness(&self) -> (Harness<'static, App>, Wires) {
         let config = Config::load(&self.paths.config_file()).unwrap();
         let names: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
-        let (engine, commands) = Engine::detached(&names);
-        let (events, received) = mpsc::channel();
-        let mut app = App::new(&config, self.paths.clone(), engine, received);
-        app.notifier = |_, _| {};
+        let (client, commands, events) = Client::in_memory(&names);
+        let (client, received, states) = session(client).unwrap();
+        let mut app = App::new(&config, self.paths.clone(), client, received, states);
+        app.reconnect = |_| Err(anyhow::anyhow!("no daemon in tests"));
         app.downloads = self.paths.cache_dir.join("downloads");
         std::fs::create_dir_all(&app.downloads).unwrap();
         let harness = Harness::builder()

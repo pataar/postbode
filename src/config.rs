@@ -23,7 +23,7 @@ pub struct Config {
     pub ui: UiConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AccountConfig {
     pub name: String,
@@ -47,7 +47,7 @@ pub struct AccountConfig {
     pub ca_file: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PasswordSource {
     Keyring { keyring: bool },

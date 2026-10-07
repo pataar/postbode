@@ -1,17 +1,19 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
 use postbode::config::{AccountConfig, Config, Identity, PasswordSource};
 use postbode::credentials::{self, Secret};
-use postbode::engine::{Engine, StartState};
+use postbode::daemon::Client;
+use postbode::daemon::client::LazyClient;
+use postbode::daemon::wire::{AccountStatus, Status};
 use postbode::mail_ops::MailOps;
 use postbode::message::clean;
 use postbode::paths::Paths;
-use postbode::rules::engine::Mode;
 use postbode::rules::{Action, CompiledRule, Rule, RuleFile};
 use postbode::store::{Message, Store};
 use postbode::sync::{self, Event};
@@ -52,10 +54,24 @@ enum Mark {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
-    Run,
-    /// Open the mail window; syncs every account like `run`
+    /// Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
+    Run {
+        /// Exit after this many seconds with no client connected; what auto-start uses
+        #[arg(long, hide = true)]
+        idle_exit: Option<u64>,
+    },
+    /// Inspect or stop the daemon that syncs your accounts; other commands start it when needed
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+    /// Open the mail window; starts the daemon when needed
     Gui,
+    /// Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     /// Sync once, apply rules, exit
     Sync {
         #[arg(long)]
@@ -176,6 +192,30 @@ enum Command {
         account: Vec<String>,
         #[command(subcommand)]
         command: Option<McpCommand>,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonCommand {
+    /// Print the daemon's pid, version, uptime and what each account is doing
+    Status,
+    /// Stop the daemon; it starts again when a command needs it
+    Stop,
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Install and start the service; stops a daemon that is already running so the service's takes over
+    Install {
+        /// Print the file and the commands and change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Stop and remove the service
+    Remove {
+        /// Print the commands and change nothing
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -306,32 +346,16 @@ pub fn run() -> Result<()> {
     };
     let config = Config::load(&paths.config_file())?;
     match cli.command {
-        Command::Run => cmd_run(&config, &paths),
+        Command::Run { idle_exit } => cmd_run(&config, &paths, idle_exit),
+        Command::Daemon { command } => cmd_daemon(command, &paths),
         Command::Gui => cmd_gui(&config, &paths),
-        Command::Sync { account } => {
-            let (tx, rx) = mpsc::channel();
-            let mut failed = false;
-            for acc in select_accounts(&config, account.as_deref())? {
-                if let Err(e) = sync::run_once(acc, &paths, &tx) {
-                    eprintln!("[{}] error: {}", acc.name, clean(&format!("{e:#}"), false));
-                    failed = true;
-                }
-            }
-            drop(tx);
-            for event in rx {
-                failed |= matches!(event, Event::Error { .. });
-                print_event(&event);
-            }
-            if failed {
-                bail!("sync failed for at least one account or folder");
-            }
-            Ok(())
-        }
+        Command::Service { command } => cmd_service(command, &paths),
+        Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
         Command::Rules { command } => cmd_rules(command, &config, &paths),
         Command::Folders { account, json } => {
             for acc in select_accounts(&config, account.as_deref())? {
-                let store = open_store(&paths, &acc.name)?;
+                let store = Store::open_account(&paths, &acc.name)?;
                 for f in store.folders()? {
                     let total = store.message_count(&f.name)?;
                     let unread = store.unread_count(&f.name)?;
@@ -352,7 +376,7 @@ pub fn run() -> Result<()> {
             threads,
         } => {
             for acc in select_accounts(&config, account.as_deref())? {
-                let store = open_store(&paths, &acc.name)?;
+                let store = Store::open_account(&paths, &acc.name)?;
                 if threads {
                     for thread in store.threads(&folder, limit)? {
                         for (m, depth) in thread.iter().zip(postbode::output::depths(&thread)) {
@@ -385,10 +409,21 @@ pub fn run() -> Result<()> {
             limit,
             json,
         } => {
+            let daemon = LazyClient::new(&paths);
             for acc in select_accounts(&config, account.as_deref())? {
-                let store = open_store(&paths, &acc.name)?;
-                if bodies {
-                    fetch_missing_bodies(acc, &store, folder.as_deref())?;
+                let store = Store::open_account(&paths, &acc.name)?;
+                if bodies && lacks_bodies(&store, folder.as_deref())? {
+                    eprintln!(
+                        "{}: fetching missing bodies; this can take a while on a large folder",
+                        acc.name
+                    );
+                    if let Err(e) = fetch_bodies(&daemon, &acc.name, folder.as_deref()) {
+                        eprintln!(
+                            "{}: {}; searching the bodies already stored",
+                            acc.name,
+                            clean(&format!("{e:#}"), false)
+                        );
+                    }
                 }
                 for m in store.search(&query, folder.as_deref(), limit)? {
                     if json {
@@ -408,11 +443,11 @@ pub fn run() -> Result<()> {
             json,
         } => {
             let acc = single_account(&config, account.as_deref())?;
-            let store = open_store(&paths, &acc.name)?;
+            let store = Store::open_account(&paths, &acc.name)?;
             let msg = store
                 .message(&folder, uid)?
                 .with_context(|| format!("no message {folder}/{uid}"))?;
-            let body = postbode::actions::message_raw(acc, &store, &msg)?;
+            let body = LazyClient::new(&paths).raw_message(&acc.name, &store, &msg)?;
             if raw {
                 io::stdout().write_all(&body)?;
             } else if json {
@@ -454,7 +489,7 @@ pub fn run() -> Result<()> {
             json,
         } => {
             for acc in select_accounts(&config, account.as_deref())? {
-                let store = open_store(&paths, &acc.name)?;
+                let store = Store::open_account(&paths, &acc.name)?;
                 for e in store.log(limit)? {
                     if json {
                         println!("{}", postbode::output::with_account(&acc.name, &e)?);
@@ -493,7 +528,7 @@ pub fn run() -> Result<()> {
 /// Runs a direct action on the selected uids; `--dry-run` only reads the local store.
 fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action) -> Result<()> {
     let acc = single_account(config, selection.account.as_deref())?;
-    let store = open_store(paths, &acc.name)?;
+    let store = Store::open_account(paths, &acc.name)?;
     let folder = clean(&selection.folder, false);
     if selection.dry_run {
         let mut missing = 0;
@@ -515,22 +550,20 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         }
         return Ok(());
     }
-    let mut ops = sync::connect(acc)?;
-    let trash = Trash::new(paths.trash_dir(&acc.name));
-    let results = postbode::actions::run(
-        &mut ops,
-        &store,
-        &trash,
-        &selection.folder,
-        &selection.uids,
-        &action,
-        postbode::actions::RULE_NAME,
-        sync::now(),
-    )?;
+    let command = sync::Command::Apply {
+        folder: selection.folder.clone(),
+        uids: selection.uids.clone(),
+        action: action.clone(),
+        by: postbode::actions::RULE_NAME.into(),
+    };
+    let results = LazyClient::new(paths).request(&acc.name, command, |reply| match reply {
+        Event::ActionDone { results, .. } => Ok(results),
+        other => Err(other),
+    })?;
     let mut failed = 0;
     for (uid, result) in &results {
-        if let Err(e) = result {
-            eprintln!("{folder}/{uid}: {}", clean(&e.to_string(), false));
+        if let Err(message) = result {
+            eprintln!("{folder}/{uid}: {}", clean(message, false));
             failed += 1;
         }
     }
@@ -550,53 +583,138 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
     Ok(())
 }
 
-/// Fetches the bodies `search --bodies` needs; without a connection the search uses the bodies already stored, and a folder that cannot be fetched is reported and skipped.
-fn fetch_missing_bodies(
-    account: &AccountConfig,
-    store: &Store,
-    folder: Option<&str>,
-) -> Result<()> {
+fn lacks_bodies(store: &Store, folder: Option<&str>) -> Result<bool> {
     let folders = match folder {
         Some(folder) => vec![folder.to_string()],
         None => store.folders()?.into_iter().map(|f| f.name).collect(),
     };
-    let mut missing = Vec::new();
     for folder in folders {
         if store
             .messages_in_folder(&folder)?
             .iter()
             .any(|m| m.body_text.is_none())
         {
-            missing.push(folder);
+            return Ok(true);
         }
     }
-    if missing.is_empty() {
+    Ok(false)
+}
+
+/// Asks the daemon to fetch the missing bodies.
+fn fetch_bodies(daemon: &LazyClient, account: &str, folder: Option<&str>) -> Result<()> {
+    let fetch = sync::Command::FetchBodies {
+        folder: folder.map(str::to_string),
+    };
+    daemon.request(account, fetch, Ok)?;
+    Ok(())
+}
+
+fn cmd_sync(config: &Config, paths: &Paths, account: Option<&str>) -> Result<()> {
+    let accounts = select_accounts(config, account)?;
+    if accounts.is_empty() {
         return Ok(());
     }
-    let mut ops = match sync::connect(account) {
-        Ok(ops) => ops,
-        Err(e) => {
-            eprintln!(
-                "{}: could not connect ({}); searching the bodies already stored",
-                account.name,
-                clean(&format!("{e:#}"), false)
-            );
-            return Ok(());
+    let names: Vec<&str> = accounts.iter().map(|acc| acc.name.as_str()).collect();
+    let client = Client::connect_or_start(paths)?;
+    let events = client.subscribe()?;
+    std::thread::scope(|scope| {
+        let printer = scope.spawn(|| print_new_mail(events, &names));
+        let mut failed = false;
+        for name in &names {
+            failed |= !sync_account(&client, name);
         }
-    };
-    for folder in missing {
-        let name = clean(&folder, false);
-        let announce = |count| {
-            eprintln!(
-                "{}: fetching {count} bodies in {name}; this can take a while on a large folder",
-                account.name
-            )
-        };
-        if let Err(e) = postbode::actions::fetch_bodies(&mut ops, store, &folder, announce) {
-            eprintln!("{}: {name}: {}", account.name, clean(&e.to_string(), false));
+        // Closing the connection ends the event stream once the printer has drained it.
+        drop(client);
+        let _ = printer.join();
+        if failed {
+            bail!("sync failed for at least one account or folder");
+        }
+        Ok(())
+    })
+}
+
+/// Prints the new mail of `accounts` until the stream ends.
+fn print_new_mail(events: Receiver<Event>, accounts: &[&str]) {
+    for event in &events {
+        if let Event::NewMail { account, .. } = &event
+            && accounts.contains(&account.as_str())
+        {
+            postbode::daemon::report(&event);
         }
     }
+}
+
+/// Syncs one account through the daemon and reports it with its pass's errors; false when it failed or had any.
+fn sync_account(client: &Client, name: &str) -> bool {
+    match client.request(name, sync::Command::SyncNow) {
+        Ok(event) => {
+            postbode::daemon::report(&event);
+            let errors = match &event {
+                Event::Synced { errors, .. } => errors.as_slice(),
+                _ => &[],
+            };
+            for message in errors {
+                eprintln!("[{name}] error: {}", clean(message, false));
+            }
+            errors.is_empty()
+        }
+        Err(e) => {
+            eprintln!("[{name}] error: {}", clean(&format!("{e:#}"), false));
+            false
+        }
+    }
+}
+
+fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
+    let Some(client) = Client::connect_any_version(paths)? else {
+        println!("no daemon running");
+        return Ok(());
+    };
+    match command {
+        DaemonCommand::Status => {
+            print_status(&client.status()?);
+            Ok(())
+        }
+        DaemonCommand::Stop => stop_daemon(&client, paths),
+    }
+}
+
+fn cmd_service(command: ServiceCommand, paths: &Paths) -> Result<()> {
+    let text = match command {
+        ServiceCommand::Install { dry_run } => postbode::daemon::service::install(paths, dry_run)?,
+        ServiceCommand::Remove { dry_run } => postbode::daemon::service::remove(dry_run)?,
+    };
+    println!("{text}");
     Ok(())
+}
+
+fn stop_daemon(client: &Client, paths: &Paths) -> Result<()> {
+    let pid = client.stop_and_wait(paths)?;
+    println!("stopped the daemon (pid {pid})");
+    Ok(())
+}
+
+fn print_status(status: &Status) {
+    let minutes = status.uptime_secs / 60;
+    println!(
+        "pid {}, version {}, up {}h {}m, {} clients",
+        status.pid,
+        status.version,
+        minutes / 60,
+        minutes % 60,
+        status.clients
+    );
+    for account in &status.accounts {
+        println!("{}", account_line(account));
+    }
+}
+
+fn account_line(account: &AccountStatus) -> String {
+    let name = &account.name;
+    match &account.activity {
+        Some(activity) => format!("{name}  {activity}"),
+        None => format!("{name}  starting"),
+    }
 }
 
 fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) -> Result<()> {
@@ -615,11 +733,11 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
         } => (*uid, account.as_deref(), folder.as_str()),
     };
     let acc = single_account(config, account)?;
-    let store = open_store(paths, &acc.name)?;
+    let store = Store::open_account(paths, &acc.name)?;
     let msg = store
         .message(folder, uid)?
         .with_context(|| format!("no message {}/{uid}", clean(folder, false)))?;
-    let raw = postbode::actions::message_raw(acc, &store, &msg)?;
+    let raw = LazyClient::new(paths).raw_message(&acc.name, &store, &msg)?;
     match command {
         AttachmentCommand::List { json, .. } => {
             for a in postbode::message::attachments(&raw) {
@@ -667,11 +785,6 @@ fn single_account<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Acco
     }
 }
 
-fn open_store(paths: &Paths, account: &str) -> Result<Store> {
-    paths.ensure_account(account)?;
-    Ok(Store::open(&paths.mail_db(account))?)
-}
-
 fn format_time(timestamp: i64) -> String {
     chrono::DateTime::from_timestamp(timestamp, 0)
         .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
@@ -698,31 +811,6 @@ fn truncate(s: &str, width: usize) -> String {
         out.push('…');
     }
     out
-}
-
-fn print_event(event: &Event) {
-    match event {
-        Event::NewMail {
-            account,
-            from,
-            subject,
-            ..
-        } => println!(
-            "[{account}] new mail from {}: {}",
-            clean(from, false),
-            clean(subject, false)
-        ),
-        Event::Synced {
-            account,
-            new_messages,
-            actions,
-        } => println!("[{account}] synced: {new_messages} new, {actions} rule actions"),
-        Event::Error { account, message } => {
-            eprintln!("[{account}] error: {}", clean(message, false))
-        }
-        Event::Activity { account, activity } => log::debug!("[{account}] {activity:?}"),
-        Event::ActionDone { .. } | Event::BodyReady { .. } | Event::Restored { .. } => {}
-    }
 }
 
 #[cfg(feature = "gui")]
@@ -785,35 +873,19 @@ fn cmd_mcp(
     bail!("this postbode was built without the MCP server; install it with the default features")
 }
 
-fn cmd_run(config: &Config, paths: &Paths) -> Result<()> {
+fn cmd_run(config: &Config, paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
     if config.accounts.is_empty() {
         bail!("no accounts configured; run `postbode account add`");
     }
-    compiled_rules(paths, None)?;
-    // Ctrl-C ends the process through the default SIGINT handler; WAL and trash-before-delete leave nothing half done.
-    // `engine` holds the account locks until `run` exits.
-    let (engine, events) = Engine::start(config, paths);
-    let mut running = 0;
-    for (name, state) in engine.accounts() {
-        match state {
-            StartState::Running => running += 1,
-            StartState::Locked { pid } => eprintln!(
-                "[{name}] already synced by another Postbode process{}; skipped",
-                pid.map(|p| format!(" (pid {p})")).unwrap_or_default()
-            ),
-            StartState::Failed(e) => eprintln!("[{name}] could not start: {}", clean(e, false)),
-        }
-    }
-    if running == 0 {
-        bail!("no account could start");
-    }
-    for event in events {
-        print_event(&event);
-        if let Event::NewMail { from, subject, .. } = &event {
-            postbode::notify::new_mail(from, subject);
-        }
-    }
-    Ok(())
+    // Test hook: lets tests idle an auto-started daemon out in seconds.
+    let override_secs = std::env::var("POSTBODE_IDLE_EXIT_SECS")
+        .ok()
+        .and_then(|secs| secs.parse().ok());
+    let options = match idle_exit.map(|secs| override_secs.unwrap_or(secs)) {
+        Some(secs) => postbode::daemon::Options::auto_started(Duration::from_secs(secs)),
+        None => postbode::daemon::Options::foreground(),
+    };
+    postbode::daemon::run(paths, options)
 }
 
 fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()> {
@@ -848,36 +920,36 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 bail!("rule '{name}' is disabled; approve or enable it first");
             }
             let mut failed = false;
+            let daemon = LazyClient::new(paths);
             for acc in select_accounts(config, account.as_deref())? {
                 if !rules.iter().any(|r| r.applies_to_account(&acc.name)) {
                     continue;
                 }
-                let store = open_store(paths, &acc.name)?;
+                let store = Store::open_account(paths, &acc.name)?;
                 let identity = acc.identity()?;
                 if dry_run {
                     print_planned_actions(&rules, &store, acc, &identity)?;
                     continue;
                 }
-                let mut ops = sync::connect(acc)?;
-                let trash = Trash::new(paths.trash_dir(&acc.name));
-                let run = sync::run_rules(
-                    &mut ops,
-                    &store,
-                    &trash,
-                    &rules,
-                    acc,
-                    &identity,
-                    Mode::ApplyExisting,
-                    sync::now(),
-                )?;
-                for event in &run.events {
-                    failed |= matches!(event, Event::Error { .. });
-                    print_event(event);
+                let command = sync::Command::ApplyRule { name: name.clone() };
+                let (evaluated, actions, errors) =
+                    daemon.request(&acc.name, command, |reply| match reply {
+                        Event::RuleApplied {
+                            evaluated,
+                            actions,
+                            errors,
+                            ..
+                        } => Ok((evaluated, actions, errors)),
+                        other => Err(other),
+                    })?;
+                failed |= !errors.is_empty();
+                for message in errors {
+                    postbode::daemon::report(&Event::Error {
+                        account: acc.name.clone(),
+                        message,
+                    });
                 }
-                println!(
-                    "{}: {} actions on {} messages",
-                    acc.name, run.actions, run.evaluated
-                );
+                println!("{}: {actions} actions on {evaluated} messages", acc.name);
             }
             if failed {
                 bail!("some actions failed; see the errors above");
@@ -901,7 +973,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                 rules
             };
             for acc in select_accounts(config, account.as_deref())? {
-                let store = open_store(paths, &acc.name)?;
+                let store = Store::open_account(paths, &acc.name)?;
                 print_planned_actions(&rules, &store, acc, &acc.identity()?)?;
             }
             Ok(())
@@ -924,7 +996,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         RulesCommand::Approve { name } => {
             postbode::rules::edit::approve(&paths.rules_file(), &name)?;
             for acc in &config.accounts {
-                open_store(paths, &acc.name)?.restart_rule_clock(&name, sync::now())?;
+                Store::open_account(paths, &acc.name)?.restart_rule_clock(&name, sync::now())?;
             }
             println!(
                 "enabled '{}'; it acts on mail that arrives from now on",
@@ -1003,9 +1075,14 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         }
         TrashCommand::Restore { file, account } => {
             let acc = single_account(config, account.as_deref())?;
-            let mut ops = sync::connect(acc)?;
+            let command = sync::Command::Restore {
+                file: std::path::absolute(&file)?,
+            };
             let folder =
-                Trash::new(paths.trash_dir(&acc.name)).restore(&mut ops, Path::new(&file))?;
+                LazyClient::new(paths).request(&acc.name, command, |reply| match reply {
+                    Event::Restored { folder, .. } => Ok(folder),
+                    other => Err(other),
+                })?;
             println!(
                 "restored to {}; rules leave restored mail alone. Run `postbode sync` to see it",
                 clean(&folder, false)

@@ -96,8 +96,12 @@ mod recording {
         pub fail_fetch_after: Option<usize>,
         /// Makes the next `add_flags`, `append` or `fetch_raw` fail with this error, once.
         pub fail_next: Option<MailError>,
+        /// Makes `add_flags` panic, like a bug in a command.
+        pub panic_on_add_flags: bool,
         /// With no queued outcome, `idle` sets this flag and returns instead of waiting for a wake-up.
         pub shutdown_when_idle_empty: Option<Arc<AtomicBool>>,
+        /// Listing folders sets this flag, like a stop arriving in the middle of a pass.
+        pub shutdown_on_list_folders: Option<Arc<AtomicBool>>,
         /// A non-zero value becomes INBOX's uidvalidity at its next select; a test can set it while the fake is borrowed.
         pub next_inbox_uidvalidity: Option<Arc<AtomicU32>>,
         envelope_fetches: usize,
@@ -116,7 +120,9 @@ mod recording {
                 idle_outcomes: VecDeque::new(),
                 fail_fetch_after: None,
                 fail_next: None,
+                panic_on_add_flags: false,
                 shutdown_when_idle_empty: None,
+                shutdown_on_list_folders: None,
                 next_inbox_uidvalidity: None,
                 envelope_fetches: 0,
                 selected: String::new(),
@@ -175,6 +181,9 @@ mod recording {
     impl MailOps for RecordingOps {
         fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
             self.calls.push("list_folders".into());
+            if let Some(shutdown) = &self.shutdown_on_list_folders {
+                shutdown.store(true, Ordering::Release);
+            }
             Ok(self.folders.clone())
         }
 
@@ -270,6 +279,7 @@ mod recording {
                 self.selected,
                 flags.join(" ")
             ));
+            assert!(!self.panic_on_add_flags, "add_flags panicked");
             self.fail_next.take().map_or(Ok(()), Err)?;
             let env = self.envelope_mut(uid)?;
             for f in flags {

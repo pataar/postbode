@@ -1,4 +1,4 @@
-//! Desktop notifications for new mail, shared by `run` and the GUI.
+//! Desktop notifications for new mail, sent by the daemon.
 use crate::message::clean;
 
 pub fn new_mail(from: &str, subject: &str) {

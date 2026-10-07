@@ -1,5 +1,4 @@
-//! The mail window: folders, threads and the message body over the local store, with the account threads running in
-//! this process.
+//! The mail window: folders, threads and the message body over the local store, as a client of the daemon that syncs.
 mod app;
 mod body;
 mod folders;
@@ -10,15 +9,14 @@ mod status;
 mod test_support;
 mod theme;
 
-use std::sync::mpsc;
+use std::sync::mpsc::{self, Receiver};
 
 use anyhow::Result;
 use eframe::egui;
 
 use crate::config::Config;
-use crate::engine::Engine;
 use crate::paths::Paths;
-use crate::store::Store;
+use crate::sync::Event;
 
 pub use app::App;
 
@@ -27,11 +25,7 @@ const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 
 /// Opens the window and returns when it closes.
 pub fn run(config: &Config, paths: &Paths) -> Result<()> {
-    // Opening a store migrates it; doing that here, before the sync threads open theirs, keeps two migrations apart.
-    for account in &config.accounts {
-        let _ = Store::open(&paths.mail_db(&account.name));
-    }
-    let (engine, events) = Engine::start(config, paths);
+    let (client, events, states) = app::connect(paths)?;
     let (config, paths) = (config.clone(), paths.clone());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -46,22 +40,29 @@ pub fn run(config: &Config, paths: &Paths) -> Result<()> {
         "Postbode",
         options,
         Box::new(move |cc| {
-            let (forward, received) = mpsc::channel();
-            let ctx = cc.egui_ctx.clone();
-            std::thread::Builder::new()
-                .name("gui-events".into())
-                .spawn(move || {
-                    for event in events {
-                        if forward.send(event).is_err() {
-                            break;
-                        }
-                        ctx.request_repaint();
-                    }
-                })?;
-            Ok(Box::new(App::new(&config, paths, engine, received)))
+            let events = forward(events, cc.egui_ctx.clone())?;
+            Ok(Box::new(App::new(&config, paths, client, events, states)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("the window failed: {e}"))
+}
+
+/// Passes the daemon's events on and repaints for each, so an idle window still shows them; the returned receiver
+/// disconnects when the daemon's does.
+fn forward(events: Receiver<Event>, ctx: egui::Context) -> std::io::Result<Receiver<Event>> {
+    let (forward, received) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("gui-events".into())
+        .spawn(move || {
+            for event in events {
+                if forward.send(event).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+            ctx.request_repaint();
+        })?;
+    Ok(received)
 }
 
 #[cfg(test)]

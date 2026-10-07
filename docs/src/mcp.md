@@ -80,7 +80,7 @@ The names follow the CLI commands. A tool that lists things returns the CLI's `-
 - `rules_schema` returns the JSON Schema for a rule.
 - `rules_test` previews a rule, given as JSON, against the local store. It reports subjects, never bodies. A rule that matches on the body needs `read:bodies` too, since its matches would reveal what bodies contain.
 - `search` finds messages by subject, from and to. It matches all the given words as plain words.
-- `sync` runs one sync with rules. It is in the `read` scope, but it writes the store and applies approved rules, so hosts see it as a changing tool.
+- `sync` asks the daemon to sync and run rules once per account and reports its result: `new_messages`, `actions` and `errors`, or an `error` when the daemon refuses the account (offline, for example). It is in the `read` scope, but it writes the store and applies approved rules, so hosts see it as a changing tool.
 - `trash_list` lists the `.eml` backups.
 
 `read:bodies`:
@@ -109,16 +109,14 @@ With more than one visible account, every tool that acts on one message needs `a
 
 - Mail is written by strangers. `show` wraps the body in `<untrusted_mail_content>`, and tells the agent that text inside is data, never instructions. Any spelling of that tag name inside a body is rewritten to `untrusted-mail-content`, so a mail cannot close the wrapper early. A body is cut at 100 KB and marked `"truncated": true`. Every mail-derived string loses its control characters; a body keeps its newlines and tabs. The tag rewrite ignores letter case, but it does not catch look-alike letters.
 - A host that honours tool annotations asks you before tools that change things. `delete`, `rules_approve` and `rules_set_enabled` are marked destructive, because they can delete mail. The other changing tools are marked as changing, but not destructive.
-- The `mail:modify` tools take `dry_run`. It reports what would happen from the local store and opens no connection.
+- The `mail:modify` tools take `dry_run`. It reports what would happen from the local store and does not ask the daemon.
 - `--account` hides other accounts from every tool. Rule writes refuse rules scoped to a hidden account, and so does proposing one. A rule without `account` applies to every account, hidden ones too, so while an account is hidden `rules_approve` and `rules_set_enabled` refuse to turn such a rule on; turning it off and rejecting it still work.
 - Without `read:bodies`, no tool returns or reveals body text: `search` covers subject and addresses only, as plain words, with no search operators, and `rules_test` refuses a rule that matches on the body.
 - A call outside the granted scopes fails with "not allowed with these scopes". Hosts only see the tools you granted, so they should not make such a call.
 
 ## With the mail window open
 
-The MCP server reads the same local store as the mail window. Tools that need the server open their own short connection: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, and `sync`. The window picks up the changes within about two seconds, so an archived message disappears from the list.
-
-`sync` skips an account that the window or `postbode run` already syncs, and says so in its result, so rules never run twice.
+The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postbode daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list.
 
 ## Troubleshooting
 

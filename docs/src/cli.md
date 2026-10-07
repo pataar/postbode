@@ -6,7 +6,13 @@ This document contains the help content for the `postbode` command-line program.
 
 * [`postbode`↴](#postbode)
 * [`postbode run`↴](#postbode-run)
+* [`postbode daemon`↴](#postbode-daemon)
+* [`postbode daemon status`↴](#postbode-daemon-status)
+* [`postbode daemon stop`↴](#postbode-daemon-stop)
 * [`postbode gui`↴](#postbode-gui)
+* [`postbode service`↴](#postbode-service)
+* [`postbode service install`↴](#postbode-service-install)
+* [`postbode service remove`↴](#postbode-service-remove)
 * [`postbode sync`↴](#postbode-sync)
 * [`postbode attachment`↴](#postbode-attachment)
 * [`postbode attachment list`↴](#postbode-attachment-list)
@@ -47,8 +53,10 @@ A fast, simple mail client with automatic mailbox rules
 
 ###### **Subcommands:**
 
-* `run` — Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
-* `gui` — Open the mail window; syncs every account like `run`
+* `run` — Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
+* `daemon` — Inspect or stop the daemon that syncs your accounts; other commands start it when needed
+* `gui` — Open the mail window; starts the daemon when needed
+* `service` — Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
 * `sync` — Sync once, apply rules, exit
 * `attachment` — List or save a message's attachments
 * `rules` — Inspect and test rules.toml
@@ -70,17 +78,83 @@ A fast, simple mail client with automatic mailbox rules
 
 ## `postbode run`
 
-Sync all accounts continuously and apply rules; an account another Postbode process syncs is skipped; Ctrl-C stops
+Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
 
 **Usage:** `postbode run`
 
 
 
+## `postbode daemon`
+
+Inspect or stop the daemon that syncs your accounts; other commands start it when needed
+
+**Usage:** `postbode daemon <COMMAND>`
+
+###### **Subcommands:**
+
+* `status` — Print the daemon's pid, version, uptime and what each account is doing
+* `stop` — Stop the daemon; it starts again when a command needs it
+
+
+
+## `postbode daemon status`
+
+Print the daemon's pid, version, uptime and what each account is doing
+
+**Usage:** `postbode daemon status`
+
+
+
+## `postbode daemon stop`
+
+Stop the daemon; it starts again when a command needs it
+
+**Usage:** `postbode daemon stop`
+
+
+
 ## `postbode gui`
 
-Open the mail window; syncs every account like `run`
+Open the mail window; starts the daemon when needed
 
 **Usage:** `postbode gui`
+
+
+
+## `postbode service`
+
+Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
+
+**Usage:** `postbode service <COMMAND>`
+
+###### **Subcommands:**
+
+* `install` — Install and start the service; stops a daemon that is already running so the service's takes over
+* `remove` — Stop and remove the service
+
+
+
+## `postbode service install`
+
+Install and start the service; stops a daemon that is already running so the service's takes over
+
+**Usage:** `postbode service install [OPTIONS]`
+
+###### **Options:**
+
+* `--dry-run` — Print the file and the commands and change nothing
+
+
+
+## `postbode service remove`
+
+Stop and remove the service
+
+**Usage:** `postbode service remove [OPTIONS]`
+
+###### **Options:**
+
+* `--dry-run` — Print the commands and change nothing
 
 
 

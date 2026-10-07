@@ -22,7 +22,6 @@ pub const RULES_TEST: &str =
 pub const SEARCH: &str =
     "Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first";
 pub const SHOW: &str = "Show one message";
-pub const SYNC: &str =
-    "Sync once and apply rules; an account another Postbode process syncs is skipped and reported";
+pub const SYNC: &str = "Sync once and apply rules; reports new messages and actions per account, or why one was refused";
 pub const TRASH_LIST: &str = "Deleted mail kept as .eml backups for the retention period";
 pub const TRASH_RESTORE: &str = "Append a trashed .eml back into its original folder";

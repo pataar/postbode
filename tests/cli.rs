@@ -1,9 +1,11 @@
 use std::process::Command;
+use std::time::Duration;
 
 fn postbode(home: &std::path::Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_postbode"))
         .args(args)
         .env("POSTBODE_HOME", home)
+        .env("POSTBODE_IDLE_EXIT_SECS", "1")
         .env("RUST_LOG", "error")
         .output()
         .unwrap()
@@ -262,37 +264,17 @@ fn rules_test_with_unknown_name_fails() {
 }
 
 #[test]
-fn run_refuses_to_start_with_invalid_rules() {
-    use std::time::{Duration, Instant};
-
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(home.path().join("config")).unwrap();
-    std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
+fn an_invalid_rules_file_still_lets_actions_reach_the_daemon() {
+    let (home, _store) = seeded_home(&[message(1, "a@example.com", "Hello")]);
     std::fs::write(
-        home.path().join("config/rules.toml"),
+        Paths::under(home.path()).rules_file(),
         "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
     )
     .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
-        .arg("run")
-        .env("POSTBODE_HOME", home.path())
-        .env("RUST_LOG", "error")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let started = Instant::now();
-    while child.try_wait().unwrap().is_none() {
-        if started.elapsed() > Duration::from_secs(10) {
-            child.kill().unwrap();
-            panic!("`postbode run` kept running with an invalid rules.toml");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let out = child.wait_with_output().unwrap();
-    assert!(!out.status.success());
+    let out = postbode(home.path(), &["archive", "1"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("rule 'x'"), "{stderr}");
+    assert!(stderr.contains("work is offline ("), "{stderr}");
+    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
 }
 
 #[test]
@@ -572,34 +554,24 @@ fn search_bodies_works_offline() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(
-        !stderr.contains("could not connect"),
-        "connected with nothing to fetch: {stderr}"
+        !stderr.contains("offline"),
+        "asked the daemon with nothing to fetch: {stderr}"
+    );
+    assert!(
+        !Paths::under(home.path()).daemon_socket().exists(),
+        "started a daemon with nothing to fetch"
     );
 
     let (home, _store) = seeded_home(&[message(43, "friend@example.com", "Lunch?")]);
     let out = postbode(home.path(), &["search", "--bodies", "Lunch"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
-    assert!(stderr.contains("could not connect"), "{stderr}");
-    assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/43"));
-}
-
-#[test]
-fn run_exits_nonzero_when_every_account_is_synced_elsewhere() {
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(home.path().join("config")).unwrap();
-    std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
-    let dir = postbode::paths::Paths::under(home.path()).account_dir("work");
-    std::fs::create_dir_all(&dir).unwrap();
-    let lock = std::fs::File::create(dir.join("sync.lock")).unwrap();
-    lock.try_lock().unwrap();
-    let out = postbode(home.path(), &["run"]);
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("already synced by another Postbode process"),
+        stderr.contains("work: work is offline (")
+            && stderr.contains("searching the bodies already stored"),
         "{stderr}"
     );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("INBOX/43"));
 }
 
 #[cfg(feature = "mcp")]
@@ -691,4 +663,252 @@ fn mcp_install_json_keeps_stdout_machine_readable() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
     assert_eq!(parsed["mcpServers"]["postbode"]["args"][0], "mcp");
     assert!(String::from_utf8_lossy(&out.stderr).contains("Scopes: read, rules:propose"));
+}
+
+/// A foreground `postbode run`, killed if a test fails before it is stopped.
+struct Daemon(std::process::Child);
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn start_daemon(home: &std::path::Path) -> Daemon {
+    let child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+        .arg("run")
+        .env("POSTBODE_HOME", home)
+        .env("RUST_LOG", "error")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_for_status(home, "work");
+    Daemon(child)
+}
+
+/// Polls `postbode daemon status` for up to 10 s until its output contains `needle`.
+fn wait_for_status(home: &std::path::Path, needle: &str) -> String {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let out = postbode(home, &["daemon", "status"]);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        if stdout.contains(needle) {
+            return stdout;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "status never showed {needle:?}: {stdout}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn archive_through_an_offline_account_reports_the_offline_reason() {
+    let (home, _store) = seeded_home(&[message(1, "a@example.com", "Hello")]);
+    let _daemon = start_daemon(home.path());
+    wait_for_status(home.path(), "offline");
+    for args in [
+        &["archive", "1"][..],
+        &["delete", "1"],
+        &["mark", "unread", "1"],
+    ] {
+        let out = postbode(home.path(), args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?}: {stderr}");
+        assert!(stderr.contains("work is offline ("), "{args:?}: {stderr}");
+    }
+    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+}
+
+#[test]
+fn daemon_status_shows_pid_version_and_accounts() {
+    let (home, _store) = seeded_home(&[]);
+    let daemon = start_daemon(home.path());
+    let stdout = wait_for_status(home.path(), "work");
+    let first = stdout.lines().next().unwrap();
+    assert!(
+        first.starts_with(&format!(
+            "pid {}, version {}, up ",
+            daemon.0.id(),
+            env!("CARGO_PKG_VERSION")
+        )) && first.ends_with(" clients"),
+        "{stdout}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .skip(1)
+            .any(|line| line.starts_with("work  ") && !line.contains("running")),
+        "{stdout}"
+    );
+    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+}
+
+#[test]
+fn daemon_stop_ends_the_daemon() {
+    let (home, _store) = seeded_home(&[]);
+    let mut daemon = start_daemon(home.path());
+    let out = postbode(home.path(), &["daemon", "stop"]);
+    assert!(out.status.success());
+    assert!(daemon.0.wait().unwrap().success());
+    assert!(!Paths::under(home.path()).daemon_socket().exists());
+    let out = postbode(home.path(), &["daemon", "status"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "no daemon running"
+    );
+}
+
+#[test]
+fn daemon_stop_without_a_daemon_says_so() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postbode(home.path(), &["daemon", "stop"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "no daemon running"
+    );
+}
+
+#[test]
+fn run_refuses_a_second_daemon() {
+    let (home, _store) = seeded_home(&[]);
+    let daemon = start_daemon(home.path());
+    let out = postbode(home.path(), &["run"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!("already running (pid {})", daemon.0.id())),
+        "{stderr}"
+    );
+    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+}
+
+#[test]
+fn sync_through_an_offline_account_fails_with_the_offline_reason() {
+    let (home, _store) = seeded_home(&[]);
+    let out = postbode(home.path(), &["sync"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("[work] error: work is offline ("),
+        "{stderr}"
+    );
+}
+
+const FAILED_PASS: &str = "rule 'x': invalid regex; running no rules until it is fixed";
+
+/// Answers like a daemon of `version`: hello, subscribe, status, shutdown (which removes its socket), and a sync whose
+/// pass failed with FAILED_PASS. Subscribers also get an error from an unrelated pass.
+fn serve_fake_daemon(paths: &Paths, version: &'static str) -> std::thread::JoinHandle<()> {
+    use postbode::daemon::wire::{
+        self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status,
+    };
+    use postbode::sync::Event;
+    use std::io::{BufRead, BufReader};
+
+    std::fs::create_dir_all(&paths.state_dir).unwrap();
+    let socket = paths.daemon_socket();
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+                let reply = match serde_json::from_str(&line.unwrap()).unwrap() {
+                    ClientMessage::Hello { .. } => DaemonMessage::Hello {
+                        protocol: PROTOCOL,
+                        version: version.into(),
+                        pid: 4242,
+                    },
+                    ClientMessage::Subscribe { id } => {
+                        let done = DaemonMessage::Reply {
+                            id,
+                            outcome: Outcome::Ok(Payload::Done),
+                        };
+                        wire::write_line(&mut stream, &done).unwrap();
+                        DaemonMessage::Event(Event::Error {
+                            account: "work".into(),
+                            message: "an unrelated pass failed".into(),
+                        })
+                    }
+                    ClientMessage::Command { id, account, .. } => DaemonMessage::Reply {
+                        id,
+                        outcome: Outcome::Ok(Payload::Event(Event::Synced {
+                            account,
+                            new_messages: 0,
+                            actions: 0,
+                            requests: Vec::new(),
+                            errors: vec![FAILED_PASS.into()],
+                        })),
+                    },
+                    ClientMessage::Status { id } => DaemonMessage::Reply {
+                        id,
+                        outcome: Outcome::Ok(Payload::Status(Status {
+                            pid: 4242,
+                            version: version.into(),
+                            uptime_secs: 0,
+                            clients: 1,
+                            accounts: Vec::new(),
+                        })),
+                    },
+                    ClientMessage::Shutdown { id } => {
+                        std::fs::remove_file(&socket).unwrap();
+                        let done = DaemonMessage::Reply {
+                            id,
+                            outcome: Outcome::Ok(Payload::Done),
+                        };
+                        wire::write_line(&mut stream, &done).unwrap();
+                        return;
+                    }
+                };
+                wire::write_line(&mut stream, &reply).unwrap();
+            }
+        }
+    })
+}
+
+#[test]
+fn daemon_status_and_stop_reach_a_daemon_of_another_version() {
+    let (home, _store) = seeded_home(&[]);
+    let paths = Paths::under(home.path());
+    let stale = serve_fake_daemon(&paths, "0.0.0-old");
+    let out = postbode(home.path(), &["daemon", "status"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("pid 4242, version 0.0.0-old, up "),
+        "{stdout}"
+    );
+    let out = postbode(home.path(), &["daemon", "stop"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stale.join().unwrap();
+    assert!(!paths.daemon_socket().exists());
+}
+
+#[test]
+fn sync_prints_the_errors_of_its_own_pass_and_fails() {
+    let (home, _store) = seeded_home(&[]);
+    serve_fake_daemon(&Paths::under(home.path()), postbode::daemon::wire::VERSION);
+    let out = postbode(home.path(), &["sync"]);
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(!out.status.success(), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("[work] synced: 0 new, 0 rule actions"),
+        "{stdout}"
+    );
+    assert!(
+        stderr.contains(&format!("[work] error: {FAILED_PASS}")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("unrelated"), "{stderr}");
 }

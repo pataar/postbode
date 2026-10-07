@@ -1,12 +1,10 @@
 //! The right column: headers, the text body with its links, and attachments.
 use eframe::egui;
 
-use crate::engine::StartState;
 use crate::message::clean;
-use crate::sync::Activity;
+use crate::sync::{Activity, local_time};
 
 use super::app::{Account, App, UiAction};
-use super::status::local_time;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Segment<'a> {
@@ -137,12 +135,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
 }
 
 fn missing_text(account: &Account) -> String {
-    if account.state != StartState::Running {
-        format!(
-            "Not downloaded; another Postbode process syncs {}.",
-            account.name
-        )
-    } else if matches!(account.activity, Some(Activity::Offline { .. })) {
+    if matches!(account.activity, Some(Activity::Offline { .. })) {
         format!("Not downloaded; loads when {} reconnects.", account.name)
     } else {
         "Loading…".into()
@@ -310,6 +303,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 uid: 1,
+                request: 0,
             })
             .unwrap();
         harness.run();
@@ -370,6 +364,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 uid: 1,
+                request: 0,
             })
             .unwrap();
         harness.run();
@@ -383,6 +378,7 @@ mod tests {
                     folder: "INBOX".into(),
                     uids: vec![1],
                     action,
+                    by: "gui".into(),
                 },
             )
         };
@@ -424,6 +420,7 @@ mod tests {
                     folder: "INBOX".into(),
                     uids: vec![uid],
                     action,
+                    by: "gui".into(),
                 },
             )
         };
@@ -479,6 +476,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![1],
             action: Action::MarkRead,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), read)]);
         harness.input_mut().time = Some(13.0);
@@ -499,6 +497,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![1],
             action: Action::MarkUnread,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), unread)]);
     }
@@ -538,6 +537,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![uid],
             action: Action::MarkRead,
+            by: "gui".into(),
         };
         ("work".to_string(), command)
     }
@@ -562,6 +562,8 @@ mod tests {
                 account: "work".into(),
                 new_messages: 1,
                 actions: 0,
+                requests: vec![],
+                errors: vec![],
             })
             .unwrap();
         at(&mut harness, 10.0);
@@ -621,6 +623,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 uid: 1,
+                request: 0,
             })
             .unwrap();
         at(&mut harness, 12.5);
@@ -643,6 +646,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![2],
             action: Action::Archive,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), archive), read(1)]);
     }
@@ -700,6 +704,8 @@ mod tests {
                 account: "work".into(),
                 new_messages: 1,
                 actions: 0,
+                requests: vec![],
+                errors: vec![],
             })
             .unwrap();
         harness.step();
@@ -711,6 +717,7 @@ mod tests {
             folder: "INBOX".into(),
             uids: vec![2, 4],
             action: Action::Archive,
+            by: "gui".into(),
         };
         assert_eq!(wires.sent(), [("work".to_string(), archive)]);
     }
@@ -736,6 +743,7 @@ mod tests {
                 account: "work".into(),
                 folder: "INBOX".into(),
                 uid: 1,
+                request: 0,
             })
             .unwrap();
         at(&mut harness, 20.0);

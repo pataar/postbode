@@ -1,16 +1,17 @@
-//! The only MCP code that touches the store, rules.toml or IMAP; its internals switch to the daemon socket later.
+//! The only MCP code that touches the store, rules.toml or the daemon; the daemon owns every IMAP connection.
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
 use crate::actions;
 use crate::config::{AccountConfig, Config};
-use crate::engine::lock_account;
+use crate::daemon::Client;
+use crate::daemon::client::LazyClient;
 use crate::message;
 use crate::output;
 use crate::paths::Paths;
 use crate::rules::{self, Action, Rule, RuleFile};
 use crate::store::{Message, Store};
-use crate::sync::{self, Event};
+use crate::sync::{self, Command, Event};
 use crate::trash::Trash;
 
 pub const MAX_LIMIT: u32 = 500;
@@ -19,12 +20,32 @@ pub struct Backend {
     /// Every configured account, visible or not: an approved rule's clock restarts in all of them.
     all_accounts: Vec<String>,
     accounts: Vec<AccountConfig>,
+    daemon: LazyClient,
     paths: Paths,
 }
 
 impl Backend {
     /// The accounts in `only`, or all of them; an unknown name, or no account at all, is an error.
     pub fn new(config: &Config, paths: &Paths, only: &[String]) -> Result<Backend> {
+        Backend::build(config, paths, only, LazyClient::new(paths))
+    }
+
+    /// Like `new`, over a daemon connection the caller made.
+    pub fn with_client(
+        config: &Config,
+        paths: &Paths,
+        only: &[String],
+        client: Client,
+    ) -> Result<Backend> {
+        Backend::build(config, paths, only, LazyClient::with_client(paths, client))
+    }
+
+    fn build(
+        config: &Config,
+        paths: &Paths,
+        only: &[String],
+        daemon: LazyClient,
+    ) -> Result<Backend> {
         if config.accounts.is_empty() {
             bail!("no accounts configured; run `postbode account add`");
         }
@@ -39,6 +60,7 @@ impl Backend {
                 .filter(|a| only.is_empty() || only.contains(&a.name))
                 .cloned()
                 .collect(),
+            daemon,
             paths: paths.clone(),
         })
     }
@@ -66,8 +88,7 @@ impl Backend {
     }
 
     fn store(&self, account: &AccountConfig) -> Result<Store> {
-        self.paths.ensure_account(&account.name)?;
-        Ok(Store::open(&self.paths.mail_db(&account.name))?)
+        Ok(Store::open_account(&self.paths, &account.name)?)
     }
 
     fn message(
@@ -156,13 +177,13 @@ impl Backend {
     /// The message row and its plain body text, fetched once if not stored yet.
     pub fn show(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<(Value, String)> {
         let (acc, store, msg) = self.message(account, folder, uid)?;
-        let raw = actions::message_raw(acc, &store, &msg)?;
+        let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
         Ok((message_row(&acc.name, &msg)?, message::body_text(&raw)))
     }
 
     pub fn attachments(&self, account: Option<&str>, folder: &str, uid: u32) -> Result<Vec<Value>> {
         let (acc, store, msg) = self.message(account, folder, uid)?;
-        let raw = actions::message_raw(acc, &store, &msg)?;
+        let raw = self.daemon.raw_message(&acc.name, &store, &msg)?;
         message::attachments(&raw)
             .iter()
             .map(|a| Ok(output::with_account(&acc.name, a)?))
@@ -224,25 +245,25 @@ impl Backend {
                 json!({ "account": acc.name, "folder": folder, "dry_run": true, "would": would, "missing": missing }),
             );
         }
-        let mut ops = sync::connect(acc)?;
-        let trash = Trash::new(self.paths.trash_dir(&acc.name));
-        let results = actions::run(
-            &mut ops,
-            &store,
-            &trash,
-            folder,
-            uids,
-            &action,
-            by,
-            sync::now(),
-        )?;
+        let command = Command::Apply {
+            folder: folder.into(),
+            uids: uids.to_vec(),
+            action: action.clone(),
+            by: by.into(),
+        };
+        let results = self
+            .daemon
+            .request(&acc.name, command, |reply| match reply {
+                Event::ActionDone { results, .. } => Ok(results),
+                other => Err(other),
+            })?;
         let failed: Vec<Value> = results
             .iter()
             .filter_map(|(uid, result)| {
                 result
                     .as_ref()
                     .err()
-                    .map(|e| json!({ "uid": uid, "error": e.to_string() }))
+                    .map(|message| json!({ "uid": uid, "error": message }))
             })
             .collect();
         let label = match action {
@@ -272,45 +293,37 @@ impl Backend {
                 json!({ "account": acc.name, "file": file, "dry_run": true, "would": format!("restore to {folder}") }),
             );
         }
-        let mut ops = sync::connect(acc)?;
-        let restored = Trash::new(self.paths.trash_dir(&acc.name)).restore(&mut ops, &path)?;
-        Ok(json!({ "account": acc.name, "restored_to": restored }))
+        let folder =
+            self.daemon.request(
+                &acc.name,
+                Command::Restore { file: path },
+                |reply| match reply {
+                    Event::Restored { folder, .. } => Ok(folder),
+                    other => Err(other),
+                },
+            )?;
+        Ok(json!({ "account": acc.name, "restored_to": folder }))
     }
 
-    /// One sync with rules per visible account; an account whose lock another process holds is reported, not synced.
+    /// Asks the daemon for one sync with rules per visible account; a refusal is that account's `error`.
     pub fn sync(&self, account: Option<&str>) -> Result<Vec<Value>> {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
-            let _lock = match lock_account(&self.paths, &acc.name)? {
-                Ok(file) => file,
-                Err(pid) => {
-                    rows.push(
-                        json!({ "account": acc.name, "synced_by": "another Postbode process", "pid": pid }),
-                    );
-                    continue;
-                }
-            };
-            let (events, received) = std::sync::mpsc::channel();
-            let outcome = sync::run_once(acc, &self.paths, &events);
-            drop(events);
-            let (mut new_messages, mut actions_run, mut errors) = (0, 0, Vec::new());
-            for event in received {
-                match event {
+            let synced = self
+                .daemon
+                .request(&acc.name, Command::SyncNow, |reply| match reply {
                     Event::Synced {
-                        new_messages: n,
-                        actions: a,
+                        new_messages,
+                        actions,
+                        errors,
                         ..
-                    } => (new_messages, actions_run) = (n, a),
-                    Event::Error { message, .. } => errors.push(message),
-                    _ => {}
-                }
-            }
-            if let Err(e) = outcome {
-                errors.push(e.to_string());
-            }
-            rows.push(
-                json!({ "account": acc.name, "new_messages": new_messages, "actions": actions_run, "errors": errors }),
-            );
+                    } => Ok((new_messages, actions, errors)),
+                    other => Err(other),
+                });
+            rows.push(match synced {
+                Ok((new_messages, actions, errors)) => json!({ "account": acc.name, "new_messages": new_messages, "actions": actions, "errors": errors }),
+                Err(e) => json!({ "account": acc.name, "error": format!("{e:#}") }),
+            });
         }
         Ok(rows)
     }
@@ -408,8 +421,7 @@ impl Backend {
         self.ensure_rule_visible(name, true)?;
         rules::edit::approve(&self.paths.rules_file(), name)?;
         for account in &self.all_accounts {
-            self.paths.ensure_account(account)?;
-            Store::open(&self.paths.mail_db(account))?.restart_rule_clock(name, sync::now())?;
+            Store::open_account(&self.paths, account)?.restart_rule_clock(name, sync::now())?;
         }
         Ok(json!({ "rule": name, "enabled": true }))
     }

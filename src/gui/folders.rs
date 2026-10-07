@@ -1,7 +1,6 @@
 //! The left column: one tree per account, then the Rules, Activity and Trash entries.
 use eframe::egui;
 
-use crate::engine::StartState;
 use crate::message::clean;
 use crate::store::Folder;
 
@@ -17,18 +16,6 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                     ui.spinner();
                 }
             });
-            match &account.state {
-                StartState::Locked { pid } => {
-                    ui.weak(locked_text(*pid));
-                }
-                StartState::Failed(e) => {
-                    ui.colored_label(
-                        ui.visuals().error_fg_color,
-                        format!("could not start: {}", clean(e, false)),
-                    );
-                }
-                StartState::Running => {}
-            }
             if let Err(e) = &account.store {
                 ui.colored_label(ui.visuals().error_fg_color, clean(e, false));
             }
@@ -62,13 +49,6 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     actions
 }
 
-pub(crate) fn locked_text(pid: Option<u32>) -> String {
-    match pid {
-        Some(pid) => format!("synced by another Postbode process (pid {pid})"),
-        None => "synced by another Postbode process".into(),
-    }
-}
-
 /// INBOX first, then the special-use folders in a fixed order, then the rest alphabetically.
 pub(crate) fn sort(folders: &mut [Folder]) {
     folders.sort_by_key(|f| (rank(f), f.name.to_lowercase()));
@@ -93,7 +73,6 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     use super::*;
-    use crate::engine::StartState;
     use crate::gui::app::View;
     use crate::gui::test_support::{Fixture, message};
     use crate::store::Folder;
@@ -158,19 +137,6 @@ mod tests {
         harness.get_by_label("Rules").click();
         harness.run();
         assert_eq!(harness.state().view, View::Rules);
-    }
-
-    #[test]
-    fn locked_account_says_who_syncs_it() {
-        let fx = Fixture::new(&["work"]);
-        let (mut harness, _wires) = fx.harness();
-        harness.state_mut().accounts[0].state = StartState::Locked { pid: Some(42) };
-        harness.run();
-        assert!(
-            harness
-                .query_by_label("synced by another Postbode process (pid 42)")
-                .is_some()
-        );
     }
 
     #[test]

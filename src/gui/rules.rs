@@ -8,10 +8,10 @@ use crate::message::{clean, parse_headers};
 use crate::paths::Paths;
 use crate::rules::{self, Rule, RuleFile};
 use crate::store::LogEntry;
+use crate::sync::local_time;
 use crate::trash::{Trash, TrashEntry};
 
 use super::app::{Account, App, UiAction};
-use super::status::local_time;
 
 /// Entries shown in the Activity view.
 const LOG_LIMIT: u32 = 500;
@@ -268,7 +268,6 @@ mod tests {
     use eframe::egui;
     use egui_kittest::kittest::Queryable;
 
-    use crate::engine::StartState;
     use crate::gui::app::View;
     use crate::gui::test_support::Fixture;
     use crate::store::LogEntry;
@@ -378,14 +377,14 @@ mod tests {
     }
 
     #[test]
-    fn a_config_change_asks_for_a_restart() {
+    fn a_config_change_asks_to_reopen_the_window() {
         let fx = Fixture::new(&["work"]);
         let (mut harness, _wires) = fx.harness();
         touch(&fx.paths.config_file());
         poll(&mut harness);
         assert!(
             harness
-                .query_by_label("config.toml changed — restart Postbode to apply")
+                .query_by_label("config.toml changed — reopen the window to show it")
                 .is_some()
         );
     }
@@ -399,7 +398,7 @@ mod tests {
         poll(&mut harness);
         assert!(
             harness
-                .query_by_label_contains("restart Postbode")
+                .query_by_label_contains("reopen the window")
                 .is_none()
         );
     }
@@ -475,6 +474,7 @@ mod tests {
             .send(Event::Restored {
                 account: "work".into(),
                 folder: "INBOX".into(),
+                request: 0,
             })
             .unwrap();
         harness.run();
@@ -486,19 +486,6 @@ mod tests {
                 .iter()
                 .any(|line| line.text == "work: restored to INBOX")
         );
-    }
-
-    #[test]
-    fn restore_on_a_locked_account_sends_nothing() {
-        let fx = Fixture::new(&["work"]);
-        backup(&fx);
-        let (mut harness, wires) = fx.harness();
-        harness.state_mut().accounts[0].state = StartState::Locked { pid: None };
-        harness.state_mut().select_view(View::Trash);
-        harness.run();
-        harness.get_by_label("Restore").click();
-        harness.run();
-        assert!(wires.sent().is_empty());
     }
 
     #[test]
