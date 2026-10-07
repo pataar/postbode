@@ -72,7 +72,7 @@ enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Sync once, apply rules, exit
+    /// Ask the daemon to sync now and apply rules; waits for the result
     Sync {
         #[arg(long)]
         account: Option<String>,
@@ -1084,7 +1084,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
                     other => Err(other),
                 })?;
             println!(
-                "restored to {}; rules leave restored mail alone. Run `postbode sync` to see it",
+                "restored to {}; rules leave restored mail alone",
                 clean(&folder, false)
             );
             Ok(())
