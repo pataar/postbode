@@ -206,8 +206,6 @@ pub struct Job {
 pub struct CommandsRun {
     pub used_connection: bool,
     pub wants_full_pass: bool,
-    /// The `SyncNow` requests drained, answered by the next full pass.
-    pub sync_requests: Vec<RequestId>,
 }
 
 /// Called between steps of a pass with what is happening; may run queued commands on the connection.
@@ -626,7 +624,8 @@ fn account_error(account: &AccountConfig, message: String) -> Event {
 }
 
 /// Runs every queued command in arrival order. A failed command is reported and the next one runs; a lost
-/// connection ends the drain with the error, so the session reconnects.
+/// connection ends the drain with the error, so the session reconnects. `SyncNow` requests go onto `sync_requests`
+/// for the next full pass to answer.
 #[allow(clippy::too_many_arguments)]
 pub fn run_commands(
     ops: &mut dyn MailOps,
@@ -636,6 +635,7 @@ pub fn run_commands(
     identity: &Identity,
     rules_path: &Path,
     commands: &Receiver<Job>,
+    sync_requests: &mut Vec<RequestId>,
     events: &Sender<Event>,
 ) -> Result<CommandsRun, SyncError> {
     let name = || account.name.clone();
@@ -652,7 +652,7 @@ pub fn run_commands(
         match command {
             Command::SyncNow => {
                 run.wants_full_pass = true;
-                run.sync_requests.push(request);
+                sync_requests.push(request);
             }
             Command::Apply {
                 folder,
@@ -967,11 +967,18 @@ impl<'a> AccountSync<'a> {
                 return Err(SyncError::Stopped);
             }
             match run_commands(
-                ops, store, trash, account, identity, rules_path, commands, events,
+                ops,
+                store,
+                trash,
+                account,
+                identity,
+                rules_path,
+                commands,
+                sync_requests,
+                events,
             ) {
                 Ok(run) => {
                     pending_full |= run.wants_full_pass;
-                    sync_requests.extend(run.sync_requests);
                     Ok(run.used_connection)
                 }
                 Err(e) => {
@@ -1184,9 +1191,9 @@ fn run_session(
             &state.identity,
             &state.rules_path,
             commands,
+            sync_requests,
             events,
         )?;
-        sync_requests.extend(drained.sync_requests);
         if drained.wants_full_pass || std::mem::take(&mut pending_full) {
             (full, pass) = (true, true);
             continue;
@@ -2958,7 +2965,18 @@ mod tests {
         let (events, seen) = std::sync::mpsc::channel();
         let acc = account();
         let identity = acc.identity().unwrap();
-        let run = run_commands(ops, store, trash, &acc, &identity, rules_path, &rx, &events);
+        let mut sync_requests = Vec::new();
+        let run = run_commands(
+            ops,
+            store,
+            trash,
+            &acc,
+            &identity,
+            rules_path,
+            &rx,
+            &mut sync_requests,
+            &events,
+        );
         (run, seen.try_iter().collect())
     }
 
@@ -2978,7 +2996,6 @@ mod tests {
             CommandsRun {
                 used_connection: true,
                 wants_full_pass: true,
-                sync_requests: vec![2]
             }
         );
         let done = events
@@ -3562,5 +3579,49 @@ mod tests {
             .collect();
         assert_eq!(failed, vec![6], "{events:?}");
         assert!(!events.iter().any(|e| matches!(e, Event::Synced { .. })));
+    }
+
+    #[test]
+    fn a_lost_connection_later_in_a_drain_still_fails_the_sync_now_drained_before_it() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        paths.ensure_account("work").unwrap();
+        sync_all(&mut ops, &Store::open(&paths.mail_db("work")).unwrap()).unwrap();
+        ops.fail_next = Some(MailError::Io("reset".into()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (commands_tx, commands) = std::sync::mpsc::channel();
+        commands_tx.send(sync_now(7)).unwrap();
+        let fetch = Command::FetchBody {
+            folder: "INBOX".into(),
+            uid: 1,
+        };
+        let fetch = Job {
+            request: 8,
+            command: fetch,
+        };
+        commands_tx.send(fetch).unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        let mut failed: Vec<RequestId> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::CommandFailed { request, .. } => Some(*request),
+                _ => None,
+            })
+            .collect();
+        failed.sort_unstable();
+        assert_eq!(failed, vec![7, 8], "{events:?}");
     }
 }
