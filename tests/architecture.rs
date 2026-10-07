@@ -4,6 +4,9 @@
 //! a plain text scan, so it only enforces what can be checked without false positives; allowed exceptions are listed
 //! below with their reason.
 
+// Test code: unwrap, expect and panic are how a test fails.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::Path;
 
 /// Paths into `rules` that `src/mcp/` outside `backend.rs` may name: the data types its tool arguments deserialize
