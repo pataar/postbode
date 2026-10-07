@@ -565,7 +565,7 @@ mod client {
     }
 
     #[test]
-    fn a_sends_own_completion_arrives_as_request_zero_beside_the_broadcast() {
+    fn a_sends_own_completion_arrives_once_as_request_zero() {
         let daemon = TestDaemon::start_with(options(one_message_connector(), None));
         let client = Client::connect(&daemon.paths).unwrap();
         client.request("work", Command::SyncNow).unwrap();
@@ -577,17 +577,16 @@ mod client {
             by: "gui".into(),
         };
         assert!(client.send("work", apply));
-        let mut requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
+        // A sync after the action ends the stream of events that could carry a copy.
+        assert!(client.send("work", Command::SyncNow));
+        let requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
+            .take_while(|event| !matches!(event, Event::Synced { .. }))
             .filter_map(|event| match event {
                 Event::ActionDone { request, .. } => Some(request),
                 _ => None,
             })
-            .take(2)
             .collect();
-        requests.sort_unstable();
-        assert_eq!(requests.len(), 2, "{requests:?}");
-        assert_eq!(requests[0], 0);
-        assert_ne!(requests[1], 0);
+        assert_eq!(requests, [0]);
     }
 
     #[test]
