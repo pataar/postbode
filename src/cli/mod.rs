@@ -341,14 +341,19 @@ enum AccountCommand {
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let paths = match std::env::var_os("POSTBODE_HOME") {
-        Some(home) => Paths::under(Path::new(&home)),
-        None => Paths::discover()?,
+        Some(home) => Ok(Paths::under(Path::new(&home))),
+        None => Paths::discover(),
     };
+    // The window explains its own startup errors, since it may have no terminal to print them in.
+    if matches!(cli.command, Command::Gui) {
+        return cmd_gui(paths);
+    }
+    let paths = paths?;
     let config = Config::load(&paths.config_file())?;
     match cli.command {
         Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
         Command::Daemon { command } => cmd_daemon(command, &paths),
-        Command::Gui => cmd_gui(&config, &paths),
+        Command::Gui => cmd_gui(Ok(paths)),
         Command::Service { command } => cmd_service(command, &paths),
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
@@ -807,15 +812,12 @@ fn truncate(s: &str, width: usize) -> String {
 }
 
 #[cfg(feature = "gui")]
-fn cmd_gui(config: &Config, paths: &Paths) -> Result<()> {
-    if config.accounts.is_empty() {
-        bail!("no accounts configured; run `postbode account add`");
-    }
-    postbode::gui::run(config, paths)
+fn cmd_gui(paths: Result<Paths>) -> Result<()> {
+    postbode::gui::run(paths)
 }
 
 #[cfg(not(feature = "gui"))]
-fn cmd_gui(_config: &Config, _paths: &Paths) -> Result<()> {
+fn cmd_gui(_paths: Result<Paths>) -> Result<()> {
     bail!("this postbode was built without the GUI; install it with the default features")
 }
 
