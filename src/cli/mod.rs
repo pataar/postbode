@@ -1141,7 +1141,9 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     config.accounts.retain(|a| a.name != account.name);
     config.accounts.push(account);
     config.validate()?;
-    let account = config.accounts.last().expect("account was just pushed");
+    let Some(account) = config.accounts.last() else {
+        bail!("no account to save");
+    };
     let secret = match &account.password {
         PasswordSource::Command { .. } => credentials::resolve(account)?,
         PasswordSource::Keyring { .. } => Secret::new(rpassword::prompt_password("Password: ")?),

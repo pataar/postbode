@@ -63,6 +63,14 @@ tempfile = "3"                                       # temp dirs for store and p
 [lints.rust]
 unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way
 
+[lints.clippy]
+unwrap_used = "deny"                                 # shipped code returns errors instead of panicking
+expect_used = "deny"                                 # same; allow narrowly where a call cannot fail
+panic = "deny"                                       # no deliberate panics outside tests
+todo = "deny"                                        # unfinished code does not ship
+unimplemented = "deny"                               # same as todo
+dbg_macro = "warn"                                   # debug output stays out of commits
+
 [features]
 default = ["gui", "mcp"]
 gui = ["dep:eframe"]                                 # `postbode gui`; off builds the CLI alone

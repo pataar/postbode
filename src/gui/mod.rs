@@ -27,6 +27,8 @@ const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 pub fn run(config: &Config, paths: &Paths) -> Result<()> {
     let (client, events, states) = app::connect(paths)?;
     let (config, paths) = (config.clone(), paths.clone());
+    // ICON is embedded at compile time and decoded by `the_icon_is_a_square_png_with_transparent_corners`.
+    #[allow(clippy::expect_used)]
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(
