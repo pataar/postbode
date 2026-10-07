@@ -309,6 +309,8 @@ mod tests {
     #[test]
     fn a_proposal_shows_its_toml_and_approve_enables_it() {
         let fx = Fixture::new(&["work"]);
+        // A clock left from when the rule ran before must not let it act on older mail.
+        fx.store("work").restart_rule_clock("codes", 1).unwrap();
         let (mut harness, wires) = rules_view(&fx);
         assert!(
             harness
@@ -323,6 +325,7 @@ mod tests {
         harness.get_by_label("Approve").click();
         harness.run();
         assert!(enabled(&fx, "codes"));
+        assert!(fx.store("work").rule_first_seen("codes", 0).unwrap() > 1);
         assert!(
             std::fs::read_to_string(fx.paths.rules_file())
                 .unwrap()

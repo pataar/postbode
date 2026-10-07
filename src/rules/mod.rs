@@ -146,6 +146,14 @@ pub enum Action {
 }
 
 impl Action {
+    /// The label of the command a user gave for this action: `delete` sends `Trash` outside the Trash folder.
+    pub fn command_label(&self) -> String {
+        match self {
+            Action::Trash => Action::Delete.label(),
+            _ => self.label(),
+        }
+    }
+
     pub fn label(&self) -> String {
         match self {
             Action::Delete => "delete".into(),
