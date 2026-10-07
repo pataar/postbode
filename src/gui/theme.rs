@@ -12,7 +12,12 @@ pub(crate) struct Palette {
     pub muted: Color32,
     pub on_accent: Color32,
     pub panel: Color32,
+    /// Behind a widget while it is pressed or dragged; `strong` is drawn on it.
+    pub pressed: Color32,
     pub secondary: Color32,
+    /// Bold text, such as account headings and header labels: more contrast than `text`. egui draws it in the
+    /// pressed widget's foreground, so it must also read on `pressed`.
+    pub strong: Color32,
     pub success: Color32,
     pub text: Color32,
     pub warning: Color32,
@@ -34,7 +39,9 @@ pub(crate) const MOCHA: Palette = Palette {
     muted: hex(0x7f849c),
     on_accent: hex(0x11111b),
     panel: hex(0x181825),
+    pressed: hex(0x45475a),
     secondary: hex(0xa6adc8),
+    strong: hex(0xffffff),
     success: hex(0xa6e3a1),
     text: hex(0xcdd6f4),
     warning: hex(0xf9e2af),
@@ -51,7 +58,9 @@ pub(crate) const LATTE: Palette = Palette {
     muted: hex(0x8c8fa1),
     on_accent: hex(0x11111b),
     panel: hex(0xe6e9ef),
+    pressed: hex(0x179299),
     secondary: hex(0x6c6f85),
+    strong: hex(0x11111b),
     success: hex(0x40a02b),
     text: hex(0x4c4f69),
     warning: hex(0xdf8e1d),
@@ -89,9 +98,11 @@ impl Palette {
         widgets.hovered.weak_bg_fill = self.hover;
         widgets.hovered.bg_stroke.color = self.accent;
         widgets.hovered.fg_stroke.color = self.text;
-        widgets.active.bg_fill = self.accent;
-        widgets.active.weak_bg_fill = self.accent;
-        widgets.active.fg_stroke.color = self.on_accent;
+        // egui takes `strong_text_color` (and the spinner and resize handles) from the pressed widget's foreground,
+        // so that colour has to read both on the panels and on the pressed fill.
+        widgets.active.bg_fill = self.pressed;
+        widgets.active.weak_bg_fill = self.pressed;
+        widgets.active.fg_stroke.color = self.strong;
         visuals
     }
 }
@@ -169,6 +180,56 @@ mod tests {
             (dark.window_shadow, dark.popup_shadow),
             (egui::Shadow::NONE, egui::Shadow::NONE)
         );
+    }
+
+    /// WCAG contrast ratio between two opaque colours, 1 to 21.
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let luminance = |c: Color32| {
+            let channel = |v: u8| {
+                let v = f32::from(v) / 255.0;
+                if v <= 0.040_45 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        };
+        let (light, dark) = (
+            luminance(a).max(luminance(b)),
+            luminance(a).min(luminance(b)),
+        );
+        (light + 0.05) / (dark + 0.05)
+    }
+
+    /// Regression for #41: bold text in the dark theme was drawn in `on_accent`, near black on the dark panels.
+    #[test]
+    fn strong_text_stands_out_from_normal_text_in_both_themes() {
+        for (dark, palette) in [(true, &MOCHA), (false, &LATTE)] {
+            let visuals = palette.visuals(dark);
+            let strong = visuals.strong_text_color();
+            for background in [visuals.panel_fill, visuals.window_fill] {
+                let normal = contrast(visuals.text_color(), background);
+                let bold = contrast(strong, background);
+                assert!(bold >= 7.0, "dark={dark}: strong text contrast {bold}");
+                assert!(
+                    bold > normal,
+                    "dark={dark}: strong {bold} <= normal {normal}"
+                );
+            }
+            let pressed = contrast(strong, visuals.widgets.active.bg_fill);
+            assert!(
+                pressed >= 4.5,
+                "dark={dark}: pressed widget contrast {pressed}"
+            );
+        }
+    }
+
+    #[test]
+    fn light_strong_text_and_pressed_widgets_keep_their_colours() {
+        let light = LATTE.visuals(false);
+        assert_eq!(light.strong_text_color(), LATTE.on_accent);
+        assert_eq!(light.widgets.active.bg_fill, LATTE.accent);
     }
 
     #[test]
