@@ -225,7 +225,7 @@ impl Hub {
     }
 }
 
-/// Readers reach the engine through its own mutex, so `apply_config` joining stopped threads never stalls the hub.
+/// Readers reach the engine through its own mutex, so a slow engine call never stalls the hub.
 struct Shared {
     engine: Mutex<Option<Engine>>,
     hub: Mutex<Hub>,
@@ -323,8 +323,12 @@ fn accept_until_done(
     let mut connections: Vec<Connection> = Vec::new();
     let mut next_client: ClientId = 0;
     while !done(shared, idle_exit) {
-        if let Some(config) = watch.changed() {
-            apply_config(shared, &config);
+        let changed = watch.changed();
+        if let Some(engine) = lock(&shared.engine).as_mut() {
+            if let Some(config) = &changed {
+                engine.apply_config(config);
+            }
+            engine.start_ready();
         }
         match listener.accept() {
             Ok((stream, _)) => {
@@ -350,12 +354,6 @@ fn done(shared: &Shared, idle_exit: Option<Duration>) -> bool {
     hub.shutdown
         || idle_exit
             .is_some_and(|idle| hub.clients.is_empty() && hub.last_client_left.elapsed() >= idle)
-}
-
-fn apply_config(shared: &Shared, config: &Config) {
-    if let Some(engine) = lock(&shared.engine).as_mut() {
-        engine.apply_config(config);
-    }
 }
 
 /// Stops the engine, delivers the replies its threads still send, then closes every connection.

@@ -107,6 +107,10 @@ impl Spawner {
 pub struct Engine {
     spawner: Spawner,
     threads: Vec<AccountThread>,
+    /// The configured accounts in order; one whose old thread is still in `stopping` starts once that thread ended.
+    wanted: Vec<AccountConfig>,
+    /// Signalled threads of removed or changed accounts, by account name, until they end.
+    stopping: Vec<(String, JoinHandle<()>)>,
 }
 
 impl Engine {
@@ -131,31 +135,49 @@ impl Engine {
             .iter()
             .map(|account| spawner.spawn(account))
             .collect();
-        (Engine { spawner, threads }, received)
+        let engine = Engine {
+            spawner,
+            threads,
+            wanted: config.accounts.clone(),
+            stopping: Vec::new(),
+        };
+        (engine, received)
     }
 
-    /// Stops accounts that were removed or whose settings changed, starts new and changed ones, and leaves the rest.
+    /// Signals the threads of removed and changed accounts, starts new ones, and leaves the rest; never waits. A changed
+    /// account starts again from `start_ready` once its old thread ended.
     pub fn apply_config(&mut self, config: &Config) {
-        let (kept, mut stale): (Vec<_>, Vec<_>) = std::mem::take(&mut self.threads)
+        let (kept, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut self.threads)
             .into_iter()
             .partition(|thread| config.accounts.contains(&thread.config));
-        stale.iter().for_each(AccountThread::signal_stop);
-        stale.iter_mut().for_each(AccountThread::join);
-        let mut kept: Vec<Option<AccountThread>> = kept.into_iter().map(Some).collect();
-        let spawner = &self.spawner;
-        self.threads = config
-            .accounts
-            .iter()
-            .map(|account| {
-                let existing = kept.iter_mut().find(|slot| {
-                    slot.as_ref()
-                        .is_some_and(|thread| thread.config == *account)
-                });
-                existing
-                    .and_then(Option::take)
-                    .unwrap_or_else(|| spawner.spawn(account))
-            })
-            .collect();
+        for mut thread in stale {
+            thread.signal_stop();
+            if let Some(handle) = thread.handle.take() {
+                self.stopping.push((thread.config.name, handle));
+            }
+        }
+        self.threads = kept;
+        self.wanted = config.accounts.clone();
+        self.start_ready();
+    }
+
+    /// Starts each configured account that has no thread and no old one still ending; true once every one runs.
+    pub fn start_ready(&mut self) -> bool {
+        if self.threads.len() == self.wanted.len() {
+            return true;
+        }
+        self.stopping.retain(|(_, handle)| !handle.is_finished());
+        let mut idle = std::mem::take(&mut self.threads);
+        let mut threads = Vec::new();
+        for account in &self.wanted {
+            if let Some(index) = idle.iter().position(|thread| thread.config == *account) {
+                threads.push(idle.swap_remove(index));
+            } else if !self.stopping.iter().any(|(name, _)| *name == account.name) {
+                threads.push(self.spawner.spawn(account));
+            }
+        }
+        self.threads = threads;
+        self.threads.len() == self.wanted.len()
     }
 
     pub fn accounts(&self) -> Vec<(String, StartState)> {
@@ -190,6 +212,9 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.threads.iter().for_each(AccountThread::signal_stop);
         self.threads.iter_mut().for_each(AccountThread::join);
+        for (_, handle) in self.stopping.drain(..) {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -363,6 +388,50 @@ mod tests {
             .collect()
     }
 
+    /// Starts what `apply_config` left waiting, for up to 5 s.
+    fn settle(engine: &mut Engine) {
+        let deadline = std::time::Instant::now() + WAIT;
+        while !engine.start_ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "an old thread never ended"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn apply_config_never_waits_and_restarts_an_account_after_its_old_thread_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let (said, log) = mpsc::channel();
+        let said = Mutex::new(said);
+        let connector: Connector = Arc::new(move |account: &AccountConfig| {
+            let say = |what: &str| {
+                let line = format!("{what} {}", account.sync_interval_secs);
+                let _ = said.lock().unwrap().send(line);
+            };
+            say("connecting");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            say("connected");
+            Ok(Box::new(RecordingOps::new().with_folder("INBOX", None)) as Box<dyn MailOps>)
+        });
+        let mut config = config_of(&["a"]);
+        let (mut engine, _events) =
+            Engine::start_with(&config, &Paths::under(dir.path()), connector);
+        assert_eq!(log.recv_timeout(WAIT).unwrap(), "connecting 120");
+        config.accounts[0].sync_interval_secs = 300;
+        let started = std::time::Instant::now();
+        engine.apply_config(&config);
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        assert!(
+            !engine.send("a", 1, Command::SyncNow),
+            "a is between threads"
+        );
+        settle(&mut engine);
+        assert_eq!(log.recv_timeout(WAIT).unwrap(), "connected 120");
+        assert_eq!(log.recv_timeout(WAIT).unwrap(), "connecting 300");
+    }
+
     #[test]
     fn the_engine_can_move_to_another_thread() {
         fn assert_send<T: Send>() {}
@@ -385,6 +454,7 @@ mod tests {
 
         config.accounts[1].sync_interval_secs = 300;
         engine.apply_config(&config);
+        settle(&mut engine);
         assert_eq!(connected.recv_timeout(WAIT).unwrap(), "b");
         assert_eq!(names_of(&engine), ["a", "b"]);
 

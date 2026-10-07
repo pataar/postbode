@@ -737,3 +737,32 @@ fn connecting_while_the_daemon_stops_fails_at_once() {
     }
     daemon.finished().unwrap();
 }
+
+#[test]
+fn a_config_change_never_stalls_the_daemon_while_an_old_account_thread_finishes() {
+    let daemon = TestDaemon::start_with(options(slow_connector(Duration::from_secs(4)), None));
+    let config = daemon.paths.config_file();
+    let text = fs::read_to_string(&config).unwrap().replacen(
+        "notify = false",
+        "notify = false\nsync_interval_secs = 300",
+        1,
+    );
+    fs::write(&config, text).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&config)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(10))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let asked = Instant::now();
+        status_of(&mut daemon.client());
+        assert!(
+            asked.elapsed() < Duration::from_secs(1),
+            "a client waited {:?} for the daemon",
+            asked.elapsed()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
