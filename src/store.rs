@@ -973,6 +973,20 @@ mod tests {
     }
 
     #[test]
+    fn migration_004_drops_the_message_id_index() {
+        let s = store_with_inbox();
+        let indexes: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_message_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 0);
+    }
+
+    #[test]
     fn rules_uid_round_trips_and_survives_upsert() {
         let s = store_with_inbox();
         assert_eq!(s.rules_uid("INBOX").unwrap(), 0);
