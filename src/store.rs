@@ -20,6 +20,8 @@ pub enum StoreError {
     Serde(#[from] serde_rusqlite::Error),
     #[error(transparent)]
     Io(#[from] io::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,8 +168,8 @@ pub struct Store {
 const MESSAGE_COLUMNS: &str = "folder, uid, message_id, from_addr, to_addr, cc_addr, delivered_to, in_reply_to, refs, thread_id, subject, date, internaldate, flags, size, headers, body_text";
 
 impl Store {
-    pub fn migrations() -> Migrations<'static> {
-        Migrations::from_directory(&MIGRATIONS_DIR).expect("migrations directory is valid")
+    pub fn migrations() -> Result<Migrations<'static>, StoreError> {
+        Ok(Migrations::from_directory(&MIGRATIONS_DIR)?)
     }
 
     pub fn open(path: &Path) -> Result<Store, StoreError> {
@@ -194,7 +196,7 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         // Clients migrate and write rule clocks while the daemon may hold the write lock.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        Store::migrations().to_latest(&mut conn)?;
+        Store::migrations()?.to_latest(&mut conn)?;
         Ok(Store { conn })
     }
 
@@ -554,7 +556,7 @@ impl Store {
 
     /// Moves `rules_uid` up to `last_uid` in every folder not in `except`, so their mail stops counting as fresh.
     pub fn mark_rules_seen_except(&self, except: &[String]) -> Result<(), StoreError> {
-        let except = serde_json::to_string(except).expect("a list of strings serializes");
+        let except = serde_json::to_string(except)?;
         self.conn.execute(
             "UPDATE folders SET rules_uid = last_uid
              WHERE last_uid > rules_uid AND name NOT IN (SELECT value FROM json_each(?1))",
@@ -565,7 +567,7 @@ impl Store {
 
     /// Drops first-seen times of rules no longer in the file, so a re-added rule starts fresh instead of acting on history.
     pub fn forget_rules_except(&self, names: &[&str]) -> Result<(), StoreError> {
-        let names = serde_json::to_string(names).expect("a list of strings serializes");
+        let names = serde_json::to_string(names)?;
         self.conn.execute(
             "DELETE FROM rules_seen WHERE name NOT IN (SELECT value FROM json_each(?1))",
             params![names],
@@ -666,7 +668,7 @@ mod tests {
 
     #[test]
     fn migrations_are_valid() {
-        Store::migrations().validate().unwrap();
+        Store::migrations().unwrap().validate().unwrap();
     }
 
     #[test]
@@ -987,7 +989,10 @@ mod tests {
     #[test]
     fn migration_002_keeps_rows_and_marks_existing_mail_as_processed() {
         let mut conn = Connection::open_in_memory().unwrap();
-        Store::migrations().to_version(&mut conn, 1).unwrap();
+        Store::migrations()
+            .unwrap()
+            .to_version(&mut conn, 1)
+            .unwrap();
         conn.execute(
             "INSERT INTO folders (name, uidvalidity, last_uid) VALUES ('INBOX', 7, 42)",
             [],
@@ -1003,7 +1008,10 @@ mod tests {
     #[test]
     fn migration_003_counts_mail_the_rules_saw_as_notified() {
         let mut conn = Connection::open_in_memory().unwrap();
-        Store::migrations().to_version(&mut conn, 2).unwrap();
+        Store::migrations()
+            .unwrap()
+            .to_version(&mut conn, 2)
+            .unwrap();
         conn.execute(
             "INSERT INTO folders (name, uidvalidity, last_uid, rules_uid) VALUES ('INBOX', 7, 42, 40)",
             [],

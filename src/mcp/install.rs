@@ -5,7 +5,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
 use super::parse_scopes;
-use crate::paths::write_atomic_keeping_dir_mode;
+use crate::paths::{stable_exe, write_atomic_keeping_dir_mode};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
@@ -70,7 +70,8 @@ fn shell_words(words: &[String]) -> String {
 
 pub fn json_snippet(entry: &Entry) -> String {
     let snippet = json!({ "mcpServers": { "postbode": entry.server() } });
-    serde_json::to_string_pretty(&snippet).expect("JSON values serialize") + "\n"
+    // `{:#}` pretty-prints a JSON value like `to_string_pretty`, without a serializer that could fail.
+    format!("{snippet:#}\n")
 }
 
 /// Claude Desktop's config: `~/Library/Application Support/Claude/` on macOS, `~/.config/Claude/` on Linux.
@@ -180,7 +181,7 @@ pub fn install(
         .into_iter()
         .map(|s| s.as_str())
         .collect();
-    let exe = std::env::current_exe().context("finding the postbode binary")?;
+    let exe = stable_exe().context("finding the postbode binary")?;
     let entry = Entry::new(&exe, &granted.join(","), accounts);
     let wanted = (!remove).then_some(&entry);
     let out = match target {

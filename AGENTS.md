@@ -22,9 +22,12 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
 - `trash` `.eml` backups before any rule delete
 
+`tests/architecture.rs` checks the ownership rules above for `mcp`, `rules` (rules.toml writes), `gui` views and `cli`; allowed exceptions live there with a reason.
+
 ## Definition of done
 - `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` all pass
 - New logic has a test; a bug fix has a regression test
+- No `unwrap`, `expect`, `panic!`, `todo!` or `unimplemented!` outside tests (clippy denies them); where a call cannot fail, a narrow `#[allow]` says why
 - Platform coverage reported honestly: say "compiled on" vs "ran on"
 - Every new dependency has a one-line reason in `Cargo.toml`
 - Do not broaden a task into adjacent features

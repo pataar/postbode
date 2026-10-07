@@ -1,4 +1,8 @@
 //! The real binary as an auto-started daemon: one per home, idling out, replaced when stale or killed.
+
+// Test code: unwrap, expect and panic are how a test fails.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};

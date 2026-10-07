@@ -2,6 +2,8 @@
 mod backend;
 pub mod install;
 #[cfg(test)]
+mod junk_sweep;
+#[cfg(test)]
 mod tests;
 mod tools;
 
