@@ -712,10 +712,10 @@ fn account_error(account: &AccountConfig, message: String) -> Event {
 }
 
 /// Runs every queued command in arrival order. A failed command is reported and the next one runs; a lost
-/// connection ends the drain with the error, so the session reconnects. `SyncNow` requests go onto `sync_requests`
-/// for the next full pass to answer.
+/// connection ends the drain with the error, so the session reconnects. `SyncNow` requests go onto
+/// `carried.sync_requests` for the next full pass to answer.
 #[allow(clippy::too_many_arguments)]
-pub fn run_commands(
+fn run_commands(
     ops: &mut dyn MailOps,
     store: &Store,
     trash: &Trash,
@@ -723,7 +723,39 @@ pub fn run_commands(
     identity: &Identity,
     rules_path: &Path,
     commands: &Receiver<Job>,
-    sync_requests: &mut Vec<RequestId>,
+    carried: &mut Carried,
+    events: &Sender<Event>,
+) -> Result<CommandsRun, SyncError> {
+    let mut run = CommandsRun::default();
+    while let Ok(Job { request, command }) = commands.try_recv() {
+        if command == Command::SyncNow {
+            run.wants_full_pass = true;
+            carried.sync_requests.push(request);
+            continue;
+        }
+        carried.running = Some(request);
+        let ran = run_command(
+            ops, store, trash, account, identity, rules_path, request, command, events,
+        );
+        carried.running = None;
+        let ran = ran?;
+        run.used_connection |= ran.used_connection;
+        run.wants_full_pass |= ran.wants_full_pass;
+    }
+    Ok(run)
+}
+
+/// Runs one command other than `SyncNow` and sends its answer; `Err` only for a lost connection.
+#[allow(clippy::too_many_arguments)]
+fn run_command(
+    ops: &mut dyn MailOps,
+    store: &Store,
+    trash: &Trash,
+    account: &AccountConfig,
+    identity: &Identity,
+    rules_path: &Path,
+    request: RequestId,
+    command: Command,
     events: &Sender<Event>,
 ) -> Result<CommandsRun, SyncError> {
     let name = || account.name.clone();
@@ -736,143 +768,138 @@ pub fn run_commands(
         }
     };
     let mut run = CommandsRun::default();
-    while let Ok(Job { request, command }) = commands.try_recv() {
-        match command {
-            Command::SyncNow => {
-                run.wants_full_pass = true;
-                sync_requests.push(request);
-            }
-            Command::Apply {
+    match command {
+        Command::SyncNow => unreachable!("run_commands holds SyncNow for the next full pass"),
+        Command::Apply {
+            folder,
+            uids,
+            action,
+            by,
+        } => {
+            run.used_connection = true;
+            let _ = events.send(Event::Activity {
+                account: name(),
+                activity: Activity::RunningCommand {
+                    what: describe(&action, uids.len()),
+                },
+            });
+            let outcome = actions::run(ops, store, trash, &folder, &uids, &action, &by, now());
+            let (results, lost) = match outcome {
+                Ok(results) => split_lost(results),
+                Err(e) => (
+                    uids.iter().map(|&uid| (uid, Err(e.to_string()))).collect(),
+                    connection_lost(&e).then_some(e),
+                ),
+            };
+            let _ = events.send(Event::ActionDone {
+                account: name(),
                 folder,
-                uids,
-                action,
-                by,
-            } => {
-                run.used_connection = true;
-                let _ = events.send(Event::Activity {
-                    account: name(),
-                    activity: Activity::RunningCommand {
-                        what: describe(&action, uids.len()),
-                    },
-                });
-                let outcome = actions::run(ops, store, trash, &folder, &uids, &action, &by, now());
-                let (results, lost) = match outcome {
-                    Ok(results) => split_lost(results),
-                    Err(e) => (
-                        uids.iter().map(|&uid| (uid, Err(e.to_string()))).collect(),
-                        connection_lost(&e).then_some(e),
-                    ),
-                };
-                let _ = events.send(Event::ActionDone {
-                    account: name(),
-                    folder,
-                    results,
-                    request,
-                });
-                if let Some(e) = lost {
-                    return Err(e.into());
-                }
+                results,
+                request,
+            });
+            if let Some(e) = lost {
+                return Err(e.into());
             }
-            Command::ApplyRule { name: rule_name } => {
-                let rule = match enabled_rule(rules_path, &rule_name) {
-                    Ok(rule) => rule,
-                    Err(message) => {
-                        let _ = events.send(failed(request, message));
-                        continue;
-                    }
-                };
-                run.used_connection = true;
-                let rules = std::slice::from_ref(&rule);
-                match run_rules(
-                    ops,
-                    store,
-                    trash,
-                    rules,
-                    account,
-                    identity,
-                    Mode::ApplyExisting,
-                    now(),
-                ) {
-                    Ok(rules_run) => {
-                        let errors = rules_run
-                            .events
-                            .into_iter()
-                            .filter_map(|event| match event {
-                                Event::Error { message, .. } => Some(message),
-                                _ => None,
-                            })
-                            .collect();
-                        let _ = events.send(Event::RuleApplied {
-                            account: name(),
-                            request,
-                            evaluated: rules_run.evaluated,
-                            actions: rules_run.actions,
-                            errors,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = events.send(failed(request, e.to_string()));
-                        if is_lost_connection(&e) {
-                            return Err(e);
-                        }
+        }
+        Command::ApplyRule { name: rule_name } => {
+            let rule = match enabled_rule(rules_path, &rule_name) {
+                Ok(rule) => rule,
+                Err(message) => {
+                    let _ = events.send(failed(request, message));
+                    return Ok(run);
+                }
+            };
+            run.used_connection = true;
+            let rules = std::slice::from_ref(&rule);
+            match run_rules(
+                ops,
+                store,
+                trash,
+                rules,
+                account,
+                identity,
+                Mode::ApplyExisting,
+                now(),
+            ) {
+                Ok(rules_run) => {
+                    let errors = rules_run
+                        .events
+                        .into_iter()
+                        .filter_map(|event| match event {
+                            Event::Error { message, .. } => Some(message),
+                            _ => None,
+                        })
+                        .collect();
+                    let _ = events.send(Event::RuleApplied {
+                        account: name(),
+                        request,
+                        evaluated: rules_run.evaluated,
+                        actions: rules_run.actions,
+                        errors,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, e.to_string()));
+                    if is_lost_connection(&e) {
+                        return Err(e);
                     }
                 }
             }
-            Command::FetchBodies { folder } => {
-                run.used_connection = true;
-                match fetch_bodies_in(ops, store, folder.as_deref()) {
-                    Ok(fetched) => {
-                        let _ = events.send(Event::BodiesFetched {
-                            account: name(),
-                            request,
-                            fetched,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = events.send(failed(request, e.to_string()));
-                        if connection_lost(&e) {
-                            return Err(e.into());
-                        }
+        }
+        Command::FetchBodies { folder } => {
+            run.used_connection = true;
+            match fetch_bodies_in(ops, store, folder.as_deref()) {
+                Ok(fetched) => {
+                    let _ = events.send(Event::BodiesFetched {
+                        account: name(),
+                        request,
+                        fetched,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, e.to_string()));
+                    if connection_lost(&e) {
+                        return Err(e.into());
                     }
                 }
             }
-            Command::FetchBody { folder, uid } => {
-                run.used_connection = true;
-                match actions::fetch_body(ops, store, &folder, uid) {
-                    Ok(()) => {
-                        let _ = events.send(Event::BodyReady {
-                            account: name(),
-                            folder,
-                            uid,
-                            request,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = events.send(failed(request, format!("{folder}/{uid}: {e}")));
-                        if connection_lost(&e) {
-                            return Err(e.into());
-                        }
+        }
+        Command::FetchBody { folder, uid } => {
+            run.used_connection = true;
+            match actions::fetch_body(ops, store, &folder, uid) {
+                Ok(()) => {
+                    let _ = events.send(Event::BodyReady {
+                        account: name(),
+                        folder,
+                        uid,
+                        request,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, format!("{folder}/{uid}: {e}")));
+                    if connection_lost(&e) {
+                        return Err(e.into());
                     }
                 }
             }
-            Command::Restore { file } => {
-                run.used_connection = true;
-                match trash.restore(ops, &file) {
-                    Ok(folder) => {
-                        run.wants_full_pass = true;
-                        let _ = events.send(Event::Restored {
-                            account: name(),
-                            folder,
-                            request,
-                        });
-                    }
-                    Err(e) => {
-                        let _ = events.send(failed(request, e.to_string()));
-                        if let RestoreError::Mail(e) = e
-                            && is_connection_error(&e)
-                        {
-                            return Err(SyncError::Mail(e));
-                        }
+        }
+        Command::Restore { file } => {
+            run.used_connection = true;
+            match trash.restore(ops, &file) {
+                Ok(folder) => {
+                    run.wants_full_pass = true;
+                    let _ = events.send(Event::Restored {
+                        account: name(),
+                        folder,
+                        request,
+                    });
+                }
+                Err(e) => {
+                    let _ = events.send(failed(request, e.to_string()));
+                    if let RestoreError::Mail(e) = e
+                        && is_connection_error(&e)
+                    {
+                        return Err(SyncError::Mail(e));
                     }
                 }
             }
@@ -1003,6 +1030,8 @@ fn sync_inbox_with(
 struct Carried {
     /// `SyncNow` requests the next full pass answers.
     sync_requests: Vec<RequestId>,
+    /// The command running now, so one that panics still gets its answer.
+    running: Option<RequestId>,
     rules: LoadedRules,
 }
 
@@ -1167,15 +1196,7 @@ impl<'a> AccountSync<'a> {
                 return Err(SyncError::Stopped);
             }
             match run_commands(
-                ops,
-                store,
-                trash,
-                account,
-                identity,
-                rules_path,
-                commands,
-                &mut carried.sync_requests,
-                events,
+                ops, store, trash, account, identity, rules_path, commands, carried, events,
             ) {
                 Ok(run) => {
                     pending_full |= run.wants_full_pass;
@@ -1327,26 +1348,14 @@ pub fn run_loop_with(
                     account: account.name.clone(),
                     activity: Activity::Offline { reason, retry_at },
                 });
-                fail_requests(
-                    &account,
-                    &events,
-                    &commands,
-                    &mut carried.sync_requests,
-                    &offline,
-                );
+                fail_requests(&account, &events, &commands, &mut carried, &offline);
                 sleep(backoff);
                 backoff = (backoff * 2).min(Duration::from_secs(300));
             }
         }
     }
     let stopped = format!("{} stopped", account.name);
-    fail_requests(
-        &account,
-        &events,
-        &commands,
-        &mut carried.sync_requests,
-        &stopped,
-    );
+    fail_requests(&account, &events, &commands, &mut carried, &stopped);
 }
 
 fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
@@ -1365,16 +1374,22 @@ pub fn offline_message(account: &str, reason: &str, retry_at: i64) -> String {
     )
 }
 
-/// Fails the held `SyncNow` requests and every queued job, so each request still gets its one answer.
+/// Fails the running command, the held `SyncNow` requests and every queued job, so each request still gets its one
+/// answer.
 fn fail_requests(
     account: &AccountConfig,
     events: &Sender<Event>,
     commands: &Receiver<Job>,
-    sync_requests: &mut Vec<RequestId>,
+    carried: &mut Carried,
     message: &str,
 ) {
+    let held = carried
+        .running
+        .take()
+        .into_iter()
+        .chain(carried.sync_requests.drain(..));
     let queued = std::iter::from_fn(|| commands.try_recv().ok().map(|job| job.request));
-    for request in sync_requests.drain(..).chain(queued) {
+    for request in held.chain(queued) {
         let _ = events.send(Event::CommandFailed {
             account: account.name.clone(),
             request,
@@ -1430,7 +1445,7 @@ fn run_session(
             &state.identity,
             &state.rules_path,
             commands,
-            &mut carried.sync_requests,
+            carried,
             events,
         )?;
         if drained.wants_full_pass || std::mem::take(&mut pending_full) {
@@ -2161,6 +2176,35 @@ mod tests {
         );
         assert!(
             events.iter().any(|e| matches!(e, Event::CommandFailed { request: 5, message, .. } if message.starts_with("work is offline (crashed: a bug)"))),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_that_panics_still_gets_its_answer() {
+        let mut ops = ops_with_inbox();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        sync_all(&mut ops, &Store::open_account(&paths, "work").unwrap()).unwrap();
+        ops.panic_on_add_flags = true;
+        let (queue, commands) = std::sync::mpsc::channel();
+        queue.send(mark_read(1)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let stop = shutdown.clone();
+        run_loop_with(
+            account(),
+            paths,
+            tx,
+            shutdown,
+            commands,
+            Arc::new(AtomicBool::new(false)),
+            || Ok(Box::new(std::mem::take(&mut ops)) as Box<dyn MailOps>),
+            |_| stop.store(true, Ordering::Relaxed),
+        );
+        let events: Vec<Event> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|e| matches!(e, Event::CommandFailed { request: 1, message, .. } if message.starts_with("work is offline (crashed: add_flags panicked)"))),
             "{events:?}"
         );
     }
@@ -3491,7 +3535,7 @@ mod tests {
         let (events, seen) = std::sync::mpsc::channel();
         let acc = account();
         let identity = acc.identity().unwrap();
-        let mut sync_requests = Vec::new();
+        let mut carried = Carried::default();
         let run = run_commands(
             ops,
             store,
@@ -3500,7 +3544,7 @@ mod tests {
             &identity,
             rules_path,
             &rx,
-            &mut sync_requests,
+            &mut carried,
             &events,
         );
         (run, seen.try_iter().collect())
