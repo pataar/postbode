@@ -596,10 +596,13 @@ mod client {
             by: "gui".into(),
         };
         assert!(client.send("work", apply));
-        // A sync after the action ends the stream of events that could carry a copy.
+        // A sync of the same account after the action ends the stream of events that could carry a copy; `play` syncs
+        // on its own schedule, so its `Synced` says nothing.
         assert!(client.send("work", Command::SyncNow));
         let requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
-            .take_while(|event| !matches!(event, Event::Synced { .. }))
+            .take_while(
+                |event| !matches!(event, Event::Synced { account, .. } if account == "work"),
+            )
             .filter_map(|event| match event {
                 Event::ActionDone { request, .. } => Some(request),
                 _ => None,
