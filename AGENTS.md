@@ -48,6 +48,9 @@ POSTBODE_TEST_IMAP_HOST=localhost cargo test --test imap_live
 
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
 
+## Property tests
+`tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release --test fuzz`. A finding becomes a named test; unfixed ones go in `tests/known_bugs.rs` as `#[ignore = "BUG: …"]`.
+
 ## Model-based sync tests
 `tests/sync_model.rs` runs random server events and sync passes against `RecordingOps`; search deeper with `PROPTEST_CASES=2000 cargo test --features testing --test sync_model`.
 
