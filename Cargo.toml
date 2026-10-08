@@ -59,6 +59,7 @@ zeroize = "1"                                        # wipe secrets on drop
 apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
 
 [target.'cfg(target_os = "linux")'.dependencies]
+fontique = { version = "0.11", optional = true, features = ["fontconfig-dlopen"] }  # HTML mail: load fontconfig at runtime, as eframe loads X11 and Wayland, instead of linking it
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
 
 [dev-dependencies]
@@ -79,6 +80,9 @@ required-features = ["testing"]                      # drives sync::run_once and
 [lints.rust]
 unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way
 
+[package.metadata.cargo-machete]
+ignored = ["fontique"]                               # only sets a feature of the fontique Blitz uses
+
 [lints.clippy]
 unwrap_used = "deny"                                 # shipped code returns errors instead of panicking
 expect_used = "deny"                                 # same; allow narrowly where a call cannot fail
@@ -90,7 +94,7 @@ dbg_macro = "warn"                                   # debug output stays out of
 [features]
 default = ["gui", "html", "mcp"]
 gui = ["dep:eframe"]                                 # `postbode gui`; off builds the CLI alone
-html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url"]  # HTML mail rendered in the body panel; off shows text
+html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique"]  # HTML mail rendered in the body panel; off shows text
 mcp = ["dep:rmcp"]                                   # `postbode mcp`; off builds without the MCP server
 testing = []                                         # exposes RecordingOps and the one-shot sync steps to integration tests
 
