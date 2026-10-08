@@ -31,9 +31,11 @@ Actions apply to the selection when there is one, else to the current row; on a 
 
 One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. The light and dark themes are Catppuccin Latte and Mocha.
 
-## Rules, Activity and Trash
+## Rules, Activity and Backups
 
-**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Trash** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
+These three views sit at the bottom of the folder pane.
+
+**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Backups** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
 
 The daemon applies changes to `config.toml` by itself; the window's account list catches up when you reopen it, and the window says so.
 
