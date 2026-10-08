@@ -216,6 +216,10 @@ pub(crate) struct Columns {
 const MARKERS: f32 = 24.0;
 const SENDER: f32 = 130.0;
 const GAP: f32 = 12.0;
+/// Narrower than this, a column is left out: truncating would still draw its "…", over the date.
+const MIN_TEXT: f32 = 16.0;
+/// The list pane's narrowest width, so the unread dot and the flag never reach the date.
+pub(crate) const MIN_WIDTH: f32 = 220.0;
 /// How much further a thread member's sender is indented than its thread row's.
 const MEMBER_INDENT: f32 = 12.0;
 
@@ -347,15 +351,16 @@ fn draw_row(
         painter.layout_job(job)
     };
     let indent = if c.member { MEMBER_INDENT } else { 0.0 };
-    let sender = truncated(&c.who, sender_width - indent);
-    painter.galley(
-        egui::pos2(x + indent, middle - sender.size().y / 2.0),
-        sender,
-        text_color,
-    );
-    let subject = truncated(&c.subject, subject_width);
-    let subject_at = egui::pos2(x + sender_width + GAP, middle - subject.size().y / 2.0);
-    painter.galley(subject_at, subject, text_color);
+    if sender_width - indent >= MIN_TEXT {
+        let sender = truncated(&c.who, sender_width - indent);
+        let sender_at = egui::pos2(x + indent, middle - sender.size().y / 2.0);
+        painter.galley(sender_at, sender, text_color);
+    }
+    if subject_width >= MIN_TEXT {
+        let subject = truncated(&c.subject, subject_width);
+        let subject_at = egui::pos2(x + sender_width + GAP, middle - subject.size().y / 2.0);
+        painter.galley(subject_at, subject, text_color);
+    }
 }
 
 /// The scroll offset that shows the cursor row, moving the view as little as possible.
@@ -420,7 +425,10 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             );
             let c = columns(row, marked, recipient, app.search.is_some(), &now);
             draw_row(ui, rect, &c, selected, response.hovered(), palette, &font);
-            let name = row_text(row, recipient, app.search.is_some(), &now);
+            let mut name = row_text(row, recipient, app.search.is_some(), &now);
+            if marked {
+                name = format!("✔ {name}");
+            }
             response.widget_info(|| {
                 egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
             });
@@ -693,6 +701,66 @@ mod tests {
             (2, 0)
         );
         assert!(has_row(&harness, 1));
+    }
+
+    #[test]
+    fn a_marked_row_says_so_in_its_name() {
+        let fx = Fixture::new(&["work"]);
+        for uid in 1..=2 {
+            fx.add("work", message("INBOX", uid, "hi"));
+        }
+        let (mut harness, _wires) = fx.harness();
+        harness.event(egui::Event::Text("x".into()));
+        harness.run();
+        assert_eq!(
+            harness
+                .get_all_by(|node| node.label().is_some_and(|l| l.starts_with("✔ ")))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn in_a_narrow_row_nothing_is_drawn_over_the_date() {
+        for width in [150.0, 130.0] {
+            let mut harness = egui_kittest::Harness::builder()
+                .with_size(egui::vec2(width + 16.0, 40.0))
+                .build_ui(move |ui| {
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
+                    let c = Columns {
+                        unread: true,
+                        flagged: true,
+                        marked: false,
+                        who: "A very long sender name indeed".into(),
+                        subject: "A subject long enough to need truncating twice over".into(),
+                        date: "10 Dec 2025".into(),
+                        member: true,
+                    };
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    draw_row(ui, rect, &c, false, false, &crate::gui::theme::MOCHA, &font);
+                });
+            harness.run();
+            let texts: Vec<(String, egui::Rect)> = harness
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) => Some((
+                        text.galley.text().to_string(),
+                        text.galley.rect.translate(text.pos.to_vec2()),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            let date = texts.iter().find(|(t, _)| t == "10 Dec 2025").unwrap().1;
+            for (text, rect) in texts.iter().filter(|(t, _)| t != "10 Dec 2025") {
+                assert!(
+                    rect.right() <= date.left(),
+                    "{width}: {text:?} {rect:?} vs date {date:?}"
+                );
+            }
+        }
     }
 
     #[test]

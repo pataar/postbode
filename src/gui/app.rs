@@ -403,6 +403,7 @@ impl App {
                     .frame(theme::pane(side, ui, self.focus == Focus::List))
                     .resizable(true)
                     .default_size(480.0)
+                    .min_size(list::MIN_WIDTH)
                     .show(ui, |ui| actions.extend(list::show(self, ui)));
                 central_panel(ui, self.focus == Focus::Body)
                     .show(ui, |ui| actions.extend(body::show(self, ui)));
