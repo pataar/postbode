@@ -8,6 +8,10 @@ use crate::time::local_time;
 use super::app::{Account, App, UiAction};
 use super::html;
 
+/// The reader's Date: weekday, day, month, year, time with seconds, and the UTC offset. chrono has no portable zone
+/// abbreviation ("CEST"), so the offset stands in for it.
+pub(crate) const HEADER_DATE: &str = "%A %-d %B %Y, %H:%M:%S (UTC%:z)";
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum Segment<'a> {
     Link(&'a str),
@@ -89,10 +93,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         ui.weak("This message is no longer in the local store.");
         return actions;
     };
-    let date = local_time(
-        message.date.unwrap_or(message.internaldate),
-        "%a %Y-%m-%d %H:%M",
-    );
+    let date = local_time(message.date.unwrap_or(message.internaldate), HEADER_DATE);
     egui::Grid::new("headers").num_columns(2).show(ui, |ui| {
         for (name, value) in [
             ("From", message.from_addr.as_deref()),
@@ -191,6 +192,16 @@ mod tests {
     use crate::sync::{Command, Event};
 
     const WITH_ATTACHMENT: &str = "From: a@example.com\r\nSubject: report\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n--b\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"report.txt\"\r\n\r\nquarterly numbers\r\n--b--\r\n";
+
+    #[test]
+    fn the_header_date_is_full_with_seconds_and_offset() {
+        use chrono::TimeZone;
+        let at = chrono::Utc.timestamp_opt(1_790_000_000, 0).unwrap();
+        assert_eq!(
+            at.format(HEADER_DATE).to_string(),
+            "Monday 21 September 2026, 14:13:20 (UTC+00:00)"
+        );
+    }
 
     #[test]
     fn segments_link_only_http_https_and_mailto_at_word_starts() {
