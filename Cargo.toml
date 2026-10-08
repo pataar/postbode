@@ -26,7 +26,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 clap = { version = "4", features = ["derive"] }      # CLI
 data-url = { version = "0.3", optional = true }  # data: URIs in HTML mail; already in the tree through usvg
 directories = "6"                                    # platform config/state/cache dirs
-eframe = { version = "0.36", optional = true }       # the GUI window (egui); default features: wgpu, winit with runtime-loaded X11/Wayland
+eframe = { version = "0.36", optional = true, features = ["persistence"] }  # the GUI window (egui); default features: wgpu, winit with runtime-loaded X11/Wayland; persistence remembers window and pane sizes
 egui-phosphor = { version = "0.14", optional = true }  # icon font for the GUI (folders, toolbar, views); targets egui 0.36
 env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
 futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
