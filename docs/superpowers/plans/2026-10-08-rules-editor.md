@@ -23,7 +23,7 @@ One PR off `origin/main`, one commit per task. Task order matters: each task add
 
 Prerequisites on `main`: Task 1 (Latte contrast) and Task 2 (icon font, `src/gui/icons.rs`) of `docs/superpowers/plans/2026-10-08-gui-redesign.md`. This plan's colour tests assume Latte `accent = #10757a`, `on_accent = #ffffff`, `success = #276b19`.
 
-Not in this plan: the regex tester (sibling plan); editing a pending proposal in the editor (proposals are approved, rejected or previewed from their card); warning about unsaved edits when another rule is selected (the draft is replaced).
+Not in this plan: the regex tester (sibling plan); editing a pending proposal in the editor (proposals are approved, rejected or previewed from their card).
 
 ## Global Constraints
 
@@ -34,7 +34,7 @@ Not in this plan: the regex tester (sibling plan); editing a pending proposal in
 - Test and "Preview on cached mail" are read-only: `actions::planned` over the local stores, no daemon command, no store write.
 - Renaming a rule makes it a new rule and restarts its clock; the editor says so before Save: "Renaming makes this a new rule: it acts only on mail that arrives after you save."
 - Rules act only on mail that arrives after they are enabled; nothing in this plan runs `apply-existing`.
-- Copy, verbatim: "Rules", "1 rule · 2 proposals", "Open rules.toml", "New rule", "proposed by {who}", "Adds to rules.toml", "Approve", "Reject", "Preview on cached mail", "Name", "Enabled", "Watches", "Every account", "When all of these match", "+ Add condition", "Then", "+ Add action", "keeps a .eml backup", "Test", "Remove rule", "Remove from rules.toml", "Cancel", "Save", "would delete 4 cached messages", "matches no cached message".
+- Copy, verbatim: "Rules", "1 rule · 2 proposals", "Open rules.toml", "New rule", "proposed by {who}", "Adds to rules.toml", "Approve", "Reject", "Preview on cached mail", "Name", "Enabled", "Watches", "Every account", "When all of these match", "+ Add condition", "Then", "+ Add action", "keeps a .eml backup", "Test", "Remove rule", "Remove from rules.toml", "Cancel", "Save", "This rule has unsaved changes.", "Discard", "would delete 4 cached messages", "matches no cached message".
 - The rule list is 460 px wide.
 - Colours come from `theme::Palette`: proposal chip `agent` on `agent_bg` (Latte #a34106 on #fde6d6); TOML block on `added` with section headers `agent`, keys `accent`, strings `success`, booleans `error`, "+" gutter `success`. No blue or purple. Every text colour on its background passes WCAG AA (4.5:1) in both themes.
 - egui's proportional font has no "→" (checked: Ubuntu-Light lacks U+2192, Hack has it), so every line holding "→" is drawn monospace.
@@ -45,7 +45,7 @@ Not in this plan: the regex tester (sibling plan); editing a pending proposal in
 
 ## Verification notes
 
-Checked against source in `~/.cargo/registry/src`: every egui call below (egui 0.36.2: `Sides`, `Panel::left(..).exact_size(..).show(ui, ..)`, `CentralPanel::no_frame`, `ComboBox::from_id_salt/selected_text/show_ui`, `Ui::selectable_value/selectable_label/menu_button/close/small/allocate_exact_size/is_rect_visible`, `Context::animate_bool_responsive`, `Painter::rect/circle`, `Frame::new/group/fill/stroke/corner_radius/inner_margin`, `Margin::symmetric/same`, `CollapsingHeader::id_salt/default_open`, `text::LayoutJob::append`, `TextFormat { background, .. }`, `LayoutSection::byte_range: Range<ByteIndex>`, `Response::labelled_by/widget_info/gained_focus`, `WidgetInfo::selected/labeled`, `Button::small/fill/stroke/frame`), kittest 0.4.0 (`get_by_role_and_label`, `get_all_by_role`, `Node::value`), egui-phosphor 0.14.0 (`ROBOT`, `X`), and toml_edit 0.25.15. The `rules::edit` merge and append code was run in a scratch crate against toml 1.1.6 and toml_edit 0.25.15; its outputs are the expected strings in Task 1. Not run: the GUI code as a whole, and in particular whether kittest opens the "+ Add action" `menu_button` popup with one `click` + `run` (Task 3, Step 1, last test) and whether `widget_info` after `ui.add(Button)` replaces the button's accessible name (Task 4); if either fails, the step says what to do.
+Checked against source in `~/.cargo/registry/src`: every egui call below (egui 0.36.2: `Sides`, `Panel::left(..).exact_size(..).show(ui, ..)`, `CentralPanel::no_frame`, `ComboBox::from_id_salt/selected_text/show_ui`, `Ui::selectable_value/selectable_label/menu_button/close/small/allocate_exact_size/is_rect_visible`, `Context::animate_bool_responsive`, `Painter::rect/circle`, `Frame::new/group/fill/stroke/corner_radius/inner_margin`, `Margin::symmetric/same`, `CollapsingHeader::id_salt/default_open`, `text::LayoutJob::append`, `TextFormat { background, .. }`, `LayoutSection::byte_range: Range<ByteIndex>`, `Response::labelled_by/widget_info/gained_focus`, `WidgetInfo::selected/labeled`, `Button::small/fill/stroke/frame`, `Modal::new(..).show(ctx, ..)`, `ModalResponse::should_close`), kittest 0.4.0 (`get_by_role_and_label`, `get_all_by_role`, `get_all_by_label` as a `DoubleEndedIterator`, `Node::value`), egui-phosphor 0.14.0 (`ROBOT`, `X`), and toml_edit 0.25.15. The `rules::edit` merge and append code was run in a scratch crate against toml 1.1.6 and toml_edit 0.25.15; its outputs are the expected strings in Task 1. Not run: the GUI code as a whole, and in particular whether kittest opens the "+ Add action" `menu_button` popup with one `click` + `run` (Task 3, Step 1, last test), whether `widget_info` after `ui.add(Button)` replaces the button's accessible name (Task 4), and whether the unsaved-changes modal's "Save" comes after the editor's own "Save" in the accesskit tree (Task 3); if any fails, the step says what to do.
 
 ## Review Focus
 
@@ -54,6 +54,7 @@ Checked against source in `~/.cargo/registry/src`: every egui call below (egui 0
 3. **The open rule vanished from the file** (rejected with the CLI, renamed in a text editor) before Save: Save reports "no such rule" and does not add it back. Tests in Task 1 and Task 3.
 4. **A proposal carrying control characters** (an ANSI escape in a condition value or in `proposed_by`): drawn without them in the card's summary, chip and TOML. Test in Task 2.
 5. **The list switch flipped while that rule is open in the editor**: a later Save keeps the new on/off state, not the editor's stale one. Test in Task 3.
+6. **Leaving an edited draft** (another rule, "New rule", a reader Rule button): asks Save / Discard / Cancel; a failed Save stays on the draft; an unchanged draft leaves without asking. Tests in Tasks 3 and 4.
 
 ---
 
@@ -1323,7 +1324,7 @@ git commit -m "feat(gui): rules list with summaries, and proposal cards with the
 
 **Files:**
 - Create: `src/gui/rule_editor.rs`
-- Modify: `src/gui/draft.rs` (`Draft`, `Field::ALL`, `is_flag`, `Op::ALL`, `Condition::new`, `with_field`, `action_name`), `src/gui/widgets.rs` (`icon_button`), `src/gui/icons.rs` (`REMOVE`), `src/gui/rules.rs` ("New rule", selectable rows, editor in place of the placeholder), `src/gui/app.rs` (`rule_draft`, actions), `src/gui/mod.rs` (`mod rule_editor;`), `src/gui/snapshots.rs` (`rule_editor`), `docs/src/gui.md`
+- Modify: `src/gui/draft.rs` (`Draft`, `Field::ALL`, `is_flag`, `Op::ALL`, `Condition::new`, `with_field`, `action_name`), `src/gui/widgets.rs` (`icon_button`), `src/gui/icons.rs` (`REMOVE`), `src/gui/rules.rs` ("New rule", selectable rows, editor in place of the placeholder), `src/gui/app.rs` (`rule_draft`, `rule_draft_opened`, `leave_draft`, actions, the unsaved-changes prompt), `src/gui/mod.rs` (`mod rule_editor;`), `src/gui/snapshots.rs` (`rule_editor`), `docs/src/gui.md`
 
 **Interfaces:**
 - Consumes: `rules::edit::{save_rule, remove_rule}` (Task 1); `draft::{conditions, Condition, Field, Op, action_label}`, `widgets::{switch, chip}`, `App::preview` (Task 2).
@@ -1346,6 +1347,7 @@ impl Draft {
     pub fn from_rule(rule: &Rule) -> Draft;        // original = Some(rule.name)
     pub fn to_rule(&self) -> Result<Rule, String>;
     pub fn renames(&self) -> bool;
+    pub fn edited(&self, opened: &Draft) -> bool;  // Test results, errors and the remove prompt do not count
 }
 // widgets.rs
 pub(crate) fn icon_button(ui: &mut egui::Ui, icon: &str, name: &str) -> egui::Response;
@@ -1353,12 +1355,15 @@ pub(crate) fn icon_button(ui: &mut egui::Ui, icon: &str, name: &str) -> egui::Re
 pub(crate) const REMOVE: &str;                     // ph::X
 // rule_editor.rs
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction>;
+pub(crate) fn show_unsaved(app: &App, ctx: &egui::Context) -> Vec<UiAction>;
 // app.rs
 App.rule_draft: Option<Draft>;
-UiAction::{EditDraft(Draft), EditRule(String), NewRule, RemoveRule, SaveDraft, TestDraft};
+App.rule_draft_opened: Option<Draft>;              // what rule_draft was opened or last saved as
+App.leave_draft: Option<UiAction>;                 // EditRule or NewRule waiting on the prompt
+UiAction::{EditDraft(Draft), EditRule(String), NewRule, RemoveRule, SaveDraft, TestDraft, UnsavedCancel, UnsavedDiscard, UnsavedSave};
 ```
 
-The editor edits a clone of `App.rule_draft` and returns `UiAction::EditDraft(changed)` when anything differs; `app.rs` stores it and clears `error` and `tested`. Save sends the draft through `Draft::to_rule` and `rules::edit::save_rule(path, draft.original, rule)`; on success `original` becomes the saved name. "Remove rule" on a saved rule asks first ("Remove from rules.toml" / "Cancel"); on an unsaved draft it just closes it. If GUI redesign Task 8 already added `toolbar::icon_button`, move that function into `widgets.rs` instead of adding a second one.
+The editor edits a clone of `App.rule_draft` and returns `UiAction::EditDraft(changed)` when anything differs; `app.rs` stores it and clears `error` and `tested`. Save sends the draft through `Draft::to_rule` and `rules::edit::save_rule(path, draft.original, rule)`; on success `original` becomes the saved name. "Remove rule" on a saved rule asks first ("Remove from rules.toml" / "Cancel"); on an unsaved draft it just closes it. Leaving a draft that `Draft::edited` says differs from `rule_draft_opened` (another rule, "New rule") holds that action in `App.leave_draft` and shows a modal, "This rule has unsaved changes." with "Save", "Discard" and "Cancel": Save runs the Save button's path and then the held action, unless saving failed (the draft stays, with its error); Discard drops the draft and runs it; Cancel drops it. If GUI redesign Task 8 already added `toolbar::icon_button`, move that function into `widgets.rs` instead of adding a second one.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1409,6 +1414,18 @@ The editor edits a clone of `App.rule_draft` and returns `UiAction::EditDraft(ch
         assert!(draft.renames());
         assert!(!Draft::new().renames(), "a new rule has nothing to rename");
     }
+
+    #[test]
+    fn only_form_changes_count_as_edits() {
+        let opened = Draft::from_rule(&rule(ALL_FIELDS));
+        let mut draft = opened.clone();
+        draft.confirm_remove = true;
+        draft.error = Some("no such rule".into());
+        draft.tested = Some("would archive 1 cached message".into());
+        assert!(!draft.edited(&opened));
+        draft.name = "else".into();
+        assert!(draft.edited(&opened));
+    }
 ```
 
 `src/gui/rule_editor.rs` (new file, tests only for now):
@@ -1438,6 +1455,31 @@ mod tests {
     fn click(harness: &mut egui_kittest::Harness<'static, crate::gui::App>, label: &str) {
         harness.get_by_label(label).click();
         harness.run();
+    }
+
+    fn two_rules() -> String {
+        format!("{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [\"flag\"]\n")
+    }
+
+    /// newsletters open with an unsaved edit, then receipts clicked in the list.
+    fn leave_edited_newsletters(fx: &Fixture) -> (egui_kittest::Harness<'static, crate::gui::App>, Wires) {
+        let (mut harness, wires) = fx.rules_view(&two_rules());
+        click(&mut harness, "newsletters");
+        harness.state_mut().rule_draft.as_mut().unwrap().conditions[0].value = "letters@".into();
+        harness.run();
+        click(&mut harness, "receipts");
+        assert!(harness.query_by_label("This rule has unsaved changes.").is_some());
+        (harness, wires)
+    }
+
+    /// The prompt's "Save"; the editor's own "Save" sits behind the modal, which is drawn last.
+    fn prompt_save(harness: &mut egui_kittest::Harness<'static, crate::gui::App>) {
+        harness.get_all_by_label("Save").last().unwrap().click();
+        harness.run();
+    }
+
+    fn open_name(harness: &egui_kittest::Harness<'static, crate::gui::App>) -> String {
+        harness.state().rule_draft.as_ref().unwrap().name.clone()
     }
 
     #[test]
@@ -1493,7 +1535,7 @@ mod tests {
 
     #[test]
     fn a_taken_name_is_refused_and_shown() {
-        let two = format!("{RULES}\n[[rules]]\nname = \"receipts\"\nmatch.subject = {{ contains = \"receipt\" }}\nactions = [\"flag\"]\n");
+        let two = two_rules();
         let fx = Fixture::new(&["work"]);
         let (mut harness, _wires) = fx.rules_view(&two);
         click(&mut harness, "newsletters");
@@ -1568,6 +1610,60 @@ mod tests {
         click(&mut harness, "Delete");
         assert_eq!(harness.state().rule_draft.as_ref().unwrap().actions, [Action::Delete]);
         assert!(harness.query_by_label("keeps a .eml backup").is_some());
+    }
+
+    #[test]
+    fn cancel_keeps_the_edited_draft() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = leave_edited_newsletters(&fx);
+        click(&mut harness, "Cancel");
+        assert!(harness.query_by_label("This rule has unsaved changes.").is_none());
+        assert_eq!(open_name(&harness), "newsletters");
+        assert_eq!(harness.state().rule_draft.as_ref().unwrap().conditions[0].value, "letters@");
+        assert_eq!(file(&fx), two_rules());
+    }
+
+    #[test]
+    fn discard_drops_the_edit_and_opens_the_other_rule() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = leave_edited_newsletters(&fx);
+        click(&mut harness, "Discard");
+        assert_eq!(open_name(&harness), "receipts");
+        assert_eq!(file(&fx), two_rules());
+    }
+
+    #[test]
+    fn save_writes_the_edit_then_opens_the_other_rule() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = leave_edited_newsletters(&fx);
+        prompt_save(&mut harness);
+        assert_eq!(file(&fx), two_rules().replace("news@", "letters@"));
+        assert_eq!(open_name(&harness), "receipts");
+    }
+
+    #[test]
+    fn a_failed_save_stays_on_the_draft_and_shows_why() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = leave_edited_newsletters(&fx);
+        std::fs::write(fx.paths.rules_file(), "# emptied\n").unwrap();
+        prompt_save(&mut harness);
+        assert_eq!(open_name(&harness), "newsletters");
+        assert!(harness.query_by_label("This rule has unsaved changes.").is_none());
+        assert!(harness.query_by_label_contains("no such rule").is_some());
+        assert_eq!(file(&fx), "# emptied\n");
+    }
+
+    #[test]
+    fn an_unchanged_draft_is_left_without_asking() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = fx.rules_view(&two_rules());
+        click(&mut harness, "New rule");
+        click(&mut harness, "newsletters");
+        harness.state_mut().rule_draft.as_mut().unwrap().tested = Some("matches no cached message".into());
+        harness.run();
+        click(&mut harness, "receipts");
+        assert!(harness.query_by_label("This rule has unsaved changes.").is_none());
+        assert_eq!(open_name(&harness), "receipts");
     }
 }
 ```
@@ -1705,6 +1801,17 @@ impl Draft {
     /// True when Save would rename a saved rule, which makes it a new rule with a new clock.
     pub fn renames(&self) -> bool {
         self.original.as_deref().is_some_and(|original| original != self.name)
+    }
+
+    /// True when the form differs from `opened`; Test results, errors and the remove prompt do not count.
+    pub fn edited(&self, opened: &Draft) -> bool {
+        let form = |draft: &Draft| Draft {
+            confirm_remove: false,
+            error: None,
+            tested: None,
+            ..draft.clone()
+        };
+        form(self) != form(opened)
     }
 
     /// The rule this draft saves as. `rules::compile` checks the values when the file is saved; this only refuses what
@@ -2081,7 +2188,35 @@ fn footer(ui: &mut egui::Ui, draft: &mut Draft) -> Vec<UiAction> {
     ui.weak("Test runs on mail already on this device. A saved rule acts only on mail that arrives after it is enabled.");
     actions
 }
+
+/// Asks what to do with an edited draft before the editor opens something else; Escape or a click outside cancels.
+pub(crate) fn show_unsaved(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
+    if app.leave_draft.is_none() {
+        return Vec::new();
+    }
+    let mut actions = Vec::new();
+    let modal = egui::Modal::new(egui::Id::new("unsaved_rule")).show(ctx, |ui| {
+        ui.strong("This rule has unsaved changes.");
+        ui.horizontal(|ui| {
+            if ui.button("Save").clicked() {
+                actions.push(UiAction::UnsavedSave);
+            }
+            if ui.button("Discard").clicked() {
+                actions.push(UiAction::UnsavedDiscard);
+            }
+            if ui.button("Cancel").clicked() {
+                actions.push(UiAction::UnsavedCancel);
+            }
+        });
+    });
+    if actions.is_empty() && modal.should_close() {
+        actions.push(UiAction::UnsavedCancel);
+    }
+    actions
+}
 ```
+
+If `prompt_save` clicks the editor's "Save" instead (the modal's backdrop takes that click, so the test then sees the draft unchanged), give the modal's Save `widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Save and continue"))` and click that label.
 
 The two `Sides` closures touch different fields of `draft` (`tested` on the left; `confirm_remove` and `original` on the right), which edition 2024 closures capture separately.
 
@@ -2123,7 +2258,15 @@ the placeholder becomes `egui::CentralPanel::no_frame().show(ui, |ui| actions.ex
 
 - [ ] **Step 7: Wire the actions** in `src/gui/app.rs`
 
-`use super::draft::{self, Draft};`. Field `pub(crate) rule_draft: Option<Draft>,` (`None` in `App::new`). `UiAction` gains, alphabetically, `EditDraft(Draft)`, `EditRule(String)`, `NewRule`, `RemoveRule`, `SaveDraft`, `TestDraft`. In `apply` (the `SetRuleEnabled` arm replaces the existing one):
+`use super::draft::{self, Draft};` and `use super::rule_editor;`. Fields `pub(crate) rule_draft: Option<Draft>,`, `rule_draft_opened: Option<Draft>,` and `pub(crate) leave_draft: Option<UiAction>,` (all `None` in `App::new`). `UiAction` gains, alphabetically, `EditDraft(Draft)`, `EditRule(String)`, `NewRule`, `RemoveRule`, `SaveDraft`, `TestDraft`, `UnsavedCancel`, `UnsavedDiscard`, `UnsavedSave`. In `show`, after `status::show_help`: `actions.extend(rule_editor::show_unsaved(self, &ctx));`. In `apply`, this arm comes first, so it wins over the `EditRule` and `NewRule` arms below:
+
+```rust
+            leave @ (UiAction::EditRule(_) | UiAction::NewRule) if self.draft_edited() => {
+                self.leave_draft = Some(leave);
+            }
+```
+
+and (the `SetRuleEnabled` arm replaces the existing one):
 
 ```rust
             UiAction::EditDraft(mut draft) => {
@@ -2132,35 +2275,59 @@ the placeholder becomes `egui::CentralPanel::no_frame().show(ui, |ui| actions.ex
                 self.rule_draft = Some(draft);
             }
             UiAction::EditRule(name) => {
-                self.rule_draft = self
-                    .rules
-                    .rules
-                    .iter()
-                    .find(|rule| rule.name == name)
-                    .map(Draft::from_rule);
+                let draft = self.rules.rules.iter().find(|rule| rule.name == name).map(Draft::from_rule);
+                self.open_draft(draft);
             }
-            UiAction::NewRule => self.rule_draft = Some(Draft::new()),
+            UiAction::NewRule => self.open_draft(Some(Draft::new())),
             UiAction::RemoveRule => self.remove_draft(),
             UiAction::SaveDraft => self.save_draft(),
             UiAction::SetRuleEnabled(name, enabled) => {
                 self.edit_rules(|path| rule_file::edit::set_enabled(path, &name, enabled));
-                // The open draft follows the file, so a later Save does not undo the switch.
+                // The open draft and its opened copy follow the file, so a later Save does not undo the switch.
                 let now = self.rules.rules.iter().find(|r| r.name == name).map(|r| r.enabled);
-                if let (Some(now), Some(draft)) = (
-                    now,
-                    self.rule_draft
-                        .as_mut()
-                        .filter(|d| d.original.as_deref() == Some(name.as_str())),
-                ) {
-                    draft.enabled = now;
+                if let Some(now) = now {
+                    for draft in [self.rule_draft.as_mut(), self.rule_draft_opened.as_mut()].into_iter().flatten() {
+                        if draft.original.as_deref() == Some(name.as_str()) {
+                            draft.enabled = now;
+                        }
+                    }
                 }
             }
             UiAction::TestDraft => self.test_draft(),
+            UiAction::UnsavedCancel => self.leave_draft = None,
+            UiAction::UnsavedDiscard => {
+                self.rule_draft = None;
+                if let Some(leave) = self.leave_draft.take() {
+                    self.apply(ctx, leave);
+                }
+            }
+            UiAction::UnsavedSave => {
+                let leave = self.leave_draft.take();
+                self.save_draft();
+                // A failed save leaves the draft edited, with its error shown: stay on it.
+                if let Some(leave) = leave.filter(|_| !self.draft_edited()) {
+                    self.apply(ctx, leave);
+                }
+            }
 ```
 
 and beside `preview`:
 
 ```rust
+    /// Opens `draft` in the editor; `draft_edited` compares against this copy.
+    fn open_draft(&mut self, draft: Option<Draft>) {
+        self.rule_draft_opened = draft.clone();
+        self.rule_draft = draft;
+    }
+
+    /// True when leaving the open draft would lose edits.
+    fn draft_edited(&self) -> bool {
+        self.rule_draft
+            .as_ref()
+            .zip(self.rule_draft_opened.as_ref())
+            .is_some_and(|(draft, opened)| draft.edited(opened))
+    }
+
     fn test_draft(&mut self) {
         let Some(draft) = &self.rule_draft else { return };
         let text = match draft.to_rule() {
@@ -2187,6 +2354,7 @@ and beside `preview`:
                     draft.original = Some(name);
                     draft.error = None;
                 }
+                self.rule_draft_opened = self.rule_draft.clone();
                 self.rules_changed();
             }
             Err(e) => {
@@ -2221,12 +2389,12 @@ and beside `preview`:
 - [ ] **Step 8: Run the GUI tests and the architecture check**
 
 Run: `cargo test --lib gui:: && cargo test --test architecture`
-Expected: PASS. `rule_editor.rs` is a view: it takes `&App` and returns `UiAction`s; only `app.rs` names `rules::edit`.
+Expected: PASS. `rule_editor.rs` is a view: `show` and `show_unsaved` take `&App` and return `UiAction`s; only `app.rs` names `rules::edit` or changes `leave_draft`.
 
 - [ ] **Step 9: Docs** — in `docs/src/gui.md`, after the Rules sentence from Task 2:
 
 ```markdown
-Select a rule, or press New rule, to edit it on the right: its name, whether it is on, the account and folder it watches, its conditions and its actions. Test shows what it would do to the mail already on this device without doing it. Save writes the rule to `rules.toml` and keeps the file's comments; Remove rule asks before it deletes. Renaming a rule makes it a new rule, which acts only on mail that arrives after you save.
+Select a rule, or press New rule, to edit it on the right: its name, whether it is on, the account and folder it watches, its conditions and its actions. Test shows what it would do to the mail already on this device without doing it. Save writes the rule to `rules.toml` and keeps the file's comments; Remove rule asks before it deletes. Opening another rule while this one has unsaved changes asks first: Save, Discard or Cancel. Renaming a rule makes it a new rule, which acts only on mail that arrives after you save.
 ```
 
 - [ ] **Step 10: Snapshots on Linux** (`gui_rules` changes, `gui_rule_editor` is new), then commit
@@ -2241,7 +2409,7 @@ git commit -m "feat(gui): edit, test, save and remove rules in the Rules view"
 ### Task 4: "Rule" buttons in the reader
 
 **Files:**
-- Modify: `src/gui/body.rs` (header rows, `rule_button`, tests), `src/gui/draft.rs` (`RuleSeed`, `Draft::from_seed`), `src/gui/app.rs` (`UiAction::RuleFrom`), `docs/src/gui.md`
+- Modify: `src/gui/body.rs` (header rows, `rule_button`, tests), `src/gui/draft.rs` (`RuleSeed`, `Draft::from_seed`), `src/gui/app.rs` (`UiAction::RuleFrom`, which asks before leaving an edited draft), `docs/src/gui.md`
 
 **Interfaces:**
 - Consumes: `Draft`, `Condition`, `Field`, `Op` (Tasks 2–3); `icons::RULES` (GUI redesign Task 2).
@@ -2334,6 +2502,30 @@ The reader's header rows become `egui::Sides` rows: name and value on the left (
             (Field::Subject, Op::Contains, "hello there")
         );
         assert_eq!(draft.name, "subject hello there");
+    }
+
+    #[test]
+    fn the_rule_button_asks_before_replacing_an_edited_draft() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello there"));
+        let (mut harness, _wires) = fx.harness();
+        harness.get_by_label("New rule for mail with this subject").click();
+        harness.run();
+        harness.state_mut().rule_draft.as_mut().unwrap().name = "half done".into();
+        let inbox = View::Folder {
+            account: 0,
+            folder: "INBOX".into(),
+        };
+        harness.state_mut().select_view(inbox.clone());
+        harness.run();
+        harness.get_by_label("New rule for mail from this sender").click();
+        harness.run();
+        assert!(harness.query_by_label("This rule has unsaved changes.").is_some());
+        assert_eq!(harness.state().view, inbox, "the prompt shows over the reader");
+        harness.get_by_label("Discard").click();
+        harness.run();
+        assert_eq!(harness.state().view, View::Rules);
+        assert_eq!(harness.state().rule_draft.as_ref().unwrap().conditions[0].field, Field::From);
     }
 ```
 
@@ -2463,8 +2655,16 @@ If kittest still finds the button only by its text (`get_by_label_contains("Rule
                 if let Some(body) = &self.body {
                     let draft = Draft::from_seed(&seed, &self.accounts[body.account].name, &body.key.0);
                     self.select_view(View::Rules);
-                    self.rule_draft = Some(draft);
+                    self.open_draft(Some(draft));
                 }
+            }
+```
+
+and the first arm of `apply` from Task 3 holds it too, so an edited draft asks before the seed replaces it:
+
+```rust
+            leave @ (UiAction::EditRule(_) | UiAction::NewRule | UiAction::RuleFrom(_)) if self.draft_edited() => {
+                self.leave_draft = Some(leave);
             }
 ```
 
