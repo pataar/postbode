@@ -340,7 +340,13 @@ enum AccountCommand {
 }
 
 pub fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = if opened_as_mac_app() {
+        Cli {
+            command: Command::Gui,
+        }
+    } else {
+        Cli::parse()
+    };
     let paths = match std::env::var_os("POSTBODE_HOME") {
         Some(home) => Ok(Paths::under(Path::new(&home))),
         None => Paths::discover(),
@@ -809,6 +815,16 @@ fn truncate(s: &str, width: usize) -> String {
         out.push('…');
     }
     out
+}
+
+/// Finder and the Dock start Postbode.app with no arguments; that opens the window rather than printing help.
+fn opened_as_mac_app() -> bool {
+    use std::io::IsTerminal as _;
+    cfg!(target_os = "macos")
+        && std::env::current_exe().is_ok_and(|exe| {
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            postbode::paths::launched_as_app(&exe, &args, io::stdin().is_terminal())
+        })
 }
 
 #[cfg(feature = "gui")]

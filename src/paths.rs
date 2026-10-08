@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -151,6 +152,25 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Whether this process is the macOS app opened from Finder, the Dock or `open`: the binary sits in a bundle's
+/// `Contents/MacOS`, got no arguments (very old macOS passes a `-psn_…` process serial number, which counts as none)
+/// and stdin is not a terminal. Then the app opens the mail window instead of printing help; a terminal run of the
+/// same binary (the cask links it as the `postbode` command) still prints help. `args` excludes argv\[0\].
+pub fn launched_as_app(exe: &Path, args: &[OsString], stdin_is_terminal: bool) -> bool {
+    let in_bundle = exe
+        .parent()
+        .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
+        && exe.ancestors().nth(3).is_some_and(|bundle| {
+            bundle
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+        });
+    let no_args = args
+        .iter()
+        .all(|a| a.to_str().is_some_and(|a| a.starts_with("-psn_")));
+    in_bundle && no_args && !stdin_is_terminal
+}
+
 fn write_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
 
@@ -180,6 +200,63 @@ fn write_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    const APP_EXE: &str = "/Applications/Postbode.app/Contents/MacOS/postbode";
+
+    #[test]
+    fn finder_launch_of_the_bundle_opens_the_app() {
+        assert!(launched_as_app(Path::new(APP_EXE), &[], false));
+        assert!(launched_as_app(
+            Path::new("/Users/me/Downloads/Postbode.APP/Contents/MacOS/postbode"),
+            &[],
+            false
+        ));
+    }
+
+    #[test]
+    fn an_old_macos_process_serial_number_counts_as_no_arguments() {
+        assert!(launched_as_app(
+            Path::new(APP_EXE),
+            &args(&["-psn_0_12345"]),
+            false
+        ));
+    }
+
+    #[test]
+    fn any_real_argument_runs_the_cli() {
+        assert!(!launched_as_app(
+            Path::new(APP_EXE),
+            &args(&["list"]),
+            false
+        ));
+        assert!(!launched_as_app(
+            Path::new(APP_EXE),
+            &args(&["-psn_0_1", "--help"]),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_terminal_run_of_the_bundled_binary_prints_help() {
+        assert!(!launched_as_app(Path::new(APP_EXE), &[], true));
+    }
+
+    #[test]
+    fn a_binary_outside_a_bundle_runs_the_cli() {
+        for exe in [
+            "/opt/homebrew/bin/postbode",
+            "/usr/local/Cellar/postbode/0.1.0/bin/postbode",
+            "/tmp/Contents/MacOS/postbode",
+            "/x/Postbode.app/Contents/Resources/postbode",
+            "postbode",
+        ] {
+            assert!(!launched_as_app(Path::new(exe), &[], false), "{exe}");
+        }
+    }
 
     #[test]
     fn under_root_lays_out_three_dirs() {

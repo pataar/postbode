@@ -16,7 +16,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `message` header parsing, thread id, body text
 - `notify` desktop notifications for new mail
 - `output` JSON rows shared by `--json` and MCP results
-- `paths` platform dirs, atomic writes
+- `paths` platform dirs, atomic writes, whether this is the macOS app opened from Finder (`launched_as_app`)
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
 - `store` one SQLite file per account; migrations in `migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
@@ -62,7 +62,7 @@ Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as
 Run `packaging/icons.sh` after changing `assets/icon.svg`, and commit what it writes.
 
 ## Releasing
-Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand.
+Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. On the tag, `macos-app.yml` runs `packaging/macos/package.sh` on macOS (Postbode.app, signed and notarized, on a DMG), attaches the DMG to the release and writes `Casks/postbode.rb` in the tap from `packaging/macos/postbode.rb.in`; rerun it for a tag via workflow_dispatch. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand.
 
 One-time setup, by the repo owner:
 1. `pataar/homebrew-tap` already exists (it also holds `gast`); dist adds `Formula/postbode.rb` beside the other formulas.
@@ -70,4 +70,5 @@ One-time setup, by the repo owner:
 3. Add repo secret `RELEASE_PLZ_TOKEN`: a fine-grained token with Contents and Pull requests read/write on `pataar/postbode`.
 4. Publish 0.1.0 by hand (crates.io requires the first publish with a token): `cargo publish`, then `git tag v0.1.0 && git push origin v0.1.0` to run the first dist release.
 5. On crates.io, add a trusted publisher for `postbode`: repository `pataar/postbode`, workflow `release-plz.yml`.
-6. Under Settings → Code security, enable Dependabot alerts and security updates; version updates come from `.github/dependabot.yml`.
+6. For the macOS app, add repo secrets: `APPLE_CERTIFICATE` (base64 of the Developer ID Application .p12), `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD` (any random string), `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`. Without them the DMG is signed ad hoc, and the cask keeps a `postflight` that clears the quarantine flag (the `@ADHOC@` lines in `packaging/macos/postbode.rb.in`); with them those lines are dropped. The packaging has never run on a Mac before its first PR run; check that DMG by hand once.
+7. Under Settings → Code security, enable Dependabot alerts and security updates; version updates come from `.github/dependabot.yml`.

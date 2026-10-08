@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template for Postbode.app/Contents/Info.plist; package.sh fills in @VERSION@, @SHORT_VERSION@ and @BUILD_SHA@.
+     Keep LSMinimumSystemVersion equal to MACOSX_DEPLOYMENT_TARGET in package.sh. -->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.pataar.postbode</string>
+    <key>CFBundleName</key>
+    <string>Postbode</string>
+    <key>CFBundleDisplayName</key>
+    <string>Postbode</string>
+    <key>CFBundleExecutable</key>
+    <string>postbode</string>
+    <key>CFBundleIconFile</key>
+    <string>Postbode</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@SHORT_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>PostbodeBuildSha</key>
+    <string>@BUILD_SHA@</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Postbode contributors. Licensed MIT OR Apache-2.0.</string>
+</dict>
+</plist>
