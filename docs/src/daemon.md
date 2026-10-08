@@ -16,6 +16,32 @@ postbode service install
 
 This writes a launchd agent (`~/Library/LaunchAgents/nl.pataar.postbode.plist`) on macOS or a systemd user unit (`~/.config/systemd/user/postbode.service`) on Linux, and starts it. A daemon that was already running is stopped first, so the service's daemon takes over. Running the command again is safe. `--dry-run` shows the file and the commands and changes nothing. `postbode service remove` stops the service and deletes the file. The service runs the postbode binary from the path it was installed from: for Homebrew that is the `opt/` link, so `brew upgrade` needs nothing more, and for an AppImage it is the `.AppImage` file. After moving postbode or the AppImage, run `postbode service install` again. With `POSTBODE_HOME` set, the service file passes it on, so the service's daemon uses that home too.
 
+## On a server
+
+Postbode runs headless on any Linux machine, such as a NAS, a VPS or a Raspberry Pi. Rules act on the IMAP server, so your phone and other mail clients see the sorted mailbox. Two things differ from a desktop:
+
+- **Passwords:** a server has no keyring, so write `config.toml` by hand (see [Accounts](accounts.md)) with `password = { command = "cat /path/to/secret" }` instead of `account add`. Set `notify = false`; there is no desktop to notify.
+- **Starting at boot:** `postbode service install` writes a systemd *user* unit, and user units only run while you are logged in. Run `loginctl enable-linger $USER` once to start it at boot.
+
+### Docker
+
+There is no published image. To run Postbode in a container, mount the Linux binary from a [release](https://github.com/pataar/postbode/releases/latest) into a plain Debian container. On Unraid, use this file with the Compose Manager plugin:
+
+```yaml
+services:
+  postbode:
+    image: debian:stable-slim
+    command: ["postbode", "run"]
+    environment:
+      POSTBODE_HOME: /data
+    volumes:
+      - ./postbode:/usr/local/bin/postbode:ro  # the binary extracted from the release archive
+      - ./data:/data
+    restart: unless-stopped
+```
+
+With `POSTBODE_HOME` set, `config.toml` and `rules.toml` go in `./data/config/`, and the mail store and `daemon.log` in `./data/state/`. Put the password in a file under `./data/`, for example `password = { command = "cat /data/imap-work" }`. To use the CLI against the running daemon, run `docker compose exec postbode postbode rules test`.
+
 ## Status and stopping
 
 ```sh
