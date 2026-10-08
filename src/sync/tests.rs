@@ -2817,3 +2817,32 @@ fn a_stop_fails_queued_jobs_as_stopped() {
         ]
     );
 }
+
+#[test]
+fn a_full_pass_stores_the_delimiter_and_an_inbox_only_pass_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let acct = account();
+    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut ops = ops_with_inbox();
+    for folder in &mut ops.folders {
+        folder.delimiter = Some("/".into());
+    }
+    let delimiter = |store: &Store| store.folder("INBOX").unwrap().unwrap().delimiter;
+    sync_all(&mut ops, &state.store).unwrap();
+    assert_eq!(delimiter(&state.store).as_deref(), Some("/"));
+    let (_commands_tx, commands) = std::sync::mpsc::channel();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let full = false;
+    state
+        .pass(
+            &mut ops,
+            full,
+            &mut Carried::default(),
+            &tx,
+            &commands,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(delimiter(&state.store).as_deref(), Some("/"));
+}

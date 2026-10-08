@@ -13,7 +13,7 @@ use egui_kittest::kittest::Queryable;
 use super::App;
 use super::app::View;
 use super::test_support::{Fixture, Wires, message};
-use crate::store::{LogEntry, Message};
+use crate::store::{Folder, LogEntry, Message};
 use crate::sync::{Activity, Event};
 use crate::trash::Trash;
 
@@ -78,6 +78,16 @@ fn mailbox(theme: &str) -> Fixture {
         fx.folder("work", name, special);
     }
     fx.folder("home", "Archive", Some("Archive"));
+    for name in ["Projects/Postbode", "Projects/Website"] {
+        let nested = Folder {
+            name: name.into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+            delimiter: Some("/".into()),
+        };
+        fx.store("work").upsert_folder(&nested).unwrap();
+    }
     let lunch = "Hi Robin,\n\nShall we try the new place on the corner this Friday at noon?\nThe menu is at https://example.com/menu and they take bookings.\n\nCheers,\nLinus";
     let inbox = [
         (
