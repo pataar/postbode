@@ -79,13 +79,9 @@ fn viewport(size: [f32; 2]) -> egui::ViewportBuilder {
 /// exit code. Without a display there is no window, and stderr is all there is.
 fn explain(error: anyhow::Error, log: Option<&Path>) -> anyhow::Error {
     let problem = startup::Problem::of(&error, log);
-    let options = eframe::NativeOptions {
-        viewport: viewport([520.0, 260.0]),
-        ..Default::default()
-    };
     let shown = eframe::run_native(
         "Postbode",
-        options,
+        explain_options(),
         Box::new(|cc| {
             theme::install(&cc.egui_ctx);
             Ok(Box::new(Explain(problem)))
@@ -95,6 +91,17 @@ fn explain(error: anyhow::Error, log: Option<&Path>) -> anyhow::Error {
         log::debug!("could not show the startup error in a window: {e}");
     }
     error
+}
+
+/// The error window remembers nothing. eframe reads a saved window size even when it does not save one, so this
+/// window must not share the mail window's file; the empty path also keeps eframe from making a folder of its own.
+fn explain_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: viewport([520.0, 260.0]),
+        persist_window: false,
+        persistence_path: Some(std::path::PathBuf::new()),
+        ..Default::default()
+    }
 }
 
 /// The window in place of the mail window when that cannot start.
@@ -112,6 +119,10 @@ impl eframe::App for Explain {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
     }
+
+    fn persist_egui_memory(&self) -> bool {
+        false
+    }
 }
 
 fn open(
@@ -122,6 +133,8 @@ fn open(
 ) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: viewport([1280.0, 800.0]),
+        // The window size and position and the pane widths; egui never saves what is typed in a field.
+        persistence_path: Some(paths.state_dir.join("window.ron")),
         ..Default::default()
     };
     eframe::run_native(
@@ -142,6 +155,15 @@ mod tests {
         let icon = eframe::icon_data::from_png_bytes(super::ICON).unwrap();
         assert_eq!((icon.width, icon.height), (512, 512));
         assert_eq!(icon.rgba[3], 0, "the top-left pixel must be transparent");
+    }
+
+    #[test]
+    fn the_error_window_saves_nothing() {
+        let options = super::explain_options();
+        assert!(!options.persist_window);
+        assert_eq!(options.persistence_path, Some(std::path::PathBuf::new()));
+        let problem = super::startup::Problem::of(&anyhow::anyhow!("no display"), None);
+        assert!(!eframe::App::persist_egui_memory(&super::Explain(problem)));
     }
 
     #[test]
