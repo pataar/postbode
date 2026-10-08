@@ -134,6 +134,7 @@ fn folder_rows(store: &Store) -> Result<Vec<FolderRow>, StoreError> {
         .into_iter()
         .map(|f| {
             Ok(FolderRow {
+                delimiter: f.delimiter,
                 special_use: f.special_use,
                 unread: store.unread_count(&f.name)?,
                 name: f.name,
@@ -144,6 +145,7 @@ fn folder_rows(store: &Store) -> Result<Vec<FolderRow>, StoreError> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FolderRow {
+    pub delimiter: Option<String>,
     pub name: String,
     pub special_use: Option<String>,
     pub unread: u32,
@@ -200,6 +202,7 @@ pub(crate) enum UiAction {
     StepFolder(isize),
     SyncNow,
     ToggleFlag,
+    ToggleFolder(usize, String),
     ToggleHelp,
     ToggleHistory,
     ToggleHtml,
@@ -219,6 +222,8 @@ pub struct App {
     pub(crate) activity_log: Vec<(String, LogEntry)>,
     pub(crate) body: Option<BodyState>,
     pub(crate) client: Client,
+    /// Folder tree branches folded shut, by account index and path; kept for the window's lifetime.
+    pub(crate) collapsed: HashSet<(usize, String)>,
     pub(crate) config_changed: bool,
     pub(crate) config_mtime: Option<SystemTime>,
     /// Set when the event stream ended; cleared once a reconnect succeeds.
@@ -290,6 +295,7 @@ impl App {
             activity_log: Vec::new(),
             body: None,
             client,
+            collapsed: HashSet::new(),
             config_changed: false,
             config_mtime,
             daemon_lost: false,
@@ -383,6 +389,7 @@ impl App {
                     .frame(theme::pane(side, ui, self.focus == Focus::List))
                     .resizable(true)
                     .default_size(480.0)
+                    .min_size(list::MIN_WIDTH)
                     .show(ui, |ui| actions.extend(list::show(self, ui)));
                 central_panel(ui, self.focus == Focus::Body)
                     .show(ui, |ui| actions.extend(body::show(self, ui)));
@@ -727,14 +734,23 @@ impl App {
                 }
             }
             UiAction::StepFolder(delta) => {
-                let entries = self.tree_entries();
-                let at = entries.iter().position(|v| *v == self.view).unwrap_or(0);
+                let entries = self.tree_entries(true);
+                let at = entries
+                    .iter()
+                    .position(|v| *v == self.view)
+                    .or_else(|| self.nearest_shown_above(&entries))
+                    .unwrap_or(0);
                 let view = entries[step(at, delta, entries.len())].clone();
                 if view != self.view {
                     self.select_view(view);
                 }
             }
             UiAction::SyncNow => self.sync_all(),
+            UiAction::ToggleFolder(account, path) => {
+                if !self.collapsed.remove(&(account, path.clone())) {
+                    self.collapsed.insert((account, path));
+                }
+            }
             UiAction::ToggleFlag => {
                 if let Some(flagged) = self.selected_rows().first().map(|row| row.flagged) {
                     self.act(if flagged {
@@ -1456,16 +1472,27 @@ impl App {
     }
 
     /// Every folder of every account, then Rules, Activity and Trash, in tree order.
-    fn tree_entries(&self) -> Vec<View> {
+    /// Where a hidden view (in a folded branch) sits in `shown`: at the nearest shown entry above it.
+    fn nearest_shown_above(&self, shown: &[View]) -> Option<usize> {
+        let all = self.tree_entries(false);
+        let at = all.iter().position(|v| *v == self.view)?;
+        all[..at]
+            .iter()
+            .rev()
+            .find_map(|view| shown.iter().position(|v| v == view))
+    }
+
+    fn tree_entries(&self, skip_collapsed: bool) -> Vec<View> {
         let mut entries: Vec<View> = self
             .accounts
             .iter()
             .enumerate()
             .flat_map(|(account, a)| {
-                a.folders.iter().map(move |f| View::Folder {
-                    account,
-                    folder: f.name.clone(),
+                folders::shown(a, |path| {
+                    skip_collapsed && self.collapsed.contains(&(account, path.to_string()))
                 })
+                .into_iter()
+                .map(move |folder| View::Folder { account, folder })
             })
             .collect();
         entries.extend([View::Rules, View::Activity, View::Trash]);

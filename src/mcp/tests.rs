@@ -71,6 +71,7 @@ fn inbox() -> Folder {
         uidvalidity: 1,
         last_uid: 0,
         special_use: None,
+        delimiter: None,
     }
 }
 

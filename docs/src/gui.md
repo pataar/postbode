@@ -4,6 +4,8 @@
 
 When the window cannot start, for instance because no account is set up yet, a small window says why and what to do; the error also goes to stderr. Closing the window does not stop sync. A daemon the window started stops a minute after its last client goes; one you run with `postbode run` keeps going. If the daemon goes away while the window is open, the status bar says "background sync stopped — reconnecting" and the window tries again every five seconds.
 
+The window remembers its size, its position and the width of its columns in `window.ron`, next to `daemon.log` in the state directory. Delete the file to start from the defaults.
+
 ## Keys
 
 | Key | Action |
@@ -27,13 +29,23 @@ Each attachment of the open message has a Save button, which saves it to your Do
 
 Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message you open, with the keys or a click, is marked read after its text has been on screen for a second; the one a folder opens on stays unread.
 
+## Folders
+
+Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, Trash) first, then your own folders as a tree that follows the server's hierarchy. Click the caret in front of a parent to fold or unfold its branch; folding lasts until you close the window. A parent the server does not list as a folder is shown but cannot be opened.
+
+## Message list
+
+Each row shows, in columns: a dot when it is unread, a flag (or a check when marked), the sender (the recipient in Sent and Drafts), the subject with the thread's message count, and the date on the right. Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long subject is cut off with "…" so the date always stays in view.
+
 ## Status bar
 
 One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. The light and dark themes are Catppuccin Latte and Mocha.
 
-## Rules, Activity and Trash
+## Rules, Activity and Backups
 
-**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Trash** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
+These three views sit at the bottom of the folder pane.
+
+**Rules** lists proposals with Approve and Reject, then every rule with a switch. Changes to `rules.toml`, from the window or from your editor, take effect within about two seconds for new mail. **Activity** is the log of what rules and your actions did. **Backups** lists the `.eml` backups of mail deleted for good (deleted from Trash, from an account without a Trash folder, or by a rule), with Restore. Mail moved to the server's Trash folder is in that folder in the tree.
 
 The daemon applies changes to `config.toml` by itself; the window's account list catches up when you reopen it, and the window says so.
 

@@ -220,6 +220,7 @@ impl MailOps for ImapOps {
                 .map(|n| RemoteFolder {
                     name: n.name().to_string(),
                     special_use: special_use(n.attributes()),
+                    delimiter: n.delimiter().map(str::to_string),
                 })
                 .collect())
         })

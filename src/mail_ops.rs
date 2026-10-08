@@ -7,6 +7,7 @@ use std::time::Duration;
 pub struct RemoteFolder {
     pub name: String,
     pub special_use: Option<String>,
+    pub delimiter: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +135,7 @@ mod recording {
             self.folders.push(RemoteFolder {
                 name: name.into(),
                 special_use: special_use.map(str::to_string),
+                delimiter: None,
             });
             self.uidvalidity.insert(name.into(), 1);
             self.mail.entry(name.into()).or_default();
@@ -349,6 +351,7 @@ mod recording {
             self.folders.push(RemoteFolder {
                 name: name.into(),
                 special_use: None,
+                delimiter: None,
             });
             self.uidvalidity.insert(name.into(), 1);
             self.mail.entry(name.into()).or_default();

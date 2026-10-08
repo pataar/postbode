@@ -91,6 +91,18 @@ fn lists_special_use_folders() {
 }
 
 #[test]
+fn lists_the_hierarchy_delimiter() {
+    let Some(host) = host() else { return };
+    let folders = connect(&account(&host, PORT, "delimiter"))
+        .list_folders()
+        .unwrap();
+    assert!(
+        !folders.is_empty() && folders.iter().all(|f| f.delimiter.is_some()),
+        "{folders:?}"
+    );
+}
+
+#[test]
 fn append_fetch_and_flags_round_trip() {
     let Some(host) = host() else { return };
     let mut ops = connect(&account(&host, PORT, "flags"));
