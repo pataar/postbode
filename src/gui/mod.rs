@@ -13,6 +13,7 @@ mod status;
 #[cfg(test)]
 mod test_support;
 mod theme;
+mod toolbar;
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -26,7 +27,7 @@ use crate::paths::Paths;
 pub use app::App;
 
 /// The window icon: `assets/icon.svg` rendered to PNG by `packaging/icons.sh`.
-const ICON: &[u8] = include_bytes!("../../assets/icon.png");
+pub(crate) const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 
 /// The Wayland app id and X11 WM class; the Linux desktop entry and icons are named after it, so the compositor can
 /// match the window to them.

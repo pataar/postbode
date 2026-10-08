@@ -1,8 +1,4 @@
 //! The Phosphor icons the window uses, by meaning rather than by glyph name.
-#![expect(
-    dead_code,
-    reason = "views adopt these icons one redesign task at a time"
-)]
 use egui_phosphor::regular as ph;
 
 pub(crate) const ACTIVITY: &str = ph::PULSE;

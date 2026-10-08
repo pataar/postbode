@@ -5,7 +5,7 @@ use crate::sync::Activity;
 use crate::time::clock;
 
 use super::app::{Account, App, UiAction};
-use super::theme;
+use super::{icons, theme, toolbar};
 
 /// The account's status line: its error or its latest activity; plus queued commands.
 pub(crate) fn account_line(account: &Account) -> String {
@@ -46,10 +46,22 @@ fn line_color(
     }
 }
 
+/// The sync button's hover text, with the platform's shortcut.
+pub(crate) fn sync_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Sync now · Cmd+R"
+    } else {
+        "Sync now · Ctrl+R"
+    }
+}
+
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let error_color = ui.visuals().error_fg_color;
     ui.horizontal(|ui| {
+        if toolbar::icon_button(ui, true, icons::SYNC, "Sync now", sync_key()).clicked() {
+            actions.push(UiAction::SyncNow);
+        }
         ui.vertical(|ui| {
             if let Some(error) = &app.error
                 && ui
@@ -80,6 +92,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
             for (preference, label) in [
                 (egui::ThemePreference::Dark, "Dark"),
                 (egui::ThemePreference::Light, "Light"),
