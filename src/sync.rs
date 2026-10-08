@@ -278,6 +278,7 @@ enum ActionDef {
     Move(String),
     Notify,
     Silent,
+    Tag(String),
     Trash,
     Unflag,
 }
@@ -987,6 +988,7 @@ fn describe(action: &Action, count: usize) -> String {
         Action::MarkUnread => "marking unread",
         Action::Move(_) => "moving",
         Action::Notify | Action::Silent => "updating",
+        Action::Tag(_) => "tagging",
         Action::Unflag => "unflagging",
     };
     let plural = if count == 1 { "" } else { "s" };
