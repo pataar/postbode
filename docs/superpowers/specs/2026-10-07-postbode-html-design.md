@@ -32,7 +32,7 @@ Measured on one newsletter fixture at 700 px, Linux x86_64, 4 cores, release bui
 
 ## 3. Packaging
 
-- Cargo feature `html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url"]`, in `default`. `data-url` decodes `data:` URIs; it is already in the tree through `usvg`. Without it the body panel is the text view of GUI §6, unchanged.
+- Cargo feature `html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique"]`, in `default`. `data-url` decodes `data:` URIs; it is already in the tree through `usvg`. `fontique` is named only to turn on its `fontconfig-dlopen` feature, so fontconfig is loaded at runtime rather than linked, as eframe does for X11 and Wayland. Without it the body panel is the text view of GUI §6, unchanged.
 - Stylo, Blitz's CSS engine, is MPL-2.0. File-level copyleft: shipping a binary that links it is fine; changes to its own files would be published. Noted in the licence section of `docs/src/index.md`, and so of `README.md`.
 - `cargo audit` and `cargo machete` cover the new crates as they cover the rest.
 
