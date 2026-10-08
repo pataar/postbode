@@ -37,7 +37,7 @@ Install either the cask or the formula (`brew install pataar/tap/postbode`), not
 
 ## AppImage on Linux
 
-Each release has an AppImage for x86_64 and aarch64, which runs on any desktop (KDE Plasma, GNOME and others) with no install:
+Each release has an AppImage for x86_64 and aarch64. It runs without installing on Linux desktops (KDE Plasma, GNOME and others) that have the system's graphics libraries and FUSE (`fusermount`), as most do:
 
 ```sh
 chmod +x postbode-x86_64.AppImage
@@ -46,7 +46,7 @@ chmod +x postbode-x86_64.AppImage
 ./postbode-x86_64.AppImage mcp install      # MCP hosts and `service install` record this file's path
 ```
 
-Keep the file where you run it from: the daemon it starts, `service install` and `mcp install` all point at it, so after moving it run those two again. To put it in your app launcher, use an AppImage manager such as Gear Lever or AppImageLauncher. The AppImage uses the system's graphics libraries and FUSE (`fusermount`), which most desktops have.
+Keep the file where you run it from: the daemon it starts, `service install` and `mcp install` all point at it, so after moving it run those two again. To put it in your app launcher, use an AppImage manager such as Gear Lever or AppImageLauncher.
 
 ## Desktop entry on Linux
 
