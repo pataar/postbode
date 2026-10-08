@@ -23,7 +23,8 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             });
         });
         let in_folder = matches!(app.view, View::Folder { .. });
-        let has_row = in_folder && !app.list.rows.is_empty();
+        // Closed picker only: an action would move the cursor, and the picker would then move a different message.
+        let has_row = in_folder && !app.list.rows.is_empty() && app.move_picker.is_none();
         for (icon, name, hint, action) in [
             (
                 icons::ARCHIVE,
@@ -92,10 +93,49 @@ pub(crate) fn icon_button(
 
 #[cfg(test)]
 mod tests {
-    use egui_kittest::kittest::Queryable;
+    use eframe::egui;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
+    use crate::gui::app::View;
     use crate::gui::test_support::{Fixture, message};
+    use crate::rules::Action;
     use crate::sync::Command;
+
+    const ACTIONS: [&str; 5] = [
+        "Archive message",
+        "Move message",
+        "Delete message",
+        "Flag message",
+        "Mark read or unread",
+    ];
+
+    fn disabled(harness: &egui_kittest::Harness<'_, crate::gui::App>, label: &str) -> bool {
+        harness.get_by_label(label).accesskit_node().is_disabled()
+    }
+
+    #[test]
+    fn the_actions_are_enabled_on_a_row_and_disabled_outside_a_folder() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello"));
+        let (mut harness, _wires) = fx.harness();
+        assert!(ACTIONS.iter().all(|label| !disabled(&harness, label)));
+        harness.state_mut().select_view(View::Rules);
+        harness.run();
+        assert!(ACTIONS.iter().all(|label| disabled(&harness, label)));
+        assert!(disabled(&harness, "Search"));
+    }
+
+    #[test]
+    fn the_actions_are_disabled_while_the_move_picker_is_open() {
+        let fx = Fixture::new(&["work"]);
+        fx.folder("work", "Archive", Some("Archive"));
+        fx.add("work", message("INBOX", 1, "hello"));
+        let (mut harness, _wires) = fx.harness();
+        harness.event(egui::Event::Text("m".into()));
+        harness.run();
+        assert!(harness.state().move_picker.is_some());
+        assert!(ACTIONS.iter().all(|label| disabled(&harness, label)));
+    }
 
     #[test]
     fn the_archive_button_archives_the_cursor_row() {
@@ -105,7 +145,11 @@ mod tests {
         let (mut harness, wires) = fx.harness();
         harness.get_by_label("Archive message").click();
         harness.run();
-        assert!(!wires.sent().is_empty());
+        assert!(matches!(
+            &wires.sent()[..],
+            [(account, Command::Apply { folder, uids, action: Action::Archive, .. })]
+                if account == "work" && folder == "INBOX" && uids == &[1]
+        ));
         assert!(harness.state().list.rows.is_empty());
     }
 
