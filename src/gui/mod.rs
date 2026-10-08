@@ -62,6 +62,28 @@ fn start(paths: &Paths, window: Arc<OnceLock<egui::Context>>) -> Result<(Config,
     Ok((config, app::connect(paths, wake)?))
 }
 
+/// The window options for a window of `size`.
+fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
+    let options = eframe::NativeOptions {
+        viewport: viewport(size),
+        ..Default::default()
+    };
+    #[cfg(target_os = "macos")]
+    let options = prefer_integrated_gpu(options);
+    options
+}
+
+/// egui-wgpu asks for the discrete GPU by default, which keeps it powered on a dual-GPU Intel MacBook Pro for as long
+/// as the window is open; egui draws fine on the integrated one. `WGPU_POWER_PREF` still overrides.
+#[cfg(target_os = "macos")]
+fn prefer_integrated_gpu(mut options: eframe::NativeOptions) -> eframe::NativeOptions {
+    use eframe::wgpu::PowerPreference;
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        setup.power_preference = PowerPreference::from_env().unwrap_or(PowerPreference::LowPower);
+    }
+    options
+}
+
 /// A window with the icon, app id and title, at `size`.
 fn viewport(size: [f32; 2]) -> egui::ViewportBuilder {
     // ICON is embedded at compile time and decoded by `the_icon_is_a_square_png_with_transparent_corners`.
@@ -96,10 +118,9 @@ fn explain(error: anyhow::Error, log: Option<&Path>) -> anyhow::Error {
 /// window must not share the mail window's file; the empty path also keeps eframe from making a folder of its own.
 fn explain_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
-        viewport: viewport([520.0, 260.0]),
         persist_window: false,
         persistence_path: Some(std::path::PathBuf::new()),
-        ..Default::default()
+        ..native_options([520.0, 260.0])
     }
 }
 
@@ -131,10 +152,9 @@ fn open(
     window: &OnceLock<egui::Context>,
 ) -> Result<()> {
     let options = eframe::NativeOptions {
-        viewport: viewport([1280.0, 800.0]),
         // The window size and position and the pane widths; egui never saves what is typed in a field.
         persistence_path: Some(paths.state_dir.join("window.ron")),
-        ..Default::default()
+        ..native_options([1280.0, 800.0])
     };
     eframe::run_native(
         "Postbode",
@@ -149,6 +169,21 @@ fn open(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_windows_prefer_the_integrated_gpu() {
+        use eframe::egui_wgpu::WgpuSetup;
+        use eframe::wgpu::PowerPreference;
+        if std::env::var_os("WGPU_POWER_PREF").is_some() {
+            return;
+        }
+        let options = super::native_options([100.0, 100.0]);
+        let WgpuSetup::CreateNew(setup) = options.wgpu_options.wgpu_setup else {
+            panic!("eframe's default wgpu setup creates a new instance");
+        };
+        assert_eq!(setup.power_preference, PowerPreference::LowPower);
+    }
+
     #[test]
     fn the_icon_is_a_square_png_with_transparent_corners() {
         let icon = eframe::icon_data::from_png_bytes(super::ICON).unwrap();
