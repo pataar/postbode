@@ -289,3 +289,52 @@ fn trash() {
     assert!(harness.query_by_label("Restore").is_some());
     snapshot(&mut harness, "gui_trash");
 }
+
+/// INBOX of `work` with the newsletter fixture open as HTML, in a window `width` points wide.
+#[cfg(feature = "html")]
+fn newsletter(theme: &str, width: f32) -> (Fixture, Harness<'static, App>, Wires) {
+    use super::html::view_tests::{NEWSLETTER, painted, raw, wait_for};
+    let fx = mailbox(theme);
+    let news = mail(
+        99,
+        "Postbode Weekly <news@example.org>",
+        "Your October roundup",
+        "\\Seen",
+        "Your October roundup",
+    );
+    fx.add("work", news);
+    fx.store("work")
+        .set_raw("INBOX", 99, &raw(NEWSLETTER), "Your October roundup")
+        .unwrap();
+    let (mut harness, wires) = open(&fx);
+    harness.set_size(egui::vec2(width, 800.0));
+    harness.state_mut().select_view(View::Folder {
+        account: 1,
+        folder: "INBOX".into(),
+    });
+    harness.run();
+    wait_for(&mut harness, painted);
+    (fx, harness, wires)
+}
+
+#[cfg(feature = "html")]
+#[test]
+fn html_light() {
+    let (_fx, mut harness, _wires) = newsletter("light", 1280.0);
+    snapshot(&mut harness, "gui_html_light");
+}
+
+#[cfg(feature = "html")]
+#[test]
+fn html_dark() {
+    let (_fx, mut harness, _wires) = newsletter("dark", 1280.0);
+    snapshot(&mut harness, "gui_html_dark");
+}
+
+/// A body pane narrower than the newsletter's 600 px table: its media query stacks the columns.
+#[cfg(feature = "html")]
+#[test]
+fn html_narrow() {
+    let (_fx, mut harness, _wires) = newsletter("light", 1060.0);
+    snapshot(&mut harness, "gui_html_narrow");
+}

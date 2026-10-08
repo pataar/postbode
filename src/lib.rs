@@ -16,4 +16,5 @@ pub mod paths;
 pub mod rules;
 pub mod store;
 pub mod sync;
+pub mod time;
 pub mod trash;

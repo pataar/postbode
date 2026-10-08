@@ -32,7 +32,7 @@ pub struct Folder {
     pub special_use: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub folder: String,
     pub uid: u32,
@@ -619,18 +619,13 @@ mod tests {
             message_id: Some(format!("m{uid}@x")),
             from_addr: Some("Alice <alice@x>".into()),
             to_addr: Some("bob@x".into()),
-            cc_addr: None,
-            delivered_to: None,
-            in_reply_to: None,
-            refs: None,
             thread_id: format!("m{uid}@x"),
             subject: Some(format!("subject {uid}")),
             date: Some(internaldate),
             internaldate,
-            flags: String::new(),
             size: Some(100),
             headers: b"From: alice@x\r\n\r\n".to_vec(),
-            body_text: None,
+            ..Default::default()
         }
     }
 

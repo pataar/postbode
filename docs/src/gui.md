@@ -1,6 +1,6 @@
 # Mail window
 
-`postbode gui` opens a window with three columns: your accounts and folders, the threads in the chosen folder, and the selected message as text. Sync, rules and notifications run in the [daemon](daemon.md), which the window starts when none is running, so the window, the CLI and agents over MCP can all be open at once.
+`postbode gui` opens a window with three columns: your accounts and folders, the threads in the chosen folder, and the selected message. Sync, rules and notifications run in the [daemon](daemon.md), which the window starts when none is running, so the window, the CLI and agents over MCP can all be open at once.
 
 When the window cannot start, for instance because no account is set up yet, a small window says why and what to do; the error also goes to stderr. Closing the window does not stop sync. A daemon the window started stops a minute after its last client goes; one you run with `postbode run` keeps going. If the daemon goes away while the window is open, the status bar says "background sync stopped — reconnecting" and the window tries again every five seconds.
 
@@ -16,6 +16,7 @@ When the window cannot start, for instance because no account is set up yet, a s
 | `m` | move: type to filter the folders, Enter |
 | `u` | mark read or unread |
 | `s` | flag or unflag |
+| `v` | show HTML mail as text, or as HTML again |
 | `/` | search this account |
 | Esc | close a popup, leave search, clear the selection |
 | Tab | next pane: folders, list, body |
@@ -34,4 +35,8 @@ One line per account says what its sync is doing: connecting, which folder, how 
 
 The daemon applies changes to `config.toml` by itself; the window's account list catches up when you reopen it, and the window says so.
 
-Bodies show as text, and only `http`, `https` and `mailto` links are clickable. HTML rendering and sending mail come later.
+## HTML mail
+
+Mail with an HTML part shows as its sender laid it out, on a white page in both themes; `v` switches that message to its text and back. Nothing is fetched over the network: images and stylesheets from the web are not loaded, and the line "Remote content not loaded." says when a message asked for some. Images sent inside the message show. No scripts run and forms do nothing. Hover over a link to see where it goes; in HTML and in text, only `http`, `https` and `mailto` links open, in your browser or mail app.
+
+HTML over 2 MB, or a page too tall or too broken to lay out, shows as text with a note saying why. Sending mail comes later.

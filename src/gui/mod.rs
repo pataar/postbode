@@ -2,6 +2,7 @@
 mod app;
 mod body;
 mod folders;
+mod html;
 mod list;
 mod rules;
 #[cfg(test)]
@@ -13,14 +14,13 @@ mod test_support;
 mod theme;
 
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Result, bail};
 use eframe::egui;
 
 use crate::config::Config;
 use crate::paths::Paths;
-use crate::sync::Event;
 
 pub use app::App;
 
@@ -34,9 +34,11 @@ const APP_ID: &str = "io.github.pataar.postbode";
 /// Opens the window and returns when it closes. When it cannot start, a small window says why before the error is
 /// returned, since a launch from a desktop entry or Finder has no terminal for stderr.
 pub fn run(paths: Result<Paths>) -> Result<()> {
+    // Events can arrive before the window has a context; they wait in the channel for its first frame.
+    let window: Arc<OnceLock<egui::Context>> = Arc::default();
     let error = match paths {
-        Ok(paths) => match start(&paths) {
-            Ok((config, connection)) => return open(config, paths, connection),
+        Ok(paths) => match start(&paths, window.clone()) {
+            Ok((config, connection)) => return open(config, paths, connection, &window),
             Err(e) => explain(e, Some(&paths.daemon_log())),
         },
         Err(e) => explain(e, None),
@@ -44,13 +46,19 @@ pub fn run(paths: Result<Paths>) -> Result<()> {
     Err(error)
 }
 
-/// What the mail window needs before it opens: a config with an account, and the daemon.
-fn start(paths: &Paths) -> Result<(Config, app::Connection)> {
+/// What the mail window needs before it opens: a config with an account, and the daemon, whose events repaint
+/// `window` once it has a context.
+fn start(paths: &Paths, window: Arc<OnceLock<egui::Context>>) -> Result<(Config, app::Connection)> {
     let config = Config::load(&paths.config_file())?;
     if config.accounts.is_empty() {
         bail!(startup::NoAccounts);
     }
-    Ok((config, app::connect(paths)?))
+    let wake = Box::new(move || {
+        if let Some(ctx) = window.get() {
+            ctx.request_repaint();
+        }
+    });
+    Ok((config, app::connect(paths, wake)?))
 }
 
 /// A window with the icon, app id and title, at `size`.
@@ -104,7 +112,12 @@ impl eframe::App for Explain {
     }
 }
 
-fn open(config: Config, paths: Paths, (client, events, states): app::Connection) -> Result<()> {
+fn open(
+    config: Config,
+    paths: Paths,
+    (client, events, states): app::Connection,
+    window: &OnceLock<egui::Context>,
+) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: viewport([1280.0, 800.0]),
         ..Default::default()
@@ -113,29 +126,11 @@ fn open(config: Config, paths: Paths, (client, events, states): app::Connection)
         "Postbode",
         options,
         Box::new(move |cc| {
-            let events = forward(events, cc.egui_ctx.clone())?;
+            let _ = window.set(cc.egui_ctx.clone());
             Ok(Box::new(App::new(&config, paths, client, events, states)))
         }),
     )
     .map_err(|e| anyhow::anyhow!("the window failed: {e}"))
-}
-
-/// Passes the daemon's events on and repaints for each, so an idle window still shows them; the returned receiver
-/// disconnects when the daemon's does.
-fn forward(events: Receiver<Event>, ctx: egui::Context) -> std::io::Result<Receiver<Event>> {
-    let (forward, received) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("gui-events".into())
-        .spawn(move || {
-            for event in events {
-                if forward.send(event).is_err() {
-                    break;
-                }
-                ctx.request_repaint();
-            }
-            ctx.request_repaint();
-        })?;
-    Ok(received)
 }
 
 #[cfg(test)]

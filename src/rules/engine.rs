@@ -171,18 +171,10 @@ mod tests {
     const HOUR: i64 = 3600;
 
     fn identity() -> Identity {
+        let password = PasswordSource::Keyring { keyring: true };
         AccountConfig {
-            name: "work".into(),
-            host: "h".into(),
-            port: 993,
-            username: "pieter@example.com".into(),
-            password: PasswordSource::Keyring { keyring: true },
-            address: None,
             aliases: vec!["*@shop.example.com".into()],
-            sync_interval_secs: 120,
-            trash_retention_days: 30,
-            notify: true,
-            ca_file: None,
+            ..AccountConfig::new("work", "h", "pieter@example.com", password)
         }
         .identity()
         .unwrap()
@@ -209,18 +201,13 @@ mod tests {
             message_id: Some("m1@x".into()),
             from_addr: Some(from.into()),
             to_addr: Some(to.into()),
-            cc_addr: None,
-            delivered_to: None,
-            in_reply_to: None,
-            refs: None,
             thread_id: "m1@x".into(),
             subject: Some(subject.into()),
             date: Some(internaldate),
             internaldate,
             flags: if seen { "\\Seen".into() } else { String::new() },
-            size: None,
             headers: headers.into_bytes(),
-            body_text: None,
+            ..Default::default()
         }
     }
 

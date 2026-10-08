@@ -86,9 +86,9 @@ impl Fixture {
         let config = Config::load(&self.paths.config_file()).unwrap();
         let names: Vec<&str> = self.accounts.iter().map(String::as_str).collect();
         let (client, commands, events) = Client::in_memory(&names);
-        let (client, received, states) = session(client).unwrap();
+        let (client, received, states) = session(client, Box::new(|| {})).unwrap();
         let mut app = App::new(&config, self.paths.clone(), client, received, states);
-        app.reconnect = |_| Err(anyhow::anyhow!("no daemon in tests"));
+        app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
         app.downloads = self.paths.cache_dir.join("downloads");
         std::fs::create_dir_all(&app.downloads).unwrap();
         let harness = Harness::builder()
@@ -108,10 +108,6 @@ pub(crate) fn message(folder: &str, uid: u32, subject: &str) -> Message {
         message_id: Some(format!("<{uid}@example.com>")),
         from_addr: Some(format!("Sender {uid} <sender{uid}@example.com>")),
         to_addr: Some("me@example.com".into()),
-        cc_addr: None,
-        delivered_to: None,
-        in_reply_to: None,
-        refs: None,
         thread_id: format!("<{uid}@example.com>"),
         subject: Some(subject.into()),
         date: Some(at),
@@ -120,5 +116,6 @@ pub(crate) fn message(folder: &str, uid: u32, subject: &str) -> Message {
         size: Some(100),
         headers: format!("Subject: {subject}\r\n\r\n").into_bytes(),
         body_text: Some(format!("Body of {uid}")),
+        ..Default::default()
     }
 }

@@ -40,7 +40,7 @@ postbode service install  # run in the background at login
 
 Deleted mail is kept as `.eml` for 30 days: `postbode trash list` and `postbode trash restore FILE`.
 
-Postbode is licensed under MIT or Apache-2.0, at your option.
+Postbode is licensed under MIT or Apache-2.0, at your option. The mail window's HTML view includes Stylo, the CSS engine from Servo and Firefox, which is under MPL-2.0.
 
 ## More
 

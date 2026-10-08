@@ -1,7 +1,8 @@
 //! The bottom bar: a line per account from its latest activity, the history window, and the theme switch.
 use eframe::egui;
 
-use crate::sync::{Activity, clock};
+use crate::sync::Activity;
+use crate::time::clock;
 
 use super::app::{Account, App, UiAction};
 use super::theme;
@@ -116,7 +117,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
 }
 
 /// The `?` window. Keys are spelled out, since the default fonts lack some arrow and modifier glyphs.
-pub(crate) const KEYS: [(&str, &str); 13] = [
+pub(crate) const KEYS: [(&str, &str); 14] = [
     ("j / k, Down / Up", "next or previous row"),
     ("Right / Left", "expand or collapse a thread"),
     ("x", "add the row to the selection, or take it out"),
@@ -128,6 +129,7 @@ pub(crate) const KEYS: [(&str, &str); 13] = [
     ("m", "move to a folder"),
     ("u", "mark read or unread"),
     ("s", "flag or unflag"),
+    ("v", "show HTML mail as text, or as HTML again"),
     ("/", "search this account"),
     ("Esc", "close a popup, leave search, clear the selection"),
     ("Tab", "next pane: folders, list, body"),

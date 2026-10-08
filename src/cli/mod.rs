@@ -17,6 +17,7 @@ use postbode::paths::Paths;
 use postbode::rules::{Action, CompiledRule, Rule, RuleFile};
 use postbode::store::{Message, Store};
 use postbode::sync::{self, Event};
+use postbode::time;
 use postbode::trash::Trash;
 
 #[derive(Parser)]
@@ -789,10 +790,9 @@ fn single_account<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Acco
     }
 }
 
+/// In local time, as the mail window shows it.
 fn format_time(timestamp: i64) -> String {
-    chrono::DateTime::from_timestamp(timestamp, 0)
-        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
+    time::local_time(timestamp, "%Y-%m-%d %H:%M")
 }
 
 /// `account  * INBOX/42  date  from  subject`; `*` marks unread, `depth` indents the subject in thread views.
@@ -1003,7 +1003,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         RulesCommand::Approve { name } => {
             let accounts: Vec<String> =
                 config.accounts.iter().map(|acc| acc.name.clone()).collect();
-            postbode::rules::edit::approve_from_now(paths, &accounts, &name, sync::now())?;
+            postbode::rules::edit::approve_from_now(paths, &accounts, &name, time::now())?;
             println!(
                 "enabled '{}'; it acts on mail that arrives from now on",
                 clean(&name, false)
@@ -1044,7 +1044,7 @@ fn print_planned_actions(
     account: &AccountConfig,
     identity: &Identity,
 ) -> Result<()> {
-    for p in postbode::actions::planned(rules, store, account, identity, sync::now())? {
+    for p in postbode::actions::planned(rules, store, account, identity, time::now())? {
         println!(
             "{}\t{}/{}\t{}\t{}",
             clean(&p.rule, false),
@@ -1091,7 +1091,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         TrashCommand::Purge { account } => {
             for acc in select_accounts(config, account.as_deref())? {
                 let removed = Trash::new(paths.trash_dir(&acc.name))
-                    .purge(acc.trash_retention_days as i64 * 86_400, sync::now())?;
+                    .purge(acc.trash_retention_days as i64 * 86_400, time::now())?;
                 println!("{}: removed {removed}", acc.name);
             }
             Ok(())

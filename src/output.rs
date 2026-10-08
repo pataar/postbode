@@ -39,21 +39,9 @@ mod tests {
         Message {
             folder: "INBOX".into(),
             uid,
-            message_id: None,
-            from_addr: None,
-            to_addr: None,
-            cc_addr: None,
-            delivered_to: None,
-            in_reply_to: None,
             refs: refs.map(str::to_string),
             thread_id: "t".into(),
-            subject: None,
-            date: None,
-            internaldate: 0,
-            flags: String::new(),
-            size: None,
-            headers: Vec::new(),
-            body_text: None,
+            ..Default::default()
         }
     }
 

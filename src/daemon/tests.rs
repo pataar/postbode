@@ -596,16 +596,48 @@ mod client {
             by: "gui".into(),
         };
         assert!(client.send("work", apply));
-        // A sync after the action ends the stream of events that could carry a copy.
+        // A sync of the same account after the action ends the stream of events that could carry a copy; `play` syncs
+        // on its own schedule, so its `Synced` says nothing.
         assert!(client.send("work", Command::SyncNow));
         let requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
-            .take_while(|event| !matches!(event, Event::Synced { .. }))
+            .take_while(
+                |event| !matches!(event, Event::Synced { account, .. } if account == "work"),
+            )
             .filter_map(|event| match event {
                 Event::ActionDone { request, .. } => Some(request),
                 _ => None,
             })
             .collect();
         assert_eq!(requests, [0]);
+    }
+
+    #[test]
+    fn a_waking_subscription_wakes_after_each_event_and_at_hang_up() {
+        let mut daemon = TestDaemon::start();
+        let client = Client::connect(&daemon.paths).unwrap();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        let events = client
+            .subscribe_waking(move || {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        client.request("work", Command::SyncNow).unwrap();
+        client.shutdown().unwrap();
+        daemon.finished().unwrap();
+        let mut received = 0;
+        loop {
+            match events.recv_timeout(WAIT) {
+                Ok(_) => received += 1,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(timeout) => panic!("the subscription never ended: {timeout}"),
+            }
+        }
+        assert!(received > 0);
+        assert_eq!(
+            wakes.try_iter().count(),
+            received + 1,
+            "one per event and one at hang-up"
+        );
     }
 
     #[test]
