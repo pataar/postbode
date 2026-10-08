@@ -1,0 +1,172 @@
+# Postbode.app on a signed, notarized DMG, attached to the GitHub release, plus the Homebrew cask in pataar/homebrew-tap.
+# Separate from release.yml, which dist generates and owns.
+name: macOS app
+
+on:
+  # release-plz pushes the tag with its own token, so this fires; the release itself is created by release.yml with
+  # GITHUB_TOKEN, which starts no workflows, so `release: published` only covers a release published by hand.
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, e.g. v0.2.0
+        required: true
+  pull_request:
+    paths:
+      - packaging/macos/**
+      - .github/workflows/macos-app.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint packaging
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y libxml2-utils shellcheck
+      - run: shellcheck packaging/macos/*.sh
+      - run: xmllint --noout packaging/macos/Info.plist.in packaging/macos/entitlements.plist
+      - name: Cask template renders to valid Ruby
+        run: |
+          sed -e 's/@VERSION@/0.0.0/' -e "s/@SHA256@/$(printf '0%.0s' {1..64})/" -e 's/^@ADHOC@//' \
+            packaging/macos/postbode.rb.in >"$RUNNER_TEMP/postbode.rb"
+          ruby -c "$RUNNER_TEMP/postbode.rb"
+
+  # On a packaging change, build an ad hoc signed Apple Silicon DMG so the script runs before the next release does.
+  dry-run:
+    name: Package (ad hoc, aarch64)
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install && rustup target add aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+          save-if: false
+      - run: packaging/macos/package.sh --arch aarch64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: postbode-macos-dry-run
+          path: dist/macos/*.dmg
+          retention-days: 7
+
+  package:
+    name: Package, sign and notarize
+    if: github.event_name != 'pull_request' && github.repository_owner == 'pataar'
+    runs-on: macos-15
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+      HAS_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - run: rustup toolchain install && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: packaging/macos/import-cert.sh
+      - name: Build, sign and notarize the app and DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: packaging/macos/package.sh --arch universal
+      - name: Find the DMG
+        id: dmg
+        run: |
+          dmg=$(ls dist/macos/postbode-*-macos-universal.dmg)
+          version=${dmg#dist/macos/postbode-}
+          version=${version%-macos-universal.dmg}
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Cargo.toml says $version but the tag is $TAG"
+            exit 1
+          fi
+          {
+            echo "path=$dmg"
+            echo "version=$version"
+            echo "sha256=$(shasum -a 256 "$dmg" | cut -d' ' -f1)"
+          } >>"$GITHUB_OUTPUT"
+      - name: Upload the DMG to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          # On a tag push, release.yml may still be building; wait up to an hour for it to create the release.
+          for _ in $(seq 120); do
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break
+            sleep 30
+          done
+          gh release upload "$TAG" "$DMG" --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Check whether to update the cask
+        id: cask
+        env:
+          VERSION: ${{ steps.dmg.outputs.version }}
+        run: |
+          if [ "$HAS_TAP_TOKEN" != true ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set: the cask in pataar/homebrew-tap is not updated"
+          elif [[ $VERSION == *-* ]]; then
+            echo "::warning::$VERSION is a prerelease: the cask is not updated"
+          else
+            if [ "$HAS_CERTIFICATE" != true ]; then
+              echo "::warning::the DMG is signed ad hoc, not notarized: the cask clears the quarantine flag on install"
+            fi
+            echo "update=true" >>"$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v7
+        if: steps.cask.outputs.update == 'true'
+        with:
+          repository: pataar/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+          persist-credentials: true
+      - name: Commit the cask
+        if: steps.cask.outputs.update == 'true'
+        env:
+          VERSION: ${{ steps.dmg.outputs.version }}
+          SHA256: ${{ steps.dmg.outputs.sha256 }}
+        run: |
+          mkdir -p homebrew-tap/Casks
+          if [ "$HAS_CERTIFICATE" = true ]; then adhoc='/^@ADHOC@/d'; else adhoc='s/^@ADHOC@//'; fi
+          sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHA256@/$SHA256/g" -e "$adhoc" \
+            packaging/macos/postbode.rb.in >homebrew-tap/Casks/postbode.rb
+          ruby -c homebrew-tap/Casks/postbode.rb
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/postbode.rb
+          if git diff --cached --quiet; then
+            echo "cask already at $VERSION"
+            exit 0
+          fi
+          git commit -m "postbode $VERSION (cask)"
+          for delay in 2 4 8 16; do
+            git push && exit 0
+            sleep "$delay"
+            git pull --rebase
+          done
+          git push
