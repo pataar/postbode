@@ -32,7 +32,7 @@ Measured on one newsletter fixture at 700 px, Linux x86_64, 4 cores, release bui
 
 ## 3. Packaging
 
-- Cargo feature `html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu"]`, in `default`. Without it the body panel is the text view of GUI §6, unchanged.
+- Cargo feature `html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url"]`, in `default`. `data-url` decodes `data:` URIs; it is already in the tree through `usvg`. Without it the body panel is the text view of GUI §6, unchanged.
 - Stylo, Blitz's CSS engine, is MPL-2.0. File-level copyleft: shipping a binary that links it is fine; changes to its own files would be published. Noted in the licence section of `docs/src/index.md`, and so of `README.md`.
 - `cargo audit` and `cargo machete` cover the new crates as they cover the rest.
 
@@ -40,40 +40,43 @@ Measured on one newsletter fixture at 700 px, Linux x86_64, 4 cores, release bui
 
 ```
 src/gui/html/
-  mod.rs       HtmlView: per-message state the app holds; strip cache; drawing; link hover and click
-  render.rs    the render thread: owns Blitz documents, runs jobs, catches panics
-  net.rs       the net provider: cid: and data: from memory, everything else refused
-src/message.rs html_body(raw) -> Option<HtmlBody { html, inline: Vec<(cid, mime, bytes)> }>
+  mod.rs         HtmlState (per-message state the app holds), the request and reply types, strip selection, drawing
+  render.rs      the render thread (feature html): owns Blitz documents, runs jobs, catches panics
+  net.rs         the net provider (feature html): cid: and data: from memory, everything else refused
+  view_tests.rs  the view in the running app
+src/message.rs   html_body(raw) -> Option<HtmlBody { html, inline: Vec<InlinePart { cid, bytes }> }>
 ```
 
 - `message::html_body` uses `mail-parser`: the first `text/html` part, and every part with a `Content-ID`. It returns `None` for messages with no HTML part. No store change: the raw message is already stored and read by `App::read_stored`.
 - `body.rs` stays the panel: headers, then either the text view or `html::show`, then attachments. Views still return `UiAction`s; `app.rs` still applies them.
-- The render thread starts with the GUI and lives until it closes. It talks over two channels:
-  - in: `Load { generation, html, inline, width, scale }`, `Paint { generation, strip }`, `Hit { generation, x, y }`, `Drop { generation }`
-  - out: `Laid { generation, height }`, `Strip { generation, strip, rgba }`, `Link { generation, href: Option<String> }`, `Failed { generation }`
+- The render thread starts with the first HTML message and lives until the window closes. It talks over two channels:
+  - in: `Load { generation, html, inline, width, scale }`, `Paint { generation, strip }`, `Hit { generation, x, y }`
+  - out: `Laid { generation, width, height, remote }`, `Strip { generation, strip, image }`, `Link { generation, href: Option<String> }`, `Failed { generation }`
+- `HtmlState` changes only in `app.rs`, from the `UiAction`s the view returns (`HtmlWidth`, `HtmlVisible`, `HtmlHover`, `ToggleHtml`) and from the replies. Without the `html` feature a no-op `Renderer` stands in and `html_body` is never called, so `app.rs` has no feature gates.
 - `generation` is a counter the app bumps for every new message or width; replies with an old generation are dropped. The thread keeps only the latest document, so moving through mail with `j` never queues layouts: a `Load` replaces whatever was pending.
 - After each reply the thread calls `ctx.request_repaint()`.
 
 ## 5. Rendering
 
-- **Width.** The body panel's inner width in points, at least 320. A width change re-lays out once the width has held still for 100 ms; meanwhile the old strips are drawn as they are, clipped or padded.
+- **Width.** The body panel's inner width in points, at least 320. A width change re-lays out once the width has held still for 100 ms; meanwhile the old strips are drawn as they are, clipped or padded. A page wider than the panel (a fixed 600 px table in a 550 px panel) is laid out at its own width and scrolls sideways.
 - **Scale.** `pixels_per_point` becomes Blitz's hidpi scale; strips are painted at physical pixels and drawn at points.
-- **Strips.** 512 physical pixels tall, the full width. The view asks for the strips intersecting the visible rect plus one screen above and below, and drops textures more than three screens away. A strip not yet painted draws as white.
+- **Strips.** 512 physical pixels tall, the full width, each painted with Blitz's viewport scrolled to its top; Blitz's paint offsets only place the document on the canvas. The view asks for the strips intersecting the visible rect plus one screen above and below, and drops textures more than three screens away. A strip not yet painted draws as white.
 - **Page.** A white rectangle the width of the panel, a 1 px border from the egui theme, the document painted over it with `ColorScheme::Light`. The rest of the panel follows the app theme.
-- **User agent CSS.** Blitz's own, plus `img { max-width: 100%; height: auto }` and `body { overflow-wrap: anywhere }`, so 600 px newsletters and long URLs fit a narrow panel.
-- **Fonts.** System fonts through Blitz's `FontContext`. Tests build the context from a font bundled in the test fixtures, so snapshots do not depend on the machine.
+- **User agent CSS.** Blitz's own, plus `img { max-width: 100%; height: auto }` and `body { overflow-wrap: anywhere }`, so images and long URLs fit a narrow panel.
+- **Base URL.** `postbode://mail/`. Blitz panics on a relative URL it cannot resolve against its default base; this one resolves them to URLs the net provider refuses.
+- **Fonts.** System fonts through Blitz's `FontContext`. Tests build the context from the font egui bundles (Ubuntu Light), so snapshots do not depend on the machine.
 - **Limits.** HTML over 2 MiB, or a document taller than 200,000 px, shows the text view with the note "Too large to render; showing text."
 
 ## 6. Resources and privacy
 
 - The net provider answers `cid:` from the message's `Content-ID` parts and `data:` by decoding the URI. Everything else, including `http`, `https`, `file` and stylesheet `@import`, completes at once as a failure, so no request leaves the machine and nothing waits on it.
-- Blocked images keep their `width`/`height` box. When any were blocked, a line above the page says "Remote images not loaded."
+- Blocked images keep their `width`/`height` box. When the page asked for anything remote (an image, a stylesheet, an `<iframe>`), a line above the page says "Remote content not loaded."
 - Blitz runs no scripts; `<form>` controls draw but are never submitted, since the view sends Blitz no input events beyond hit tests.
-- Nothing from the body is logged. A render failure logs the account, folder and uid only.
+- Nothing from the body is logged. Upstream panic messages can quote the mail (a URL Blitz could not resolve), so a panic hook keeps them off stderr for the render thread and logs only that rendering failed; other threads keep the default hook.
 
 ## 7. Interaction
 
-- **Links.** On hover the view sends `Hit` for the pointer position (at most once per frame); the reply's `href`, if any, shows as a tooltip and the pointer becomes a hand. A click opens it through `ctx.open_url` only when its scheme is `http`, `https` or `mailto`, the same rule as the text view; any other scheme does nothing. Relative URLs have no base and do nothing.
+- **Links.** When the pointer moves the view sends `Hit` for its position; the reply's `href`, if any, shows as a tooltip and the pointer becomes a hand. A click opens it through `ctx.open_url` only when it is an absolute `http`, `https` or `mailto` URL, the same rule as the text view; anything else, relative URLs included, does nothing.
 - **Toggle.** `v` switches the current message between the HTML and text views. The choice lasts until the next message is shown. Added to the `?` key table. The text view is the existing one, so its selection and copy still work.
 - **Scrolling.** The page sits in the body `ScrollArea` and scrolls as the text view does. Wider-than-panel content scrolls horizontally.
 - **Read state.** Unchanged: the 1 s timer starts when the message is on screen, whichever view shows it.
@@ -88,18 +91,19 @@ src/message.rs html_body(raw) -> Option<HtmlBody { html, inline: Vec<(cid, mime,
 **Unit,** in `message` and `gui::html`:
 - `html_body`: `text/html` only, `multipart/alternative`, `multipart/related` with two `cid:` images, plain text only (`None`).
 - Net provider: `cid:` and `data:` resolve; `https:`, `http:`, `file:` and `@import` fail without a network call.
-- Generations: a `Laid` from an older generation is ignored; two `Load`s in a row lay out only the second.
-- Strip selection for a visible rect, and eviction three screens away.
-- Size limits fall back to text with the note.
+- Render thread: the newsletter lays out, its first two strips paint (the second is not blank), and a point over its button finds the link; a stale generation gets no answer; a strip past the end is not painted; relative URLs and an empty page do not panic; two `Load`s in a row lay out only the second; a panic replies `Failed`.
+- Strip selection for a visible rect, and eviction three screens away; which links may open.
 
 **GUI,** with `egui_kittest`:
 - An HTML message shows the HTML view; `v` shows the text; the next message shows HTML again.
 - Hovering a link shows its URL; clicking `https://` emits `OpenUrl`, clicking `javascript:` emits nothing.
-- A message with a remote `<img>` shows "Remote images not loaded".
-- A forced render failure shows the text with the failure note.
-- Snapshots in `gui::snapshots`: the newsletter fixture in light and dark app themes, at 700 and 360 px.
+- A message with remote content shows "Remote content not loaded."; `v` on a plain-text message does nothing.
+- With a fake renderer: a `Failed` reply shows the text with the failure note; a `Laid` for an older generation is dropped; a page over the height limit and HTML over the size limit show the text with the note; a new width lays out again only after it held still.
+- Snapshots in `gui::snapshots`: the newsletter fixture in the light and dark app themes, and in a window narrow enough that the page scrolls sideways.
 
-**Fuzz,** in `tests/fuzz.rs`: hostile HTML through `html_body` and a full layout and paint never panics the process.
+**Fuzz:** `tests/fuzz.rs` puts `html_body` beside the other message parsers. `hostile_html_never_panics` in `render.rs` (it needs the private render loop) runs hostile HTML through layout, paint and hit tests in the render loop and asserts every layout is answered. Upstream panics it found are named tests there, ignored until fixed: a Parley line-break assertion on a 1e9 px font in a 1 px layout, and a `vello_common` overflow painting huge geometry. Both are caught on the render thread and show the text.
+
+**Known gap:** Blitz 0.3.0-beta.2 does not paint a `<td>` with `display: block`, which responsive mail uses below about 600 px to stack its columns; in a narrow panel those cells are blank. `a_table_cell_shown_as_a_block_is_painted` is ignored until Blitz fixes it.
 
 Ran on Linux (CPU raster needs no GPU, so CI covers it); macOS reported separately as compiled on or ran on.
 
