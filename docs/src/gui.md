@@ -17,11 +17,13 @@ When the window cannot start, for instance because no account is set up yet, a s
 | `u` | mark read or unread |
 | `s` | flag or unflag |
 | `v` | show HTML mail as text, or as HTML again |
-| `/` | search this account |
+| `/` | search this account; mail whose body is not downloaded yet matches on sender, recipients and subject only |
 | Esc | close a popup, leave search, clear the selection |
 | Tab | next pane: folders, list, body |
 | Ctrl+R (Cmd+R on macOS) | sync every account now |
 | `?` | show these keys |
+
+Each attachment of the open message has a Save button, which saves it to your Downloads folder.
 
 Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message you open, with the keys or a click, is marked read after its text has been on screen for a second; the one a folder opens on stays unread.
 

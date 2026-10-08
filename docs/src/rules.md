@@ -53,7 +53,7 @@ Text conditions take exactly one of:
 | `"notify"` | Notifies even when the message was moved. |
 | `"silent"` | Never notifies. |
 
-Flags are set before a move. Only the first `move` or `archive` that matches a message runs.
+A `delete` wins: when any matching rule deletes a message, no other rule's actions run for it. Otherwise flags are set before a move, and only the first `move` or `archive` that matches a message runs.
 
 ## When rules act
 

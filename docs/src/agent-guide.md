@@ -1,6 +1,6 @@
 # Agent guide
 
-This page is for LLM agents that drive Postbode from a shell. `postbode guide` prints it.
+This page is for LLM agents that drive Postbode from a shell. `postbode guide` prints it, and the MCP server sends it to hosts as its instructions.
 
 ## Ground rules
 
