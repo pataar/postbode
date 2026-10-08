@@ -139,12 +139,17 @@ pub(crate) struct TreeRow {
 }
 
 /// The custom folders as a tree. Sorted by path segments, not by full name, so "Work Archive" cannot land between
-/// "Work" and "Work/Clients". An `INBOX` + delimiter prefix (Dovecot and Courier namespaces) is dropped.
+/// "Work" and "Work/Clients". An `INBOX` + delimiter prefix (Dovecot and Courier namespaces) is dropped when every
+/// custom folder has it; otherwise INBOX's children stay under an INBOX branch, apart from top-level namesakes.
 pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
-    let mut paths: Vec<(Vec<String>, &FolderRow)> = folders
+    let custom: Vec<&FolderRow> = folders
         .iter()
         .filter(|f| !is_special(&f.name, f.special_use.as_deref()))
-        .map(|f| (segments(f), f))
+        .collect();
+    let strip = !custom.is_empty() && custom.iter().all(|f| inbox_prefix(f).is_some());
+    let mut paths: Vec<(Vec<String>, &FolderRow)> = custom
+        .into_iter()
+        .map(|f| (segments(f, strip), f))
         .collect();
     paths.sort_by_key(|(segments, _)| {
         segments
@@ -171,6 +176,12 @@ pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
             }
         }
     }
+    for row in rows.iter_mut().filter(|row| row.folder.is_none()) {
+        row.folder = folders
+            .iter()
+            .find(|f| segments(f, strip).join("/") == row.path)
+            .map(|f| f.name.clone());
+    }
     for index in 1..rows.len() {
         if rows[index].depth > rows[index - 1].depth {
             rows[index - 1].has_children = true;
@@ -179,15 +190,22 @@ pub(crate) fn tree(folders: &[FolderRow]) -> Vec<TreeRow> {
     rows
 }
 
-fn segments(folder: &FolderRow) -> Vec<String> {
+/// The name after a leading `INBOX` + delimiter, when it has one.
+fn inbox_prefix(folder: &FolderRow) -> Option<&str> {
+    let delimiter = folder.delimiter.as_deref().filter(|d| !d.is_empty())?;
+    let prefix = format!("INBOX{delimiter}");
+    let head = folder.name.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(&prefix)
+        .then(|| &folder.name[prefix.len()..])
+}
+
+fn segments(folder: &FolderRow, strip_inbox: bool) -> Vec<String> {
     let Some(delimiter) = folder.delimiter.as_deref().filter(|d| !d.is_empty()) else {
         return vec![folder.name.clone()];
     };
-    let prefix = format!("INBOX{delimiter}");
-    let name = match folder.name.get(..prefix.len()) {
-        Some(head) if head.eq_ignore_ascii_case(&prefix) => &folder.name[prefix.len()..],
-        _ => folder.name.as_str(),
-    };
+    let name = inbox_prefix(folder)
+        .filter(|_| strip_inbox)
+        .unwrap_or(&folder.name);
     name.split(delimiter)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -373,6 +391,45 @@ mod tests {
             custom("INBOX.Clients.Acme", "."),
         ]);
         assert_eq!(shape(&rows), [(0, "Clients", true), (1, "Acme", true)]);
+    }
+
+    #[test]
+    fn the_inbox_prefix_is_dropped_only_when_every_custom_folder_has_it() {
+        let rows = tree(&[custom("Clients", "."), custom("INBOX.Clients", ".")]);
+        let mut opened: Vec<&str> = rows.iter().filter_map(|r| r.folder.as_deref()).collect();
+        opened.sort();
+        assert_eq!(opened, ["Clients", "INBOX.Clients"]);
+    }
+
+    #[test]
+    fn a_special_folder_with_children_is_an_openable_parent() {
+        let mut archive = custom("Archive", "/");
+        archive.special_use = Some("Archive".into());
+        let rows = tree(&[archive, custom("Archive/2024", "/")]);
+        assert_eq!(rows[0].folder.as_deref(), Some("Archive"));
+        assert_eq!(shape(&rows), [(0, "Archive", true), (1, "2024", true)]);
+    }
+
+    #[test]
+    fn stepping_from_a_folder_in_a_collapsed_branch_stays_in_its_account() {
+        let fx = Fixture::new(&["home", "work"]);
+        let store = fx.store("work");
+        for name in ["Projects/Postbode", "Projects/Website", "Zeta"] {
+            store.upsert_folder(&stored(name)).unwrap();
+        }
+        let (mut harness, _wires) = fx.harness();
+        let work = |name: &str| View::Folder {
+            account: 1,
+            folder: name.into(),
+        };
+        harness.state_mut().select_view(work("Projects/Postbode"));
+        harness.run();
+        harness.get_by_label("Collapse Projects").click();
+        harness.run();
+        harness.state_mut().focus = Focus::Folders;
+        harness.key_press(egui::Key::ArrowDown);
+        harness.run();
+        assert_eq!(harness.state().view, work("Zeta"));
     }
 
     #[test]
