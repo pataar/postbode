@@ -17,7 +17,7 @@ Each phase gets its own spec and plan. This document is phase 1.
 3. **MCP server**: `postbode mcp` over stdio exposing the core API with scopes and rule proposals.
 4. **Compose and send** (SMTP), OS integration (notifications, mailto handler, tray), packaging for macOS and Linux (KDE Plasma).
 
-Later, undated: daemon split (always-on sync, GUI and CLI as clients), provider adapters (Gmail, Outlook OAuth2), embedded webview for HTML bodies, Windows.
+Later, undated: daemon split (always-on sync, GUI and CLI as clients), provider adapters (Gmail, Outlook OAuth2), HTML bodies rendered natively by Blitz (`2026-10-07-postbode-html-design.md`), Windows.
 
 ## 3. Decisions log
 
@@ -31,7 +31,7 @@ Later, undated: daemon split (always-on sync, GUI and CLI as clients), provider 
 | Store layout | One SQLite file per account | One shared file |
 | Backups | Deleted mail kept as `.eml` for 30 days | Full local archive |
 | Credentials | OS keyring or password command, per account | Plaintext config |
-| HTML mail | Text-first in egui, body panel isolated so a webview can replace it | Embedded webview now; drop egui |
+| HTML mail | Text-first in egui, body panel isolated so an HTML view can join it; that view is Blitz, see `2026-10-07-postbode-html-design.md` | Embedded webview now; drop egui |
 | Crate layout | One package, lib plus bin | Workspace now; async core |
 | IMAP crate | `async-imap` on a per-account tokio runtime, hidden behind a sync trait | `imap` (last release 2025-02, 3.0 alpha for years) |
 | SQLite tooling | `rusqlite` + `rusqlite_migration` + `serde_rusqlite` | diesel; sqlx (async) |

@@ -1,4 +1,4 @@
-//! The right column: headers, the text body with its links, and attachments.
+//! The right column: headers, attachments, and the body as HTML or as text with its links.
 use eframe::egui;
 
 use crate::message::clean;
@@ -6,6 +6,7 @@ use crate::sync::Activity;
 use crate::time::local_time;
 
 use super::app::{Account, App, UiAction};
+use super::html;
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Segment<'a> {
@@ -44,7 +45,7 @@ pub(crate) fn segments(text: &str) -> Vec<Segment<'_>> {
     parts
 }
 
-fn has_target(link: &str) -> bool {
+pub(crate) fn has_target(link: &str) -> bool {
     SCHEMES.iter().any(|scheme| {
         link.strip_prefix(scheme)
             .is_some_and(|target| !target.is_empty())
@@ -124,6 +125,16 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         ui.label(clean(saved, false));
     }
     ui.separator();
+    if body.shows_html() {
+        let width = ui.available_width();
+        egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+            actions.extend(html::show(body.html_view.as_ref(), width, ui));
+        });
+        return actions;
+    }
+    if let Some(note) = body.text_note {
+        ui.weak(note);
+    }
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| match &body.text {

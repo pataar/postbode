@@ -15,9 +15,16 @@ include = ["/assets/icon.png", "/CHANGELOG.md", "/Cargo.lock", "/LICENSE-*", "/R
 
 [dependencies]
 anyhow = "1"                                         # error context in the binary and sync loop
+anyrender = { version = "=0.13.0", optional = true }  # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
+anyrender_vello_cpu = { version = "=0.17.0", optional = true }  # CPU raster for Blitz, so HTML mail becomes an egui texture without a GPU path
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }  # IMAP client, maintained, IDLE support
+blitz-dom = { version = "=0.3.0-beta.2", optional = true, default-features = false, features = ["system-fonts", "svg", "floats"] }  # HTML mail: style and layout (Stylo, Taffy, Parley); beta, so pinned exactly
+blitz-html = { version = "=0.3.0-beta.2", optional = true }  # HTML mail: html5ever parsing into a Blitz document
+blitz-paint = { version = "=0.3.0-beta.2", optional = true }  # HTML mail: a laid-out document to draw commands
+blitz-traits = { version = "=0.3.0-beta.2", optional = true }  # HTML mail: the net provider and viewport types
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }         # INTERNALDATE comes back as chrono; also list output
 clap = { version = "4", features = ["derive"] }      # CLI
+data-url = { version = "0.3", optional = true }  # data: URIs in HTML mail; already in the tree through usvg
 directories = "6"                                    # platform config/state/cache dirs
 eframe = { version = "0.36", optional = true }       # the GUI window (egui); default features: wgpu, winit with runtime-loaded X11/Wayland
 env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
@@ -52,6 +59,7 @@ zeroize = "1"                                        # wipe secrets on drop
 apple-native-keyring-store = { version = "1", features = ["keychain"] }  # macOS Keychain backend for keyring-core
 
 [target.'cfg(target_os = "linux")'.dependencies]
+fontique = { version = "0.11", optional = true, features = ["fontconfig-dlopen"] }  # HTML mail: load fontconfig at runtime, as eframe loads X11 and Wayland, instead of linking it
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-tokio-crypto-rust"] }  # Secret Service backend for keyring-core
 
 [dev-dependencies]
@@ -72,6 +80,9 @@ required-features = ["testing"]                      # drives sync::run_once and
 [lints.rust]
 unsafe_code = "forbid"                               # no unsafe in this crate; keep it that way
 
+[package.metadata.cargo-machete]
+ignored = ["fontique"]                               # only sets a feature of the fontique Blitz uses
+
 [lints.clippy]
 unwrap_used = "deny"                                 # shipped code returns errors instead of panicking
 expect_used = "deny"                                 # same; allow narrowly where a call cannot fail
@@ -81,8 +92,9 @@ unimplemented = "deny"                               # same as todo
 dbg_macro = "warn"                                   # debug output stays out of commits
 
 [features]
-default = ["gui", "mcp"]
+default = ["gui", "html", "mcp"]
 gui = ["dep:eframe"]                                 # `postbode gui`; off builds the CLI alone
+html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique"]  # HTML mail rendered in the body panel; off shows text
 mcp = ["dep:rmcp"]                                   # `postbode mcp`; off builds without the MCP server
 testing = []                                         # exposes RecordingOps and the one-shot sync steps to integration tests
 

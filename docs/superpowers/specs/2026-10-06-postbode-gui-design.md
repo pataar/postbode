@@ -209,7 +209,7 @@ Actions apply to the multi-selection when there is one, else to the current row.
 
 **Search.** `/` opens a field above the list. It runs `store.search` over the current account, at most 500 results, shown as flat rows with their folder. `Esc` returns to the folder. Bodies not yet downloaded are not searched; the result header says so.
 
-**Body panel.** From, To, Cc, Date, Subject, then the selectable text from `body_text` (HTML-only mail shows its extracted text). Links are found by scanning the text for `http://`, `https://` and `mailto:`; only those three schemes are clickable and passed to `ctx.open_url`. Attachments listed by name and size, each with **Save**, writing through `message::save_attachment` into the Downloads dir from `directories::UserDirs` (home if none), never overwriting, and showing the path written. If the body is not stored: "Loading…" and a `FetchBody`; when the account is offline, "Not downloaded; loads when work reconnects."
+**Body panel.** From, To, Cc, Date, Subject, then the selectable text from `body_text` (HTML-only mail shows its extracted text; with the `html` feature, mail with an HTML part shows the HTML view of `2026-10-07-postbode-html-design.md` instead). Links are found by scanning the text for `http://`, `https://` and `mailto:`; only those three schemes are clickable and passed to `ctx.open_url`. Attachments listed by name and size, each with **Save**, writing through `message::save_attachment` into the Downloads dir from `directories::UserDirs` (home if none), never overwriting, and showing the path written. If the body is not stored: "Loading…" and a `FetchBody`; when the account is offline, "Not downloaded; loads when work reconnects."
 
 **Read state.** A message is marked read after the user opens it (by moving to it, clicking it, or landing on it after an archive or delete) and its text has been on screen for 1 s, measured with egui's input time so tests can drive it. A message shown passively (at startup, after a folder switch, or while typing a search) is not marked.
 
@@ -289,7 +289,7 @@ Not automated: pixels, real windowing, notifications. Reported as ran on macOS, 
 ## 11. Later
 
 - Compose and send (phase 4), with the OS integration and bundle. Launching from an `.app` needs either a `postbode-gui` binary target or "no args and no terminal opens the GUI".
-- HTML bodies through `wry`, replacing `body.rs`.
+- HTML bodies: designed in `2026-10-07-postbode-html-design.md`, rendered by Blitz inside the body panel (`wry` was dropped).
 - Fonts beyond egui's defaults: CJK and other scripts render as boxes until system fonts are loaded at startup; egui has no right-to-left shaping.
 - Apply a rule to existing mail from the GUI, with a dry-run count and confirmation.
 - Account setup in the GUI; live reload of `config.toml`.

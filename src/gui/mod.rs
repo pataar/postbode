@@ -2,6 +2,7 @@
 mod app;
 mod body;
 mod folders;
+mod html;
 mod list;
 mod rules;
 #[cfg(test)]

@@ -10,7 +10,7 @@ use crate::config::{self, Config, Theme};
 use crate::daemon::Client;
 use crate::daemon::client::NewerDaemon;
 use crate::daemon::wire::AccountStatus;
-use crate::message::{self, Attachment, clean};
+use crate::message::{self, Attachment, HtmlBody, clean};
 use crate::paths::Paths;
 use crate::rules::{self as rule_file, Action, RulesError};
 use crate::store::{LogEntry, Message, Store, StoreError};
@@ -18,6 +18,7 @@ use crate::sync::{Activity, Command, Event};
 
 use super::body;
 use super::folders;
+use super::html::{self, HtmlState, Renderer, Reply};
 use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
 use super::rules::{self, RulesState, TrashRow};
 use super::status;
@@ -65,14 +66,29 @@ pub(crate) struct BodyState {
     /// become read.
     pub armed: bool,
     pub attachments: Vec<Attachment>,
+    /// The message's HTML, when it has some and this build renders it.
+    pub html: Option<HtmlBody>,
+    /// The HTML view, once the panel asked for a layout; `None` while the text view shows.
+    pub html_view: Option<HtmlState>,
     pub key: RowKey,
     pub message: Option<Message>,
     /// Set once mark-read was sent, or the user marked read or unread by hand, so the delay does not act again.
     pub read_sent: bool,
     pub saved: Option<String>,
     pub shown_at: f64,
+    /// Set by `v`: the text view for this message even though it has HTML.
+    pub show_text: bool,
+    /// Why the HTML could not be shown; the text view shows instead, under this note.
+    pub text_note: Option<&'static str>,
     /// The body text cleaned once on load, since the panel draws it every frame.
     pub text: Option<String>,
+}
+
+impl BodyState {
+    /// True when the panel shows the HTML view rather than the text.
+    pub fn shows_html(&self) -> bool {
+        self.html.is_some() && !self.show_text && self.text_note.is_none()
+    }
 }
 
 pub(crate) struct HistoryLine {
@@ -149,7 +165,22 @@ pub(crate) enum UiAction {
     Collapse,
     Escape,
     Expand,
-    ListViewport { offset: f32, height: f32 },
+    /// The pointer over the HTML page, in page points, or `None` once it left.
+    HtmlHover(Option<egui::Pos2>),
+    /// The part of the HTML page on screen, in page points.
+    HtmlVisible {
+        top: f32,
+        bottom: f32,
+    },
+    /// The width (points) and scale the HTML view would lay out at now.
+    HtmlWidth {
+        scale: f32,
+        width: f32,
+    },
+    ListViewport {
+        offset: f32,
+        height: f32,
+    },
     MoveCursor(isize),
     MoveFilter(String),
     MoveTo(String),
@@ -171,6 +202,7 @@ pub(crate) enum UiAction {
     ToggleFlag,
     ToggleHelp,
     ToggleHistory,
+    ToggleHtml,
     ToggleMark,
     ToggleRead,
 }
@@ -197,6 +229,8 @@ pub struct App {
     pub(crate) focus: Focus,
     pub(crate) focus_search: bool,
     pub(crate) help_open: bool,
+    /// Numbers HTML layouts, so a reply for an older one is dropped.
+    pub(crate) html_generation: u64,
     pub(crate) history: VecDeque<HistoryLine>,
     pub(crate) history_open: bool,
     pub(crate) last_poll: f64,
@@ -206,6 +240,8 @@ pub struct App {
     pub(crate) paths: Paths,
     /// Set by the user's own navigation; the next body `sync_body` loads is armed.
     pub(crate) pending_arm: bool,
+    /// The HTML render thread, started for the first HTML message.
+    pub(crate) renderer: Option<Renderer>,
     pub(crate) reconnect: fn(&Paths, Waker) -> anyhow::Result<Connection>,
     /// The result of the reconnect attempt in flight; at most one runs.
     pub(crate) reconnecting: Option<Receiver<anyhow::Result<Connection>>>,
@@ -263,6 +299,7 @@ impl App {
             focus: Focus::List,
             focus_search: false,
             help_open: false,
+            html_generation: 0,
             history: VecDeque::new(),
             history_open: false,
             last_poll: 0.0,
@@ -272,6 +309,7 @@ impl App {
             paths,
             pending_arm: false,
             reconnect: connect,
+            renderer: None,
             reconnecting: None,
             requested: HashSet::new(),
             rules,
@@ -300,6 +338,7 @@ impl App {
         }
         let now = ui.input(|input| input.time);
         self.receive(now);
+        self.receive_html(&ctx);
         self.keep_daemon(&ctx, now);
         if std::mem::take(&mut self.view_dirty) {
             self.reload_view();
@@ -595,6 +634,12 @@ impl App {
                 });
             }
             UiAction::Collapse => self.collapse(),
+            UiAction::HtmlHover(at) => self.html_hover(at),
+            UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
+            UiAction::HtmlWidth { scale, width } => {
+                let now = ctx.input(|input| input.time);
+                self.html_width(ctx, scale, width, now);
+            }
             UiAction::Escape => {
                 if self.move_picker.is_some() {
                     self.move_picker = None;
@@ -700,6 +745,11 @@ impl App {
                 }
             }
             UiAction::ToggleHelp => self.help_open = !self.help_open,
+            UiAction::ToggleHtml => {
+                if let Some(body) = self.body.as_mut().filter(|b| b.html.is_some()) {
+                    body.show_text = !body.show_text;
+                }
+            }
             UiAction::ToggleHistory => {
                 self.history_open = !self.history_open;
                 self.error = None;
@@ -793,6 +843,9 @@ impl App {
                     }
                     if typed(input, "u") {
                         actions.push(UiAction::ToggleRead);
+                    }
+                    if typed(input, "v") {
+                        actions.push(UiAction::ToggleHtml);
                     }
                 }
             }
@@ -906,20 +959,19 @@ impl App {
         self.body = current.map(|(account, key)| self.load_body(account, key, now, armed));
     }
 
-    /// The message and attachments as stored now.
-    fn read_stored(&self, account: usize, key: &RowKey) -> (Option<Message>, Vec<Attachment>) {
-        match &self.accounts[account].store {
-            Ok(store) => (
-                store.message(&key.0, key.1).ok().flatten(),
-                store
-                    .raw(&key.0, key.1)
-                    .ok()
-                    .flatten()
-                    .map(|raw| message::attachments(&raw))
-                    .unwrap_or_default(),
-            ),
-            Err(_) => (None, Vec::new()),
-        }
+    /// The message, its attachments and its HTML as stored now.
+    fn read_stored(&self, account: usize, key: &RowKey) -> Stored {
+        let Ok(store) = &self.accounts[account].store else {
+            return (None, Vec::new(), None);
+        };
+        let raw = store.raw(&key.0, key.1).ok().flatten();
+        let attachments = raw.as_deref().map(message::attachments).unwrap_or_default();
+        let html = raw.as_deref().and_then(html::html_of);
+        (
+            store.message(&key.0, key.1).ok().flatten(),
+            attachments,
+            html,
+        )
     }
 
     /// Refreshes the shown message after its body arrived; the read delay restarts when the text first appears.
@@ -931,7 +983,7 @@ impl App {
         {
             return;
         }
-        let (message, attachments) = self.read_stored(account, &key);
+        let (message, attachments, html) = self.read_stored(account, &key);
         if let Some(body) = &mut self.body {
             let text = body_text(message.as_ref());
             if body.text.is_none() && text.is_some() {
@@ -940,12 +992,17 @@ impl App {
             body.text = text;
             body.message = message;
             body.attachments = attachments;
+            if body.html != html {
+                body.text_note = too_large(html.as_ref());
+                body.html = html;
+                body.html_view = None;
+            }
         }
     }
 
     /// The stored message and its attachments; asks the sync thread for a missing body once per message.
     fn load_body(&mut self, account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
-        let (stored, attachments) = self.read_stored(account, &key);
+        let (stored, attachments, html) = self.read_stored(account, &key);
         let missing = stored.as_ref().is_some_and(|m| m.body_text.is_none());
         if missing && self.requested.insert((account, key.clone())) {
             self.send(
@@ -961,10 +1018,14 @@ impl App {
             account,
             armed,
             attachments,
+            text_note: too_large(html.as_ref()),
+            html,
+            html_view: None,
             key,
             message: stored,
             read_sent: false,
             saved: None,
+            show_text: false,
             shown_at: now,
             text,
         }
@@ -1023,6 +1084,153 @@ impl App {
         };
         if let Some(body) = &mut self.body {
             body.saved = Some(saved);
+        }
+    }
+
+    /// Takes the render thread's replies for the shown layout; replies for an older one are dropped.
+    fn receive_html(&mut self, ctx: &egui::Context) {
+        let Some(renderer) = &self.renderer else {
+            return;
+        };
+        for reply in renderer.replies() {
+            let Some(body) = self.body.as_mut() else {
+                continue;
+            };
+            let Some(view) = body
+                .html_view
+                .as_mut()
+                .filter(|v| v.generation == reply.generation())
+            else {
+                continue;
+            };
+            match reply {
+                Reply::Failed { .. } => {
+                    body.text_note = Some(html::FAILED);
+                    body.html_view = None;
+                }
+                Reply::Laid {
+                    height,
+                    remote,
+                    width,
+                    ..
+                } => {
+                    if height > html::MAX_HEIGHT {
+                        body.text_note = Some(html::TOO_LARGE);
+                        body.html_view = None;
+                        continue;
+                    }
+                    view.page = Some(egui::vec2(width, height));
+                    view.remote = remote;
+                    view.strips.clear();
+                    view.requested.clear();
+                    view.hover = None;
+                    view.hovered_at = None;
+                }
+                Reply::Link { href, .. } => view.hover = href,
+                Reply::Strip {
+                    generation,
+                    image,
+                    strip,
+                } => {
+                    let name = format!("html-{generation}-{strip}");
+                    let texture = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+                    view.strips.insert(strip, texture);
+                }
+            }
+        }
+    }
+
+    /// Starts the HTML layout of the shown message, or a new one once the panel width or scale held still for
+    /// `html::SETTLE`; until then the old layout stays on screen.
+    fn html_width(&mut self, ctx: &egui::Context, scale: f32, width: f32, now: f64) {
+        let Some(body) = self.body.as_mut().filter(|b| b.shows_html()) else {
+            return;
+        };
+        let fresh = match &mut body.html_view {
+            None => true,
+            Some(view) if view.sent == (scale, width) => {
+                view.wanted = None;
+                false
+            }
+            Some(view) => match view.wanted {
+                Some((wanted, since)) if wanted == (scale, width) => {
+                    if now - since < html::SETTLE {
+                        ctx.request_repaint_after(Duration::from_secs_f64(html::SETTLE));
+                    }
+                    now - since >= html::SETTLE
+                }
+                _ => {
+                    view.wanted = Some(((scale, width), now));
+                    ctx.request_repaint_after(Duration::from_secs_f64(html::SETTLE));
+                    false
+                }
+            },
+        };
+        let Some(source) = body.html.as_ref().filter(|_| fresh) else {
+            return;
+        };
+        self.html_generation += 1;
+        let generation = self.html_generation;
+        let load = html::Load {
+            generation,
+            html: source.html.clone(),
+            inline: source.inline.clone(),
+            scale,
+            width,
+        };
+        match &mut body.html_view {
+            Some(view) => {
+                view.generation = generation;
+                view.sent = (scale, width);
+                view.wanted = None;
+            }
+            None => body.html_view = Some(HtmlState::new(generation, scale, width)),
+        }
+        self.renderer
+            .get_or_insert_with(|| Renderer::start(ctx.clone()))
+            .send(html::Request::Load(load));
+    }
+
+    /// Asks for the strips around what is on screen and lets go of those far from it.
+    fn html_visible(&mut self, top: f32, bottom: f32) {
+        let (Some(view), Some(renderer)) = (
+            self.body.as_mut().and_then(|b| b.html_view.as_mut()),
+            self.renderer.as_mut(),
+        ) else {
+            return;
+        };
+        let Some(page) = view.page else { return };
+        let scale = view.sent.0;
+        for strip in html::wanted_strips(top, bottom, page.y, scale) {
+            if view.requested.insert(strip) {
+                renderer.send(html::Request::Paint {
+                    generation: view.generation,
+                    strip,
+                });
+            }
+        }
+        for strip in html::far_strips(view.strips.keys().copied(), top, bottom, scale) {
+            view.strips.remove(&strip);
+            view.requested.remove(&strip);
+        }
+    }
+
+    /// Asks which link is under the pointer; the answer arrives as `Reply::Link`.
+    fn html_hover(&mut self, at: Option<egui::Pos2>) {
+        let (Some(view), Some(renderer)) = (
+            self.body.as_mut().and_then(|b| b.html_view.as_mut()),
+            self.renderer.as_mut(),
+        ) else {
+            return;
+        };
+        view.hovered_at = at;
+        match at {
+            Some(at) => renderer.send(html::Request::Hit {
+                generation: view.generation,
+                x: at.x,
+                y: at.y,
+            }),
+            None => view.hover = None,
         }
     }
 
@@ -1269,6 +1477,15 @@ impl App {
 pub(crate) fn central_panel(ui: &egui::Ui, focused: bool) -> egui::CentralPanel {
     let frame = egui::Frame::central_panel(ui.style()).fill(ui.visuals().window_fill);
     egui::CentralPanel::default().frame(theme::pane(frame, ui, focused))
+}
+
+/// A stored message, its attachments and its HTML.
+type Stored = (Option<Message>, Vec<Attachment>, Option<HtmlBody>);
+
+/// The note for HTML too large to lay out, which then shows as text.
+fn too_large(html: Option<&HtmlBody>) -> Option<&'static str> {
+    html.filter(|h| h.html.len() > html::MAX_HTML)
+        .map(|_| html::TOO_LARGE)
 }
 
 fn body_text(message: Option<&Message>) -> Option<String> {
