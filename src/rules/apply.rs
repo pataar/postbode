@@ -72,6 +72,7 @@ pub fn apply(
             Action::MarkRead => ("\\Seen", true),
             Action::MarkUnread => ("\\Seen", false),
             Action::Unflag => ("\\Flagged", false),
+            Action::Tag(ref keyword) => (keyword.as_str(), true),
             _ => continue,
         };
         if has_flag(&current.flags, flag) == wanted {
@@ -571,6 +572,18 @@ mod tests {
         let m = store.message("INBOX", 5).unwrap().unwrap();
         assert_eq!(m.flags, "\\Flagged \\Seen");
         assert_eq!(store.log(10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tag_adds_the_keyword_once() {
+        let (mut ops, store, trash, _dir, mut msg) = setup();
+        let tag = plan(vec![Action::Tag("$label1".into())]);
+        assert_eq!(apply(&tag, &msg, &mut ops, &store, &trash, 500).unwrap(), 1);
+        assert!(ops.calls.iter().any(|c| c == "add_flags INBOX 5 $label1"));
+        assert_eq!(store.message("INBOX", 5).unwrap().unwrap().flags, "$label1");
+        assert_eq!(store.log(10).unwrap()[0].action, "tag:$label1");
+        msg.flags = "$label1".into();
+        assert_eq!(apply(&tag, &msg, &mut ops, &store, &trash, 500).unwrap(), 0);
     }
 
     fn with_trash_folder(ops: RecordingOps, store: &Store) -> RecordingOps {

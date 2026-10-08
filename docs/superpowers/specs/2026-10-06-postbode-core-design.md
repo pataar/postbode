@@ -224,7 +224,7 @@ Pure. For each rule in file order:
 1. Skip if disabled, or `account`/`folder` don't match.
 2. Skip if `msg.internaldate < rule.first_seen_at`, unless `mode == ApplyExisting`. `first_seen_at` is filled from `rules_seen` when the rules file is loaded for an account.
 3. Evaluate each match condition. `body` requires `msg.raw`; the caller fetches it beforehand when any enabled rule for that folder has a body condition. Body text is the `text/plain` part via `mail-parser`, else the HTML part converted to text by `mail-parser`.
-4. `older_than`: `now - internaldate >= duration`. `seen`: presence of `\Seen`.
+4. `older_than`: `now - internaldate >= duration`. `seen`: presence of `\Seen`. `tag`: presence of that keyword, ignoring case. `header` may be a list; all must match. `contains` and `equals` take one value or a list, any of which may match. `any` holds when one of its entries holds, `none` when none does; each entry is a full set of conditions. They nest up to eight levels. A rule that needs the body is skipped when the body is missing, so `none` never turns a failed fetch into a match.
 5. Collect actions. After a `delete`, stop evaluating further rules for this message.
 6. Decide notification: `notify` if any matched rule says `notify`; `silent` if any says `silent` or the message was moved or deleted; else the account default. `notify` beats `silent` only when both are explicit, in which case the later rule wins. Only messages new in this sync pass are considered. Messages found by a folder's first sync or a UIDVALIDITY resync never notify.
 
@@ -237,7 +237,7 @@ Dry runs (`rules test`, `apply-existing --dry-run`) stop after `evaluate` and pr
 - `delete`: fetch raw if missing, write `accounts/<name>/trash/<unix>-<folder>-<uid>.eml`, then `UID STORE +FLAGS \Deleted` and `UID EXPUNGE`. If the trash write fails, the delete does not happen.
 - `move`: `UID MOVE` if the server advertises `MOVE`, else `COPY` + delete flags + expunge. Create the target folder if missing. Update the local row to the new folder and UID from `COPYUID`, else let the next sync reconcile.
 - `archive`: `move` to the folder with `special_use = Archive`; error if the server has none.
-- `mark_read`, `flag`: `UID STORE +FLAGS`.
+- `mark_read`, `flag`, `tag`: `UID STORE +FLAGS`. A tag is validated as an IMAP atom because it goes into the command verbatim.
 
 `notify` and `silent` are not applied through `MailOps`; `apply` returns them as a `NewMail { account, folder, uid, from, subject }` event the sync loop forwards to whoever is listening.
 
