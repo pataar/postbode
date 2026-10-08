@@ -23,7 +23,7 @@ When the window cannot start, for instance because no account is set up yet, a s
 | Ctrl+R (Cmd+R on macOS) | sync every account now |
 | `?` | show these keys |
 
-Each attachment of the open message has a Save button, which saves it to your Downloads folder.
+Each attachment of the open message has a Save button, which saves it to your Downloads folder, or to your home folder when there is none.
 
 Actions apply to the selection when there is one, else to the current row; on a thread row they apply to the whole thread in that folder. A message you open, with the keys or a click, is marked read after its text has been on screen for a second; the one a folder opens on stays unread.
 
