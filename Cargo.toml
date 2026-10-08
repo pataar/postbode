@@ -27,6 +27,7 @@ clap = { version = "4", features = ["derive"] }      # CLI
 data-url = { version = "0.3", optional = true }  # data: URIs in HTML mail; already in the tree through usvg
 directories = "6"                                    # platform config/state/cache dirs
 eframe = { version = "0.36", optional = true }       # the GUI window (egui); default features: wgpu, winit with runtime-loaded X11/Wayland
+egui-phosphor = { version = "0.14", optional = true }  # icon font for the GUI (folders, toolbar, views); targets egui 0.36
 env_logger = "0.11"                                  # log output to stderr, RUST_LOG filter
 futures-util = { version = "0.3", default-features = false }  # collect async-imap streams
 globset = "0.4"                                      # alias globs
@@ -93,7 +94,7 @@ dbg_macro = "warn"                                   # debug output stays out of
 
 [features]
 default = ["gui", "html", "mcp"]
-gui = ["dep:eframe"]                                 # `postbode gui`; off builds the CLI alone
+gui = ["dep:eframe", "dep:egui-phosphor"]           # `postbode gui`; off builds the CLI alone
 html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique"]  # HTML mail rendered in the body panel; off shows text
 mcp = ["dep:rmcp"]                                   # `postbode mcp`; off builds without the MCP server
 testing = []                                         # exposes RecordingOps and the one-shot sync steps to integration tests

@@ -107,8 +107,16 @@ impl Palette {
     }
 }
 
+/// egui's fonts with the Phosphor icons as the first fallback, so icons mix into ordinary labels.
+pub(crate) fn fonts() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    fonts
+}
+
 /// Gives egui both palettes; the theme preference picks one, following the OS when it is System.
 pub(crate) fn install(ctx: &egui::Context) {
+    ctx.set_fonts(fonts());
     ctx.set_visuals_of(egui::Theme::Dark, MOCHA.visuals(true));
     ctx.set_visuals_of(egui::Theme::Light, LATTE.visuals(false));
 }
@@ -147,6 +155,14 @@ mod tests {
 
     use super::*;
     use crate::gui::test_support::Fixture;
+
+    #[test]
+    fn the_icon_font_falls_back_behind_the_text_font() {
+        let fonts = fonts();
+        assert!(fonts.font_data.contains_key("phosphor"));
+        let proportional = &fonts.families[&egui::FontFamily::Proportional];
+        assert_eq!(proportional.get(1).map(String::as_str), Some("phosphor"));
+    }
 
     #[test]
     fn the_palettes_are_catppuccin() {
