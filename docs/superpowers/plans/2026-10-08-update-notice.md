@@ -16,15 +16,14 @@
 2. **Nothing shows when up to date, offline, or when the check fails.** Failures are silent apart from a `log::debug!` line.
 3. **The check runs in the GUI process, not the daemon**, on a background thread, at most once a day. The last result and its time are cached in `<cache_dir>/update-check.json`, so restarting the window does not ask again. A failed fetch still counts as that day's check (no hammering while offline) and keeps the last known version.
 4. **Source:** `GET https://api.github.com/repos/pataar/postbode/releases/latest`. That endpoint already excludes drafts and prereleases; the code checks both flags anyway and ignores any tag that is not plain `X.Y.Z` (with or without `v`). It compares numerically with `env!("CARGO_PKG_VERSION")`.
-5. **On by default; `[ui] check_updates = false` turns it off.** The only data sent is a normal HTTPS request to `api.github.com` with `User-Agent: postbode/<version>`; GitHub sees the IP address, as with any request. Documented in `docs/src/accounts.md`. See open decision A below.
+5. **Off by default; `[ui] check_updates = true` turns it on** (decided by the owner on 2026-10-08). Homebrew and cargo users already hear about updates from their package manager, and a mail client should not call a third party unasked. The only data sent is a normal HTTPS request to `api.github.com` with `User-Agent: postbode/<version>`; GitHub sees the IP address, as with any request. Documented in `docs/src/accounts.md`.
 6. **No HTTP client dependency.** None is in `Cargo.toml`; the TLS stack is. A ~25-line HTTP/1.0 request over `rustls::StreamOwned` replaces `ureq` and its tree. HTTP/1.0 rules out chunked replies, so the body is everything after the headers. Checked on 2026-10-08: `curl --http1.0` against the endpoint returns `200`, `connection: close`, a plain body with `tag_name`, `draft`, `prerelease`.
 7. **The arrow is drawn in monospace.** egui's default proportional fonts (Ubuntu-Light, NotoEmoji, emoji-icon-font) lack U+2191 "↑"; Hack, the monospace font, has it (checked in the cmap tables of `epaint_default_fonts-0.36.2`). Monospace also fits the terminal look.
 
-### Open decisions
+### Accepted risks
 
-- **A. On by default in a privacy-minded mail client.** I would keep it on but am not sure: no account or mail data leaves, but it is a daily request to a third party the user did not ask for, and Homebrew and cargo users already learn about updates from their package manager. The users who gain most are AppImage and download users. Alternatives: off by default, or on only for the AppImage (`APPIMAGE` set). The plan implements on-by-default as asked; flipping it is one line in `UiConfig::default` plus the docs sentence.
-- **B. HTTP/1.0 by hand vs. `ureq`.** If GitHub ever stops serving HTTP/1.0, the check fails silently and nobody notices. A `ureq` dependency would be sturdier but adds a crate tree for one GET a day.
-- **C. Release timing.** dist creates the GitHub release and then pushes the Homebrew formula in the same run, so for a few minutes a Homebrew user can see a notice that `brew upgrade` cannot satisfy yet. Accepted.
+- **HTTP/1.0 by hand, not `ureq`** (decided by the owner on 2026-10-08). If GitHub ever stops serving HTTP/1.0, the check fails silently; revisit with `ureq` then.
+- **Release timing.** dist creates the GitHub release and then pushes the Homebrew formula in the same run, so for a few minutes a Homebrew user can see a notice that `brew upgrade` cannot satisfy yet. Accepted.
 
 ## Scope
 
@@ -388,7 +387,7 @@ git commit -m "feat: check GitHub for a newer release at most once a day"
 
 ---
 
-### Task 2: The window runs the check, unless `[ui] check_updates = false`
+### Task 2: The window runs the check when `[ui] check_updates = true`
 
 **Files:**
 - Modify: `src/config.rs` (`UiConfig`, tests), `src/gui/app.rs` (`UpdateCheck`, two `App` fields, `check_release`, `newer_release`, tests), `src/gui/test_support.rs` (stub the fetch), `docs/src/accounts.md` (Appearance section)
@@ -396,7 +395,7 @@ git commit -m "feat: check GitHub for a newer release at most once a day"
 **Interfaces:**
 - Consumes: `update::{check, fetch}`, `Paths::update_check` (Task 1); `crate::time::now() -> i64`.
 - Produces:
-  - `UiConfig.check_updates: bool` (default `true`)
+  - `UiConfig.check_updates: bool` (default `false`)
   - `pub(crate) enum UpdateCheck { Off, Waiting, Running(Receiver<Option<String>>), Done(Option<String>) }` in `app.rs`
   - `App.fetch_release: fn() -> anyhow::Result<String>`, `App.update: UpdateCheck`
   - `App::newer_release(&self) -> Option<&str>`
@@ -407,13 +406,13 @@ In `config.rs` tests:
 
 ```rust
     #[test]
-    fn check_updates_is_on_unless_turned_off() {
-        assert!(Config::default().ui.check_updates);
-        assert!(Config::parse(SAMPLE).unwrap().ui.check_updates);
+    fn check_updates_is_off_unless_turned_on() {
+        assert!(!Config::default().ui.check_updates);
+        assert!(!Config::parse(SAMPLE).unwrap().ui.check_updates);
         let theme_only = format!("{SAMPLE}\n[ui]\ntheme = \"dark\"\n");
-        assert!(Config::parse(&theme_only).unwrap().ui.check_updates);
-        let off = format!("{SAMPLE}\n[ui]\ncheck_updates = false\n");
-        assert!(!Config::parse(&off).unwrap().ui.check_updates);
+        assert!(!Config::parse(&theme_only).unwrap().ui.check_updates);
+        let on = format!("{SAMPLE}\n[ui]\ncheck_updates = true\n");
+        assert!(Config::parse(&on).unwrap().ui.check_updates);
     }
 ```
 
@@ -433,6 +432,7 @@ In `app.rs` tests (add `use crate::update;` to the test imports):
     #[test]
     fn a_cached_newer_release_reaches_the_window() {
         let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ncheck_updates = true\n");
         let cached = update::Cached { checked_at: crate::time::now(), latest: Some("999.0.0".into()) };
         update::save(&fx.paths.update_check(), &cached).unwrap();
         let (mut harness, _wires) = fx.harness();
@@ -443,6 +443,7 @@ In `app.rs` tests (add `use crate::update;` to the test imports):
     #[test]
     fn a_failed_check_shows_nothing_and_is_remembered() {
         let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ncheck_updates = true\n");
         let (mut harness, _wires) = fx.harness();
         finish_update_check(&mut harness);
         assert_eq!(harness.state().newer_release(), None);
@@ -450,9 +451,8 @@ In `app.rs` tests (add `use crate::update;` to the test imports):
     }
 
     #[test]
-    fn check_updates_false_starts_no_check() {
+    fn by_default_no_check_starts() {
         let fx = Fixture::new(&["work"]);
-        fx.append_config("[ui]\ncheck_updates = false\n");
         let (mut harness, _wires) = fx.harness();
         harness.run();
         assert!(matches!(harness.state().update, UpdateCheck::Off));
@@ -467,30 +467,21 @@ Expected: FAIL to compile (`check_updates`, `UpdateCheck`, `newer_release` not d
 
 - [ ] **Step 3: Implement**
 
-`config.rs`: `UiConfig` drops `Default` from its derive, so the default turns the check on; fields stay alphabetical.
+`config.rs`: one field on `UiConfig`; the derived `Default` gives `false`, so the check is off unless turned on. Fields stay alphabetical.
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UiConfig {
     /// Ask GitHub once a day whether a newer release is out.
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub check_updates: bool,
     #[serde(default)]
     pub theme: Theme,
 }
-
-impl Default for UiConfig {
-    fn default() -> UiConfig {
-        UiConfig {
-            check_updates: true,
-            theme: Theme::default(),
-        }
-    }
-}
 ```
 
-`save_round_trip_leaves_out_a_default_ui_table` keeps passing: `is_default` compares against this `Default`.
+Keep `Default` in `UiConfig`'s derive list (add it if missing). `save_round_trip_leaves_out_a_default_ui_table` keeps passing: `is_default` compares against the derived `Default`.
 
 `app.rs`, beside the other state types:
 
@@ -579,13 +570,13 @@ and the methods, after `start_reconnect`:
 
 ```toml
 [ui]
-check_updates = true
+check_updates = false
 theme = "system"
 ```
 
 `theme` is `"system"` (follow the OS, the default), `"light"` or `"dark"`. The mail window's theme switch writes it.
 
-`check_updates` (on by default) lets the mail window ask GitHub at most once a day whether a newer release is out, and link to its release notes in the status bar. The request is a plain HTTPS request to `api.github.com` with the user agent `postbode/<version>`: it carries nothing about your accounts or mail, though GitHub sees your IP address as with any request. Postbode never updates itself; upgrade the way you installed it (`brew upgrade postbode`, `cargo install postbode`, a new AppImage). Set `check_updates = false` to turn the check off.
+`check_updates` (off by default) lets the mail window ask GitHub at most once a day whether a newer release is out, and link to its release notes in the status bar. The request is a plain HTTPS request to `api.github.com` with the user agent `postbode/<version>`: it carries nothing about your accounts or mail, though GitHub sees your IP address as with any request. Postbode never updates itself; upgrade the way you installed it (`brew upgrade postbode`, `cargo install postbode`, a new AppImage). Set `check_updates = true` to turn the check on.
 ````
 
 - [ ] **Step 4: Run them**
@@ -597,7 +588,7 @@ Expected: PASS.
 
 ```bash
 git add src/config.rs src/gui/app.rs src/gui/test_support.rs docs/src/accounts.md
-git commit -m "feat(gui): check for a newer release once a day; [ui] check_updates turns it off"
+git commit -m "feat(gui): opt-in daily check for a newer release ([ui] check_updates)"
 ```
 
 ---
@@ -683,7 +674,7 @@ Update the module doc line to: `//! The bottom bar: a line per account from its 
 `docs/src/gui.md`, Status bar section, append to its paragraph:
 
 ```markdown
-Next to the version, a link appears when a newer release is out; it opens that release's notes on GitHub. Postbode does not update itself, and `[ui] check_updates = false` in `config.toml` turns the daily check off (see [Accounts](accounts.md#appearance)).
+Next to the version, a link appears when a newer release is out; it opens that release's notes on GitHub. Postbode does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
 ```
 
 - [ ] **Step 4: Run tests, the architecture check and the full gate**
