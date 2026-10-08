@@ -951,6 +951,7 @@ impl Fixture {
             let inbox = RemoteFolder {
                 name: "INBOX".into(),
                 special_use: None,
+                delimiter: None,
             };
             sync_folder(h, store, &inbox).map(|_| ())
         };

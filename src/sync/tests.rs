@@ -261,6 +261,7 @@ fn placeholder_folder_adopts_server_uidvalidity_quietly() {
             uidvalidity: 0,
             last_uid: 0,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
     sync_all(&mut ops, &store).unwrap();
@@ -905,6 +906,7 @@ fn missing_rule_folder_is_skipped() {
             uidvalidity: 3,
             last_uid: 0,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
     let rules = rules_from(
@@ -1055,6 +1057,7 @@ fn failing_folder_is_reported_and_others_still_sync() {
         RemoteFolder {
             name: "Bogus".into(),
             special_use: None,
+            delimiter: None,
         },
     );
     let dir = tempfile::tempdir().unwrap();
@@ -1122,6 +1125,7 @@ fn interrupted_first_sync_stays_initial_on_retry() {
     let inbox = RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
+        delimiter: None,
     };
     assert!(sync_folder(&mut ops, &store, &inbox).is_err());
     assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 0);
@@ -1165,6 +1169,7 @@ fn inbox() -> RemoteFolder {
     RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
+        delimiter: None,
     }
 }
 
@@ -1413,6 +1418,7 @@ fn changed_uidvalidity_blocks_rules_on_stale_rows() {
     let inbox = RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
+        delimiter: None,
     };
     sync_folder(&mut ops, &store, &inbox).unwrap();
     let run = run_rules(

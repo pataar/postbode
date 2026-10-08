@@ -351,6 +351,7 @@ pub fn sync_folder_with(
         uidvalidity: info.uidvalidity,
         last_uid,
         special_use: folder.special_use.clone(),
+        delimiter: folder.delimiter.clone(),
     };
 
     store.transaction(|| {
@@ -1010,6 +1011,7 @@ fn sync_inbox_with(
     let inbox = RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
+        delimiter: None,
     };
     let syncing = Activity::SyncingFolder {
         folder: inbox.name.clone(),
