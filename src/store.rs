@@ -30,6 +30,8 @@ pub struct Folder {
     pub uidvalidity: u32,
     pub last_uid: u32,
     pub special_use: Option<String>,
+    #[serde(default)]
+    pub delimiter: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,7 +218,7 @@ impl Store {
 
     pub fn folders(&self) -> Result<Vec<Folder>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT name, uidvalidity, last_uid, special_use FROM folders ORDER BY name",
+            "SELECT name, uidvalidity, last_uid, special_use, delimiter FROM folders ORDER BY name",
         )?;
         let rows = serde_rusqlite::from_rows::<Folder>(stmt.query([])?);
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -224,7 +226,7 @@ impl Store {
 
     pub fn folder(&self, name: &str) -> Result<Option<Folder>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT name, uidvalidity, last_uid, special_use FROM folders WHERE name = ?1",
+            "SELECT name, uidvalidity, last_uid, special_use, delimiter FROM folders WHERE name = ?1",
         )?;
         let mut rows = stmt.query(params![name])?;
         match rows.next()? {
@@ -235,9 +237,10 @@ impl Store {
 
     pub fn upsert_folder(&self, folder: &Folder) -> Result<(), StoreError> {
         self.conn.execute(
-            "INSERT INTO folders (name, uidvalidity, last_uid, special_use) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(name) DO UPDATE SET uidvalidity = excluded.uidvalidity, last_uid = excluded.last_uid, special_use = excluded.special_use",
-            params![folder.name, folder.uidvalidity, folder.last_uid, folder.special_use],
+            "INSERT INTO folders (name, uidvalidity, last_uid, special_use, delimiter) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(name) DO UPDATE SET uidvalidity = excluded.uidvalidity, last_uid = excluded.last_uid,
+             special_use = excluded.special_use, delimiter = COALESCE(excluded.delimiter, folders.delimiter)",
+            params![folder.name, folder.uidvalidity, folder.last_uid, folder.special_use, folder.delimiter],
         )?;
         Ok(())
     }
@@ -603,6 +606,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_folder_keeps_its_delimiter_through_an_upsert_without_one() {
+        let store = Store::open_in_memory().unwrap();
+        let mut folder = Folder {
+            name: "Projects/Postbode".into(),
+            uidvalidity: 1,
+            last_uid: 0,
+            special_use: None,
+            delimiter: Some("/".into()),
+        };
+        store.upsert_folder(&folder).unwrap();
+        folder.delimiter = None;
+        folder.last_uid = 5;
+        store.upsert_folder(&folder).unwrap();
+        let stored = store.folder("Projects/Postbode").unwrap().unwrap();
+        assert_eq!(stored.delimiter.as_deref(), Some("/"));
+        assert_eq!(stored.last_uid, 5);
+        assert_eq!(store.folders().unwrap()[0].delimiter.as_deref(), Some("/"));
+    }
+
+    #[test]
     fn open_account_makes_the_account_directory_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -636,6 +659,7 @@ mod tests {
             uidvalidity: 1,
             last_uid: 0,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
         s
@@ -664,6 +688,7 @@ mod tests {
             uidvalidity: 1,
             last_uid: 1,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
         assert_eq!(s.folder("INBOX").unwrap().unwrap().last_uid, 1);
@@ -867,6 +892,7 @@ mod tests {
             uidvalidity: 1,
             last_uid: 0,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
         s.insert_message(&msg("INBOX", 1, 10)).unwrap();
@@ -992,6 +1018,7 @@ mod tests {
             uidvalidity: 1,
             last_uid: 500,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
         assert_eq!(s.rules_uid("INBOX").unwrap(), 77);
@@ -1006,6 +1033,7 @@ mod tests {
                 uidvalidity: 1,
                 last_uid,
                 special_use: None,
+                delimiter: None,
             })
             .unwrap();
         }
@@ -1027,6 +1055,7 @@ mod tests {
             uidvalidity: 1,
             last_uid: 500,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
         assert_eq!(s.initial_uid_next("INBOX").unwrap(), 1201);

@@ -199,6 +199,7 @@ mod tests {
                 uidvalidity: 1,
                 last_uid: 5,
                 special_use: None,
+                delimiter: None,
             })
             .unwrap();
         store

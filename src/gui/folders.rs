@@ -141,6 +141,7 @@ mod tests {
             uidvalidity: 1,
             last_uid: 0,
             special_use: special_use.map(str::to_string),
+            delimiter: None,
         }
     }
 

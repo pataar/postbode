@@ -227,6 +227,7 @@ fn move_to(
             uidvalidity: 0,
             last_uid: 0,
             special_use: None,
+            delimiter: None,
         })?;
     }
     store.remove_message(&current.folder, current.uid)?;
@@ -258,6 +259,7 @@ mod tests {
                 uidvalidity: 1,
                 last_uid: 5,
                 special_use: None,
+                delimiter: None,
             })
             .unwrap();
         store
@@ -266,6 +268,7 @@ mod tests {
                 uidvalidity: 1,
                 last_uid: 0,
                 special_use: Some("Archive".into()),
+                delimiter: None,
             })
             .unwrap();
         let msg = Message {
@@ -491,6 +494,7 @@ mod tests {
                 uidvalidity: 1,
                 last_uid: 0,
                 special_use: None,
+                delimiter: None,
             })
             .unwrap();
         let result = apply(
@@ -550,6 +554,7 @@ mod tests {
                 uidvalidity: 1,
                 last_uid: 0,
                 special_use: None,
+                delimiter: None,
             })
             .unwrap();
         assert!(matches!(
@@ -613,6 +618,7 @@ mod tests {
                 uidvalidity: 1,
                 last_uid: 0,
                 special_use: Some("Trash".into()),
+                delimiter: None,
             })
             .unwrap();
         ops.with_folder("Trash", Some("Trash"))
@@ -721,6 +727,7 @@ mod tests {
                 uidvalidity: 1,
                 last_uid: 5,
                 special_use: Some("Trash".into()),
+                delimiter: None,
             })
             .unwrap();
         apply(
