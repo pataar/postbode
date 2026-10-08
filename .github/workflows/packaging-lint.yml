@@ -23,4 +23,4 @@ jobs:
           persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y desktop-file-utils shellcheck
       - run: desktop-file-validate packaging/linux/*.desktop
-      - run: shellcheck packaging/*.sh packaging/*/*.sh
+      - run: shellcheck packaging/*.sh packaging/*/*.sh packaging/linux/AppRun

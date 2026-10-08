@@ -339,7 +339,7 @@ impl Client {
     /// Connects, starting this binary as the daemon when none answers, and replacing a daemon of an older version or
     /// another protocol; a newer daemon is an error, so an old window never kills its upgrade.
     pub fn connect_or_start(paths: &Paths) -> anyhow::Result<Client> {
-        let exe = std::env::current_exe().context("finding this postbode")?;
+        let exe = crate::paths::stable_exe().context("finding this postbode")?;
         Client::connect_or_start_with(paths, &exe, VERSION)
     }
 
