@@ -9,8 +9,8 @@ use crate::rules::Action;
 use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::app::{App, UiAction, View};
-use super::icons;
 use super::theme::{self, Palette};
+use super::{icons, numbers};
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
 pub(crate) const THREAD_LIMIT: u32 = 10_000;
@@ -403,7 +403,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         }
         ui.weak(format!(
             "{} results · mail whose body is not downloaded matches on sender, recipients and subject only",
-            list.rows.len()
+            numbers::count(list.rows.len() as u64)
         ));
     }
     let mut area = egui::ScrollArea::vertical().auto_shrink(false);

@@ -5,6 +5,7 @@ mod folders;
 mod html;
 mod icons;
 mod list;
+mod numbers;
 mod rules;
 #[cfg(test)]
 mod snapshots;

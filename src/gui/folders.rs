@@ -5,7 +5,7 @@ use crate::message::clean;
 use crate::store::Folder;
 
 use super::app::{Account, App, FolderRow, UiAction, View};
-use super::icons;
+use super::{icons, numbers};
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
@@ -122,7 +122,10 @@ fn caret(
 fn count_and_name(name: &str, unread: u32) -> (Option<String>, String) {
     match unread {
         0 => (None, name.to_string()),
-        unread => (Some(unread.to_string()), format!("{name} ({unread})")),
+        unread => {
+            let unread = numbers::count(u64::from(unread));
+            (Some(unread.clone()), format!("{name} ({unread})"))
+        }
     }
 }
 
