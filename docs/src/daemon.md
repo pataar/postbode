@@ -14,7 +14,7 @@ To keep mail syncing while no window is open, run the daemon at login:
 postbode service install
 ```
 
-This writes a launchd agent (`~/Library/LaunchAgents/nl.pataar.postbode.plist`) on macOS or a systemd user unit (`~/.config/systemd/user/postbode.service`) on Linux, and starts it. A daemon that was already running is stopped first, so the service's daemon takes over. Running the command again is safe. `--dry-run` shows the file and the commands and changes nothing. `postbode service remove` stops the service and deletes the file. The service runs the postbode binary from the path it was installed from; after moving or reinstalling postbode, run `postbode service install` again. With `POSTBODE_HOME` set, the service file passes it on, so the service's daemon uses that home too.
+This writes a launchd agent (`~/Library/LaunchAgents/nl.pataar.postbode.plist`) on macOS or a systemd user unit (`~/.config/systemd/user/postbode.service`) on Linux, and starts it. A daemon that was already running is stopped first, so the service's daemon takes over. Running the command again is safe. `--dry-run` shows the file and the commands and changes nothing. `postbode service remove` stops the service and deletes the file. The service runs the postbode binary from the path it was installed from: for Homebrew that is the `opt/` link, so `brew upgrade` needs nothing more, and for an AppImage it is the `.AppImage` file. After moving postbode or the AppImage, run `postbode service install` again. With `POSTBODE_HOME` set, the service file passes it on, so the service's daemon uses that home too.
 
 ## Status and stopping
 
@@ -27,7 +27,7 @@ Both only look for a running daemon; they never start one, and say `no daemon ru
 
 ## Logs
 
-The daemon writes `daemon.log` in its state directory: `~/Library/Application Support/postbode/` on macOS, `~/.local/state/postbode/` on Linux. The log is emptied at start when it is over 1 MB. The daemon logs only errors there; `postbode run` in a terminal also prints each new mail's sender and subject. The socket `daemon.sock` and the lock `daemon.lock` live there too. `postbode log` shows what rules and actions did.
+The daemon writes `daemon.log` in its state directory: `~/Library/Application Support/postbode/` on macOS, `~/.local/state/postbode/` on Linux. The log is emptied at start when it is over 1 MB. It holds the daemon's errors, warnings and notes such as reconnects, but never senders or subjects; `postbode run` in a terminal also prints each sync's counts and each new mail's sender and subject. The socket `daemon.sock` and the lock `daemon.lock` live there too. `postbode log` shows what rules and actions did.
 
 ## Troubleshooting
 

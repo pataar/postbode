@@ -35,7 +35,7 @@ For any other host, `postbode mcp install json` prints a snippet for its config:
 }
 ```
 
-The `command` is the absolute path of the `postbode` you ran, because hosts started from the Dock do not see your shell's `PATH`. The install command fills it in; the path above is an example.
+The `command` is the absolute path of the `postbode` you ran, because hosts started from the Dock do not see your shell's `PATH`: for Homebrew the `opt/` link, which survives `brew upgrade`, and for an AppImage the `.AppImage` file, so run the install again after moving it. The install command fills it in; the path above is an example.
 
 Options for `postbode mcp install`:
 

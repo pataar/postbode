@@ -13,10 +13,10 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `mail_ops` `MailOps` trait; `imap.rs` is the real client; `RecordingOps` is the test fake
 - `main` + `cli/` clap only; no logic
 - `mcp` the MCP server (feature `mcp`, on by default): `tools` defines the tools and their scopes, `backend` is the only code touching store, rules or the daemon, `install` registers hosts
-- `message` header parsing, thread id, body text
+- `message` header parsing, thread id, body text, the HTML part and its `cid:` images
 - `notify` desktop notifications for new mail
 - `output` JSON rows shared by `--json` and MCP results
-- `paths` platform dirs, atomic writes, whether this is the macOS app opened from Finder (`launched_as_app`)
+- `paths` platform dirs, atomic writes, `stable_exe` (the binary path that survives `brew upgrade` and AppImage mounts), whether this is the macOS app opened from Finder (`launched_as_app`)
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
 - `store` one SQLite file per account; migrations in `migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
