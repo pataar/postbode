@@ -48,6 +48,7 @@ serde = { version = "1", features = ["derive"] }     # config, rules, rows
 serde_json = "1"                                     # --json output
 serde_rusqlite = "0.43"                              # rows to structs
 socket2 = { version = "0.6", features = ["all"] }     # TCP keepalive on the IMAP socket so dead connections fail; "all" exposes the retry count
+sys-locale = { version = "0.3", optional = true }  # the device locale, to group digits in counts the way the user expects
 thiserror = "2"                                      # user-facing error enums
 tokio = { version = "1", features = ["rt", "net", "time", "macros"] }  # current-thread runtimes for async-imap and the MCP server
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }  # TLS stream for tokio
@@ -94,7 +95,7 @@ dbg_macro = "warn"                                   # debug output stays out of
 
 [features]
 default = ["gui", "html", "mcp"]
-gui = ["dep:eframe", "dep:egui-phosphor"]           # `postbode gui`; off builds the CLI alone
+gui = ["dep:eframe", "dep:egui-phosphor", "dep:sys-locale"]           # `postbode gui`; off builds the CLI alone
 html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique"]  # HTML mail rendered in the body panel; off shows text
 mcp = ["dep:rmcp"]                                   # `postbode mcp`; off builds without the MCP server
 testing = []                                         # exposes RecordingOps and the one-shot sync steps to integration tests
