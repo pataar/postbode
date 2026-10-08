@@ -26,8 +26,8 @@ use postbode::daemon::wire::{
     self, AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status,
 };
 use postbode::message::{
-    attachments, bare_addresses, body_text, clean, header_value, parse_headers, save_attachment,
-    thread_id,
+    attachments, bare_addresses, body_text, clean, header_value, html_body, parse_headers,
+    save_attachment, thread_id,
 };
 use postbode::rules::{self, Action, HeaderMatch, Match, Rule, RuleFile, TextMatch};
 use postbode::sync::{Activity, Command, Event};
@@ -438,6 +438,7 @@ fn exercise_message_inner(raw: &[u8], folder: &str, uid: u32) {
     let _ = clean(&body, true);
     let _ = bare_addresses(&String::from_utf8_lossy(raw));
     let _ = attachments(raw);
+    let _ = html_body(raw);
 }
 
 fn exercise_save(raw: &[u8]) {

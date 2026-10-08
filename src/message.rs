@@ -61,6 +61,44 @@ pub fn body_text(raw: &[u8]) -> String {
         .unwrap_or_default()
 }
 
+/// The HTML of a message and the parts its `cid:` URLs can name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HtmlBody {
+    pub html: String,
+    pub inline: Vec<InlinePart>,
+}
+
+/// A part with a `Content-ID`, which the HTML shows as `<img src="cid:…">`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlinePart {
+    /// The Content-ID without its angle brackets.
+    pub cid: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The first `text/html` part with every `Content-ID` part, or `None` when the message has no HTML part.
+pub fn html_body(raw: &[u8]) -> Option<HtmlBody> {
+    let msg = MessageParser::default().parse(raw)?;
+    let part = msg.html_part(0).filter(|part| part.is_text_html())?;
+    let html = part.text_contents()?.to_string();
+    let inline = msg
+        .parts
+        .iter()
+        .filter_map(|part| {
+            let cid = part
+                .content_id()?
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>');
+            (!cid.is_empty()).then(|| InlinePart {
+                cid: cid.to_string(),
+                bytes: part.contents().to_vec(),
+            })
+        })
+        .collect();
+    Some(HtmlBody { html, inline })
+}
+
 pub fn bare_addresses(field: &str) -> Vec<String> {
     field
         .split(',')
@@ -260,6 +298,43 @@ List-Id: Dev <dev.lists.example.com>\r\n\
         assert_eq!(body_text(plain).trim(), "hello plain");
         let html = b"From: a@b\r\nContent-Type: text/html\r\n\r\n<p>hello <b>html</b></p>\r\n";
         assert!(body_text(html).contains("hello html"));
+    }
+
+    #[test]
+    fn html_body_is_the_html_part_or_none() {
+        let html = b"From: a@b\r\nContent-Type: text/html\r\n\r\n<p>hello</p>\r\n";
+        let body = html_body(html).unwrap();
+        assert_eq!(body.html.trim(), "<p>hello</p>");
+        assert!(body.inline.is_empty());
+        let plain = b"From: a@b\r\nContent-Type: text/plain\r\n\r\n<p>not html</p>\r\n";
+        assert_eq!(html_body(plain), None);
+        assert_eq!(html_body(b""), None);
+    }
+
+    #[test]
+    fn html_body_prefers_html_in_an_alternative() {
+        let raw = b"From: a@b\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"b\"\r\n\r\n\
+--b\r\nContent-Type: text/plain\r\n\r\nplain\r\n\
+--b\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<b>rich</b>\r\n--b--\r\n";
+        assert_eq!(html_body(raw).unwrap().html.trim(), "<b>rich</b>");
+    }
+
+    #[test]
+    fn html_body_carries_the_content_id_parts() {
+        let raw = b"From: a@b\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"b\"\r\n\r\n\
+--b\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:logo@x\"><img src=\"cid:sig\">\r\n\
+--b\r\nContent-Type: image/png\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw==\r\n\
+--b\r\nContent-Type: image/gif\r\nContent-ID: sig\r\n\r\nGIF89a\r\n--b--\r\n";
+        let body = html_body(raw).unwrap();
+        let cids: Vec<_> = body
+            .inline
+            .iter()
+            .map(|p| (p.cid.as_str(), p.bytes.clone()))
+            .collect();
+        assert_eq!(
+            cids,
+            [("logo@x", b"\x89PNG".to_vec()), ("sig", b"GIF89a".to_vec())]
+        );
     }
 
     #[test]
