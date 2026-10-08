@@ -17,6 +17,8 @@ pub enum ApplyError {
     Trash(#[from] io::Error),
     #[error("the server has no Archive folder")]
     NoArchiveFolder,
+    #[error("tag {0}")]
+    InvalidTag(String),
     #[error("message {folder}/{uid} could not be fetched for backup")]
     RawUnavailable { folder: String, uid: u32 },
 }
@@ -49,6 +51,12 @@ pub fn apply(
     trash: &Trash,
     now: i64,
 ) -> Result<usize, ApplyError> {
+    // Direct actions reach here from the daemon socket without passing the rules compiler, and a tag goes into STORE verbatim.
+    for planned in &plan.actions {
+        if let Action::Tag(keyword) = &planned.action {
+            crate::rules::check_keyword(keyword).map_err(ApplyError::InvalidTag)?;
+        }
+    }
     if let Some(planned) = plan
         .actions
         .iter()
@@ -72,6 +80,7 @@ pub fn apply(
             Action::MarkRead => ("\\Seen", true),
             Action::MarkUnread => ("\\Seen", false),
             Action::Unflag => ("\\Flagged", false),
+            Action::Tag(ref keyword) => (keyword.as_str(), true),
             _ => continue,
         };
         if has_flag(&current.flags, flag) == wanted {
@@ -571,6 +580,30 @@ mod tests {
         let m = store.message("INBOX", 5).unwrap().unwrap();
         assert_eq!(m.flags, "\\Flagged \\Seen");
         assert_eq!(store.log(10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tag_adds_the_keyword_once() {
+        let (mut ops, store, trash, _dir, mut msg) = setup();
+        let tag = plan(vec![Action::Tag("$label1".into())]);
+        assert_eq!(apply(&tag, &msg, &mut ops, &store, &trash, 500).unwrap(), 1);
+        assert!(ops.calls.iter().any(|c| c == "add_flags INBOX 5 $label1"));
+        assert_eq!(store.message("INBOX", 5).unwrap().unwrap().flags, "$label1");
+        assert_eq!(store.log(10).unwrap()[0].action, "tag:$label1");
+        msg.flags = "$label1".into();
+        assert_eq!(apply(&tag, &msg, &mut ops, &store, &trash, 500).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_tag_that_is_not_an_imap_keyword_is_refused_before_the_server() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let bad = plan(vec![Action::Tag("x) \\Deleted".into())]);
+        assert!(matches!(
+            apply(&bad, &msg, &mut ops, &store, &trash, 500),
+            Err(ApplyError::InvalidTag(_))
+        ));
+        assert!(!ops.calls.iter().any(|c| c.starts_with("add_flags")));
+        assert!(store.log(10).unwrap().is_empty());
     }
 
     fn with_trash_folder(ops: RecordingOps, store: &Store) -> RecordingOps {
