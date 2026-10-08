@@ -733,8 +733,12 @@ impl App {
                 }
             }
             UiAction::StepFolder(delta) => {
-                let entries = self.tree_entries();
-                let at = entries.iter().position(|v| *v == self.view).unwrap_or(0);
+                let entries = self.tree_entries(true);
+                let at = entries
+                    .iter()
+                    .position(|v| *v == self.view)
+                    .or_else(|| self.nearest_shown_above(&entries))
+                    .unwrap_or(0);
                 let view = entries[step(at, delta, entries.len())].clone();
                 if view != self.view {
                     self.select_view(view);
@@ -1467,14 +1471,24 @@ impl App {
     }
 
     /// Every folder of every account, then Rules, Activity and Trash, in tree order.
-    fn tree_entries(&self) -> Vec<View> {
+    /// Where a hidden view (in a folded branch) sits in `shown`: at the nearest shown entry above it.
+    fn nearest_shown_above(&self, shown: &[View]) -> Option<usize> {
+        let all = self.tree_entries(false);
+        let at = all.iter().position(|v| *v == self.view)?;
+        all[..at]
+            .iter()
+            .rev()
+            .find_map(|view| shown.iter().position(|v| v == view))
+    }
+
+    fn tree_entries(&self, skip_collapsed: bool) -> Vec<View> {
         let mut entries: Vec<View> = self
             .accounts
             .iter()
             .enumerate()
             .flat_map(|(account, a)| {
                 folders::shown(a, |path| {
-                    self.collapsed.contains(&(account, path.to_string()))
+                    skip_collapsed && self.collapsed.contains(&(account, path.to_string()))
                 })
                 .into_iter()
                 .map(move |folder| View::Folder { account, folder })
