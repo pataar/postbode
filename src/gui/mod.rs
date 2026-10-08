@@ -62,6 +62,27 @@ fn start(paths: &Paths, window: Arc<OnceLock<egui::Context>>) -> Result<(Config,
     Ok((config, app::connect(paths, wake)?))
 }
 
+/// The window options for a window of `size`.
+fn native_options(size: [f32; 2]) -> eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
+        viewport: viewport(size),
+        ..Default::default()
+    };
+    #[cfg(target_os = "macos")]
+    prefer_integrated_gpu(&mut options.wgpu_options.wgpu_setup);
+    options
+}
+
+/// egui-wgpu asks for the discrete GPU by default, which keeps it powered on a dual-GPU Intel MacBook Pro for as long
+/// as the window is open; egui draws fine on the integrated one. `WGPU_POWER_PREF` still overrides.
+#[cfg(target_os = "macos")]
+fn prefer_integrated_gpu(setup: &mut eframe::egui_wgpu::WgpuSetup) {
+    use eframe::wgpu::PowerPreference;
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(new) = setup {
+        new.power_preference = PowerPreference::from_env().unwrap_or(PowerPreference::LowPower);
+    }
+}
+
 /// A window with the icon, app id and title, at `size`.
 fn viewport(size: [f32; 2]) -> egui::ViewportBuilder {
     // ICON is embedded at compile time and decoded by `the_icon_is_a_square_png_with_transparent_corners`.
@@ -78,10 +99,7 @@ fn viewport(size: [f32; 2]) -> egui::ViewportBuilder {
 /// exit code. Without a display there is no window, and stderr is all there is.
 fn explain(error: anyhow::Error, log: Option<&Path>) -> anyhow::Error {
     let problem = startup::Problem::of(&error, log);
-    let options = eframe::NativeOptions {
-        viewport: viewport([520.0, 260.0]),
-        ..Default::default()
-    };
+    let options = native_options([520.0, 260.0]);
     let shown = eframe::run_native(
         "Postbode",
         options,
@@ -119,10 +137,7 @@ fn open(
     (client, events, states): app::Connection,
     window: &OnceLock<egui::Context>,
 ) -> Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: viewport([1280.0, 800.0]),
-        ..Default::default()
-    };
+    let options = native_options([1280.0, 800.0]);
     eframe::run_native(
         "Postbode",
         options,
@@ -136,6 +151,21 @@ fn open(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_windows_prefer_the_integrated_gpu() {
+        use eframe::egui_wgpu::WgpuSetup;
+        use eframe::wgpu::PowerPreference;
+        if std::env::var_os("WGPU_POWER_PREF").is_some() {
+            return;
+        }
+        let options = super::native_options([100.0, 100.0]);
+        let WgpuSetup::CreateNew(setup) = options.wgpu_options.wgpu_setup else {
+            panic!("eframe's default wgpu setup creates a new instance");
+        };
+        assert_eq!(setup.power_preference, PowerPreference::LowPower);
+    }
+
     #[test]
     fn the_icon_is_a_square_png_with_transparent_corners() {
         let icon = eframe::icon_data::from_png_bytes(super::ICON).unwrap();
