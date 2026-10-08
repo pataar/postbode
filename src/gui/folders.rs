@@ -61,8 +61,8 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     actions
 }
 
-/// A full-width selectable row: icon, label, and the count right-aligned. `accessible` names it for screen readers
-/// and tests, since the count is painted apart from the label.
+/// A full-width selectable row: indent, icon, label, and the count right-aligned. `accessible` names it for screen
+/// readers and tests, so they read the count but not the icon glyph.
 pub(crate) fn folder_row(
     ui: &mut egui::Ui,
     selected: bool,
@@ -72,32 +72,29 @@ pub(crate) fn folder_row(
     count: Option<String>,
     accessible: &str,
 ) -> egui::Response {
-    let text = format!("{icon}  {label}");
-    let response = ui.add(
-        egui::Button::selectable(selected, text)
-            .truncate()
-            .min_size(egui::vec2(ui.available_width() - indent, 0.0)),
-    );
-    if let Some(count) = count {
+    ui.horizontal(|ui| {
+        if indent > 0.0 {
+            ui.add_space(indent);
+        }
         let palette = super::theme::palette(ui);
         let color = if selected {
             palette.on_accent
         } else {
             palette.muted
         };
-        ui.painter().text(
-            response.rect.right_center() - egui::vec2(6.0, 0.0),
-            egui::Align2::RIGHT_CENTER,
-            count,
-            egui::TextStyle::Button.resolve(ui.style()),
-            color,
-        );
-    }
-    let name = accessible.to_string();
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
-    });
-    response
+        // Always a right text, even empty: its grow atom is what keeps the label on the left.
+        let button = egui::Button::selectable(selected, format!("{icon}  {label}"))
+            .truncate()
+            .min_size(egui::vec2(ui.available_width(), 0.0))
+            .right_text(egui::RichText::new(count.unwrap_or_default()).color(color));
+        let response = ui.add(button);
+        let name = accessible.to_string();
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
+        });
+        response
+    })
+    .inner
 }
 
 /// INBOX and the special-use folders, which sort above the rest.
@@ -212,6 +209,87 @@ mod tests {
         assert!(
             (inbox.width() - rules.width()).abs() < 1.0,
             "{inbox:?} vs {rules:?}"
+        );
+    }
+
+    fn painted_text(harness: &egui_kittest::Harness<'_>) -> Vec<(String, egui::Rect)> {
+        harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_string(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_long_name_truncates_before_its_count() {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(160.0, 40.0))
+            .build_ui(|ui| {
+                let name = "Receipts from suppliers 2024";
+                folder_row(
+                    ui,
+                    false,
+                    icons::FOLDER,
+                    name,
+                    0.0,
+                    Some("123".into()),
+                    name,
+                );
+            });
+        harness.run();
+        let painted = painted_text(&harness);
+        let find = |wanted: &dyn Fn(&str) -> bool| {
+            painted
+                .iter()
+                .find(|(text, _)| wanted(text))
+                .map(|(_, rect)| *rect)
+        };
+        let name = find(&|text| text.contains("Receipts")).unwrap();
+        let count = find(&|text| text == "123").unwrap();
+        assert!(name.right() <= count.left(), "{painted:?}");
+    }
+
+    #[test]
+    fn a_row_without_a_count_keeps_its_label_on_the_left() {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(200.0, 40.0))
+            .build_ui(|ui| {
+                folder_row(ui, false, icons::FOLDER, "Work", 0.0, None, "Work");
+            });
+        harness.run();
+        let painted = painted_text(&harness);
+        let (_, label) = painted
+            .iter()
+            .find(|(text, _)| text.contains("Work"))
+            .unwrap();
+        assert!(label.left() < 30.0, "{painted:?}");
+    }
+
+    #[test]
+    fn an_indented_row_starts_later_and_ends_at_the_same_edge() {
+        let rects = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = rects.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(200.0, 80.0))
+            .build_ui(move |ui| {
+                let flat = folder_row(ui, false, icons::FOLDER, "Work", 0.0, None, "Work");
+                let nested = folder_row(ui, false, icons::FOLDER, "Clients", 16.0, None, "Clients");
+                *seen.borrow_mut() = vec![flat.rect, nested.rect];
+            });
+        harness.run();
+        let rects = rects.borrow();
+        let (flat, nested) = (rects[0], rects[1]);
+        assert!(nested.left() >= flat.left() + 16.0, "{flat:?} {nested:?}");
+        assert!(
+            (nested.right() - flat.right()).abs() < 1.0,
+            "{flat:?} {nested:?}"
         );
     }
 
