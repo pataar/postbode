@@ -104,6 +104,7 @@ fn rules_test_previews_fresh_rule() {
             uidvalidity: 1,
             last_uid: 42,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
     store
@@ -167,6 +168,7 @@ fn seeded_home(messages: &[Message]) -> (tempfile::TempDir, Store) {
             uidvalidity: 1,
             last_uid: messages.iter().map(|m| m.uid).max().unwrap_or(0),
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
     for m in messages {
@@ -311,6 +313,7 @@ fn delete_dry_run_names_the_trash_folder() {
             uidvalidity: 1,
             last_uid: 0,
             special_use: Some("Trash".into()),
+            delimiter: None,
         })
         .unwrap();
     let out = postbode(home.path(), &["delete", "42", "--dry-run"]);

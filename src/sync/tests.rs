@@ -261,6 +261,7 @@ fn placeholder_folder_adopts_server_uidvalidity_quietly() {
             uidvalidity: 0,
             last_uid: 0,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
     sync_all(&mut ops, &store).unwrap();
@@ -905,6 +906,7 @@ fn missing_rule_folder_is_skipped() {
             uidvalidity: 3,
             last_uid: 0,
             special_use: None,
+            delimiter: None,
         })
         .unwrap();
     let rules = rules_from(
@@ -1055,6 +1057,7 @@ fn failing_folder_is_reported_and_others_still_sync() {
         RemoteFolder {
             name: "Bogus".into(),
             special_use: None,
+            delimiter: None,
         },
     );
     let dir = tempfile::tempdir().unwrap();
@@ -1122,6 +1125,7 @@ fn interrupted_first_sync_stays_initial_on_retry() {
     let inbox = RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
+        delimiter: None,
     };
     assert!(sync_folder(&mut ops, &store, &inbox).is_err());
     assert_eq!(store.folder("INBOX").unwrap().unwrap().last_uid, 0);
@@ -1165,6 +1169,7 @@ fn inbox() -> RemoteFolder {
     RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
+        delimiter: None,
     }
 }
 
@@ -1413,6 +1418,7 @@ fn changed_uidvalidity_blocks_rules_on_stale_rows() {
     let inbox = RemoteFolder {
         name: "INBOX".into(),
         special_use: None,
+        delimiter: None,
     };
     sync_folder(&mut ops, &store, &inbox).unwrap();
     let run = run_rules(
@@ -2810,4 +2816,33 @@ fn a_stop_fails_queued_jobs_as_stopped() {
             (4, "work stopped".to_string())
         ]
     );
+}
+
+#[test]
+fn a_full_pass_stores_the_delimiter_and_an_inbox_only_pass_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::under(dir.path());
+    let acct = account();
+    let mut state = AccountSync::open(&acct, &paths).unwrap();
+    let mut ops = ops_with_inbox();
+    for folder in &mut ops.folders {
+        folder.delimiter = Some("/".into());
+    }
+    let delimiter = |store: &Store| store.folder("INBOX").unwrap().unwrap().delimiter;
+    sync_all(&mut ops, &state.store).unwrap();
+    assert_eq!(delimiter(&state.store).as_deref(), Some("/"));
+    let (_commands_tx, commands) = std::sync::mpsc::channel();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let full = false;
+    state
+        .pass(
+            &mut ops,
+            full,
+            &mut Carried::default(),
+            &tx,
+            &commands,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(delimiter(&state.store).as_deref(), Some("/"));
 }
