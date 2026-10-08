@@ -43,7 +43,7 @@ jobs:
       - run: xmllint --noout packaging/macos/Info.plist.in packaging/macos/entitlements.plist
       - name: Cask template renders to valid Ruby
         run: |
-          sed -e 's/@VERSION@/0.0.0/' -e "s/@SHA256@/$(printf '0%.0s' {1..64})/" \
+          sed -e 's/@VERSION@/0.0.0/' -e "s/@SHA256@/$(printf '0%.0s' {1..64})/" -e 's/^@ADHOC@//' \
             packaging/macos/postbode.rb.in >"$RUNNER_TEMP/postbode.rb"
           ruby -c "$RUNNER_TEMP/postbode.rb"
 
@@ -129,11 +129,12 @@ jobs:
         run: |
           if [ "$HAS_TAP_TOKEN" != true ]; then
             echo "::warning::HOMEBREW_TAP_TOKEN is not set: the cask in pataar/homebrew-tap is not updated"
-          elif [ "$HAS_CERTIFICATE" != true ]; then
-            echo "::warning::the DMG is not signed with a Developer ID, which Gatekeeper blocks: the cask is not updated"
           elif [[ $VERSION == *-* ]]; then
             echo "::warning::$VERSION is a prerelease: the cask is not updated"
           else
+            if [ "$HAS_CERTIFICATE" != true ]; then
+              echo "::warning::the DMG is signed ad hoc, not notarized: the cask clears the quarantine flag on install"
+            fi
             echo "update=true" >>"$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v7
@@ -150,7 +151,8 @@ jobs:
           SHA256: ${{ steps.dmg.outputs.sha256 }}
         run: |
           mkdir -p homebrew-tap/Casks
-          sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHA256@/$SHA256/g" \
+          if [ "$HAS_CERTIFICATE" = true ]; then adhoc='/^@ADHOC@/d'; else adhoc='s/^@ADHOC@//'; fi
+          sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHA256@/$SHA256/g" -e "$adhoc" \
             packaging/macos/postbode.rb.in >homebrew-tap/Casks/postbode.rb
           ruby -c homebrew-tap/Casks/postbode.rb
           cd homebrew-tap
