@@ -17,6 +17,8 @@ pub enum ApplyError {
     Trash(#[from] io::Error),
     #[error("the server has no Archive folder")]
     NoArchiveFolder,
+    #[error("tag {0}")]
+    InvalidTag(String),
     #[error("message {folder}/{uid} could not be fetched for backup")]
     RawUnavailable { folder: String, uid: u32 },
 }
@@ -49,6 +51,12 @@ pub fn apply(
     trash: &Trash,
     now: i64,
 ) -> Result<usize, ApplyError> {
+    // Direct actions reach here from the daemon socket without passing the rules compiler, and a tag goes into STORE verbatim.
+    for planned in &plan.actions {
+        if let Action::Tag(keyword) = &planned.action {
+            crate::rules::check_keyword(keyword).map_err(ApplyError::InvalidTag)?;
+        }
+    }
     if let Some(planned) = plan
         .actions
         .iter()
@@ -584,6 +592,18 @@ mod tests {
         assert_eq!(store.log(10).unwrap()[0].action, "tag:$label1");
         msg.flags = "$label1".into();
         assert_eq!(apply(&tag, &msg, &mut ops, &store, &trash, 500).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_tag_that_is_not_an_imap_keyword_is_refused_before_the_server() {
+        let (mut ops, store, trash, _dir, msg) = setup();
+        let bad = plan(vec![Action::Tag("x) \\Deleted".into())]);
+        assert!(matches!(
+            apply(&bad, &msg, &mut ops, &store, &trash, 500),
+            Err(ApplyError::InvalidTag(_))
+        ));
+        assert!(!ops.calls.iter().any(|c| c.starts_with("add_flags")));
+        assert!(store.log(10).unwrap().is_empty());
     }
 
     fn with_trash_folder(ops: RecordingOps, store: &Store) -> RecordingOps {

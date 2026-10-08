@@ -555,7 +555,7 @@ fn compile_match(
 
 /// An IMAP keyword is an atom (RFC 3501): printable ASCII without specials. It goes into the STORE command verbatim, so
 /// this check is what keeps a proposed tag from injecting IMAP syntax.
-fn check_keyword(keyword: &str) -> Result<(), String> {
+pub(crate) fn check_keyword(keyword: &str) -> Result<(), String> {
     const ATOM_SPECIALS: &[char] = &['(', ')', '{', ' ', '%', '*', '"', '\\', ']'];
     if keyword.is_empty() {
         return Err("must not be empty".into());
