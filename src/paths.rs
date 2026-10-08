@@ -115,14 +115,27 @@ fn write_atomic_in(path: &Path, bytes: &[u8], private_dir: bool) -> io::Result<(
     write_file_atomic(path, bytes)
 }
 
-/// This binary's path for files that outlive the process (service file, MCP host config). On Linux `current_exe`
-/// resolves symlinks, so a Homebrew install reports its versioned keg, which `brew upgrade` later deletes.
+/// This binary's path for anything that outlives the process (service file, MCP host config, an auto-started
+/// daemon). On Linux `current_exe` resolves symlinks, so a Homebrew install reports its versioned keg, which
+/// `brew upgrade` later deletes, and an AppImage reports its temporary mount, which goes away when it exits.
 pub fn stable_exe() -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
+    let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
+    let appdir = std::env::var_os("APPDIR").map(PathBuf::from);
+    if let Some(image) = appimage_path(&exe, appimage.as_deref(), appdir.as_deref()) {
+        return Ok(image);
+    }
     Ok(match homebrew_opt_path(&exe) {
         Some(opt) if same_file(&opt, &exe) => opt,
         _ => exe,
     })
+}
+
+/// The AppImage file this binary runs from: the runtime sets `APPIMAGE` and `APPDIR` (its mount), and only a binary
+/// inside that mount is the AppImage; children of an AppImage inherit both variables.
+fn appimage_path(exe: &Path, appimage: Option<&Path>, appdir: Option<&Path>) -> Option<PathBuf> {
+    let (image, mount) = (appimage?, appdir?);
+    exe.starts_with(mount).then(|| image.to_path_buf())
 }
 
 /// `<prefix>/Cellar/<formula>/<version>/<rest>` becomes `<prefix>/opt/<formula>/<rest>`, Homebrew's link to the
@@ -259,6 +272,22 @@ mod tests {
         p.ensure_account("personal").unwrap();
         assert!(p.trash_dir("work").is_dir());
         assert!(p.trash_dir("personal").is_dir());
+    }
+
+    #[test]
+    fn an_appimage_reports_its_own_file_not_its_mount() {
+        let exe = Path::new("/tmp/.mount_PostbXy12/usr/bin/postbode");
+        let image = Path::new("/home/me/Apps/Postbode-x86_64.AppImage");
+        let mount = Path::new("/tmp/.mount_PostbXy12");
+        assert_eq!(
+            appimage_path(exe, Some(image), Some(mount)),
+            Some(image.to_path_buf())
+        );
+        // A postbode started from a shell that inherited another AppImage's environment is not that AppImage.
+        let other = Path::new("/home/me/.cargo/bin/postbode");
+        assert_eq!(appimage_path(other, Some(image), Some(mount)), None);
+        assert_eq!(appimage_path(exe, None, Some(mount)), None);
+        assert_eq!(appimage_path(exe, Some(image), None), None);
     }
 
     #[test]
