@@ -1,0 +1,132 @@
+# Postbode as an AppImage per Linux architecture, attached to the GitHub release. It repackages dist's release
+# binaries, so nothing compiles twice. Separate from release.yml, which dist generates and owns.
+name: AppImage
+
+on:
+  # release-plz pushes the tag with its own token, so this fires; the release itself is created by release.yml with
+  # GITHUB_TOKEN, which starts no workflows, so `release: published` only covers a release published by hand.
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package, e.g. v0.2.0
+        required: true
+  # A packaging change packages the latest release's binaries, so the script runs before the next release does.
+  pull_request:
+    paths:
+      - packaging/linux/**
+      - assets/hicolor/**
+      - .github/workflows/appimage.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  APPIMAGETOOL_VERSION: '1.9.1'
+  RUNTIME_VERSION: '20251108'
+  # The runners have no FUSE; AppImages (appimagetool and ours) extract themselves instead of mounting.
+  APPIMAGE_EXTRACT_AND_RUN: '1'
+
+jobs:
+  build:
+    name: AppImage (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            appimagetool_sha256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+            runtime_sha256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            appimagetool_sha256: f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+            runtime_sha256: 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Pick the release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name || (github.event_name == 'push' && github.ref_name) || '' }}
+        run: |
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          # On a tag push, release.yml may still be building; wait up to an hour for it to create the release.
+          for _ in $(seq 120); do
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break
+            sleep 30
+          done
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+      - name: Download the release binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ARCHIVE: postbode-${{ matrix.arch }}-unknown-linux-gnu.tar.xz
+        run: |
+          mkdir -p "$RUNNER_TEMP/release" && cd "$RUNNER_TEMP/release"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARCHIVE" --pattern "$ARCHIVE.sha256"
+          sha256sum -c "$ARCHIVE.sha256"
+          tar -xJf "$ARCHIVE"
+          echo "BINARY=$(find "$PWD" -type f -name postbode | head -n1)" >>"$GITHUB_ENV"
+      - name: Download appimagetool and the runtime
+        env:
+          ARCH: ${{ matrix.arch }}
+          APPIMAGETOOL_SHA256: ${{ matrix.appimagetool_sha256 }}
+          RUNTIME_SHA256: ${{ matrix.runtime_sha256 }}
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo appimagetool "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_VERSION/appimagetool-$ARCH.AppImage"
+          curl -fsSLo runtime "https://github.com/AppImage/type2-runtime/releases/download/$RUNTIME_VERSION/runtime-$ARCH"
+          printf '%s  appimagetool\n%s  runtime\n' "$APPIMAGETOOL_SHA256" "$RUNTIME_SHA256" | sha256sum -c
+          chmod +x appimagetool
+          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >>"$GITHUB_ENV"
+          echo "RUNTIME_FILE=$RUNNER_TEMP/runtime" >>"$GITHUB_ENV"
+      - name: Build the AppImage
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          packaging/linux/appimage.sh "$BINARY" "$ARCH" "dist/postbode-$ARCH.AppImage"
+      - name: Smoke test
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          "dist/postbode-$ARCH.AppImage" --version
+          "dist/postbode-$ARCH.AppImage" --help >/dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: appimage-${{ matrix.arch }}
+          path: dist/postbode-${{ matrix.arch }}.AppImage
+          retention-days: 7
+          if-no-files-found: error
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+
+  publish:
+    name: Attach to the release
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: appimage-*
+          path: dist
+          merge-multiple: true
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: gh release upload "$TAG" dist/*.AppImage --repo "$GITHUB_REPOSITORY" --clobber

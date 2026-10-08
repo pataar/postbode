@@ -62,7 +62,7 @@ Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as
 Run `packaging/icons.sh` after changing `assets/icon.svg`, and commit what it writes.
 
 ## Releasing
-Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand.
+Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand. The same tag starts `appimage.yml`, which waits for that release, repackages its Linux binaries as AppImages (`packaging/linux/appimage.sh`, pinned appimagetool and runtime) and attaches them.
 
 One-time setup, by the repo owner:
 1. `pataar/homebrew-tap` already exists (it also holds `gast`); dist adds `Formula/postbode.rb` beside the other formulas.
