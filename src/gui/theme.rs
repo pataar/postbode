@@ -28,6 +28,11 @@ const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb(red, green, blue)
 }
 
+/// Height of buttons and fields, and the width of icon buttons.
+pub(crate) const CONTROL: f32 = 28.0;
+/// Height of the toolbar.
+pub(crate) const TOP_BAR: f32 = 40.0;
+
 pub(crate) const MOCHA: Palette = Palette {
     accent: hex(0x94e2d5),
     background: hex(0x1e1e2e),

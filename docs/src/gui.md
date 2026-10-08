@@ -31,6 +31,10 @@ Actions apply to the selection when there is one, else to the current row; on a 
 
 Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, Trash) first, then your own folders as a tree that follows the server's hierarchy. Click the caret in front of a parent to fold or unfold its branch; folding lasts until you close the window. A parent the server does not list as a folder is shown but cannot be opened.
 
+## Toolbar and status bar
+
+The toolbar above the panes has buttons for Archive, Move, Delete, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The magnifier on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postbode's version.
+
 ## Message list
 
 Each row shows, in columns: a dot when it is unread, a flag (or a check when marked), the sender (the recipient in Sent and Drafts), the subject with the thread's message count, and the date on the right. Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long subject is cut off with "…" so the date always stays in view.

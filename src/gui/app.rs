@@ -23,6 +23,7 @@ use super::list::{self, ListState, Optimistic, Row, RowKey, THREAD_LIMIT};
 use super::rules::{self, RulesState, TrashRow};
 use super::status;
 use super::theme;
+use super::toolbar;
 
 /// The status line while the daemon is gone.
 pub(crate) const DAEMON_LOST: &str = "background sync stopped — reconnecting";
@@ -234,6 +235,8 @@ pub struct App {
     pub(crate) focus: Focus,
     pub(crate) focus_search: bool,
     pub(crate) help_open: bool,
+    /// The app icon drawn in the toolbar, loaded on the first frame.
+    pub(crate) logo: Option<egui::TextureHandle>,
     /// Numbers HTML layouts, so a reply for an older one is dropped.
     pub(crate) html_generation: u64,
     pub(crate) history: VecDeque<HistoryLine>,
@@ -305,6 +308,7 @@ impl App {
             focus: Focus::List,
             focus_search: false,
             help_open: false,
+            logo: None,
             html_generation: 0,
             history: VecDeque::new(),
             history_open: false,
@@ -366,6 +370,16 @@ impl App {
         self.sync_body(now, typing_search);
         self.mark_read_after_delay(now, &ctx);
         let mut actions = Vec::new();
+        if self.logo.is_none()
+            && let Ok(icon) = eframe::icon_data::from_png_bytes(super::ICON)
+        {
+            let size = [icon.width as usize, icon.height as usize];
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
+            self.logo = Some(ctx.load_texture("logo", image, egui::TextureOptions::LINEAR));
+        }
+        egui::Panel::top("toolbar")
+            .exact_size(theme::TOP_BAR)
+            .show(ui, |ui| actions.extend(toolbar::show(self, ui)));
         if self.config_changed {
             egui::Panel::top("banner").show(ui, |ui| {
                 ui.colored_label(
