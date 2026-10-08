@@ -7,7 +7,7 @@ A fast, simple IMAP mail client for powerusers and developers, with rules that k
 ## Quickstart
 
 ```sh
-cargo install --git https://github.com/pataar/postbode
+brew install pataar/tap/postbode    # or cargo, mise, the macOS app or an AppImage: see Install
 postbode account add                # asks for host, user and password, then tests the login
 postbode sync                       # first sync of every folder
 postbode list                       # newest mail in INBOX

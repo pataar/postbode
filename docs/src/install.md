@@ -5,7 +5,7 @@
 | Homebrew | `brew install pataar/tap/postbode` |
 | macOS app (Homebrew cask) | `brew install --cask pataar/tap/postbode`, see [below](#macos-app) |
 | crates.io | `cargo install postbode` |
-| mise | `mise use ubi:pataar/postbode` |
+| mise | `mise use github:pataar/postbode` |
 | AppImage (Linux) | download `postbode-<arch>.AppImage` from the [latest release](https://github.com/pataar/postbode/releases/latest), see [below](#appimage-on-linux) |
 
 Each [GitHub release](https://github.com/pataar/postbode/releases) also has plain binaries for macOS and Linux on x86_64 and aarch64.
