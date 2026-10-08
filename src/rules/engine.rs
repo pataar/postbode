@@ -1,6 +1,6 @@
 use crate::config::Identity;
 use crate::message::{bare_addresses, header_value};
-use crate::rules::{Action, CompiledRule};
+use crate::rules::{Action, CompiledRule, Conditions};
 use crate::store::Message;
 
 /// Set by `trash restore`; rules never act on, or notify about, mail carrying it.
@@ -66,7 +66,11 @@ pub fn evaluate(rules: &[CompiledRule], msg: &Message, ctx: &Context) -> Plan {
         if ctx.mode == Mode::Normal && msg.internaldate < rule.first_seen_at {
             continue;
         }
-        if !matches(rule, msg, ctx) {
+        // An unknown body is neither a match nor a mismatch, so `none` cannot turn a failed fetch into a hit.
+        if rule.needs_body() && msg.body_text.is_none() {
+            continue;
+        }
+        if !matches(&rule.conditions, msg, ctx) {
             continue;
         }
         let mut deleted = false;
@@ -100,66 +104,76 @@ fn field(value: &Option<String>) -> &str {
     value.as_deref().unwrap_or("")
 }
 
-fn matches(rule: &CompiledRule, msg: &Message, ctx: &Context) -> bool {
-    if let Some(m) = &rule.from
+fn matches(c: &Conditions, msg: &Message, ctx: &Context) -> bool {
+    if let Some(m) = &c.from
         && !m.is_address_match(field(&msg.from_addr))
     {
         return false;
     }
-    if let Some(m) = &rule.to
+    if let Some(m) = &c.to
         && !m.is_address_match(field(&msg.to_addr))
     {
         return false;
     }
-    if let Some(m) = &rule.cc
+    if let Some(m) = &c.cc
         && !m.is_address_match(field(&msg.cc_addr))
     {
         return false;
     }
-    if let Some(m) = &rule.subject
+    if let Some(m) = &c.subject
         && !m.is_match(field(&msg.subject))
     {
         return false;
     }
-    if let Some(m) = &rule.body {
-        match &msg.body_text {
-            Some(body) if m.is_match(body) => {}
-            _ => return false,
-        }
+    if let Some(m) = &c.body
+        && !m.is_match(field(&msg.body_text))
+    {
+        return false;
     }
-    if let Some((name, m)) = &rule.header {
+    for (name, m) in &c.headers {
         match header_value(&msg.headers, name) {
             Some(value) if m.is_match(&value) => {}
             _ => return false,
         }
     }
-    if let Some(min_age) = rule.older_than
+    if let Some(min_age) = c.older_than
         && ctx.now - msg.internaldate < i64::try_from(min_age.as_secs()).unwrap_or(i64::MAX)
     {
         return false;
     }
-    if let Some(seen) = rule.rule.matches.seen
+    if let Some(seen) = c.seen
         && msg.is_seen() != seen
     {
         return false;
     }
-    if rule.rule.matches.to_me.is_some() || rule.alias.is_some() {
+    if let Some(tag) = &c.tag
+        && !msg
+            .flags
+            .split_whitespace()
+            .any(|flag| flag.eq_ignore_ascii_case(tag))
+    {
+        return false;
+    }
+    if c.to_me.is_some() || c.alias.is_some() {
         let recipients: Vec<String> = [&msg.to_addr, &msg.cc_addr, &msg.delivered_to]
             .into_iter()
             .flat_map(|f| bare_addresses(field(f)))
             .collect();
-        if let Some(to_me) = rule.rule.matches.to_me
+        if let Some(to_me) = c.to_me
             && recipients.iter().any(|r| ctx.identity.is_me(r)) != to_me
         {
             return false;
         }
-        if let Some(glob) = &rule.alias
+        if let Some(glob) = &c.alias
             && !recipients.iter().any(|r| glob.is_match(r))
         {
             return false;
         }
     }
-    true
+    if c.none.iter().any(|entry| matches(entry, msg, ctx)) {
+        return false;
+    }
+    c.any.is_empty() || c.any.iter().any(|branch| matches(branch, msg, ctx))
 }
 
 #[cfg(test)]
@@ -577,6 +591,124 @@ actions = [{ move = "Shopping" }]
                 .actions
                 .is_empty()
         );
+    }
+
+    fn fires(toml: &str, m: &Message) -> bool {
+        let id = identity();
+        !evaluate(&rules(toml, 0), m, &ctx(&id, 200))
+            .actions
+            .is_empty()
+    }
+
+    #[test]
+    fn none_excludes_mail_any_entry_matches() {
+        let toml = r#"
+[[rules]]
+name = "shop but no receipts"
+match.from = { contains = "shop" }
+match.none = [{ subject = { contains = "receipt" } }, { from = { contains = "billing" } }]
+actions = ["flag"]
+"#;
+        assert!(fires(toml, &msg("shop@x", "p@x", "Sale", 100, false)));
+        assert!(!fires(
+            toml,
+            &msg("shop@x", "p@x", "Your receipt", 100, false)
+        ));
+        assert!(!fires(
+            toml,
+            &msg("billing@shop.x", "p@x", "Sale", 100, false)
+        ));
+        assert!(!fires(toml, &msg("bank@x", "p@x", "Sale", 100, false)));
+    }
+
+    #[test]
+    fn a_none_entry_excludes_only_when_all_its_conditions_hold() {
+        let toml = r#"
+[[rules]]
+name = "x"
+match.seen = false
+match.none = [{ from = { contains = "alice" }, subject = { contains = "lunch" } }]
+actions = ["flag"]
+"#;
+        assert!(!fires(toml, &msg("alice@x", "p@x", "lunch?", 100, false)));
+        assert!(fires(toml, &msg("alice@x", "p@x", "report", 100, false)));
+        assert!(fires(toml, &msg("bob@x", "p@x", "lunch?", 100, false)));
+    }
+
+    #[test]
+    fn a_list_of_values_matches_any_of_them() {
+        let toml = r#"
+[[rules]]
+name = "x"
+match.subject = { contains = ["receipt", "INVOICE"] }
+match.from = { equals = ["a@x", "b@x"] }
+actions = ["flag"]
+"#;
+        assert!(fires(
+            toml,
+            &msg("A <a@x>", "p@x", "Your invoice", 100, false)
+        ));
+        assert!(fires(toml, &msg("b@x", "p@x", "receipt 12", 100, false)));
+        assert!(!fires(toml, &msg("c@x", "p@x", "receipt 12", 100, false)));
+        assert!(!fires(toml, &msg("a@x", "p@x", "hello", 100, false)));
+    }
+
+    #[test]
+    fn any_needs_one_branch_and_the_rest_still_holds() {
+        let toml = r#"
+[[rules]]
+name = "either"
+match.seen = false
+match.any = [{ from = { contains = "alice" } }, { subject = { contains = "urgent" } }]
+actions = ["flag"]
+"#;
+        assert!(fires(toml, &msg("alice@x", "p@x", "hi", 100, false)));
+        assert!(fires(toml, &msg("bob@x", "p@x", "URGENT", 100, false)));
+        assert!(!fires(toml, &msg("bob@x", "p@x", "hi", 100, false)));
+        assert!(!fires(toml, &msg("alice@x", "p@x", "hi", 100, true)));
+    }
+
+    #[test]
+    fn every_listed_header_must_match() {
+        let toml = r#"
+[[rules]]
+name = "both"
+match.header = [{ name = "List-Id", contains = "github.com" }, { name = "Subject", contains = "PR" }]
+actions = ["flag"]
+"#;
+        assert!(fires(
+            toml,
+            &msg("bot@github.com", "p@x", "PR 1", 100, false)
+        ));
+        assert!(!fires(
+            toml,
+            &msg("bot@github.com", "p@x", "Issue", 100, false)
+        ));
+        assert!(!fires(toml, &msg("a@x", "p@x", "PR 1", 100, false)));
+    }
+
+    #[test]
+    fn tag_matches_keywords_ignoring_case() {
+        let toml = "[[rules]]\nname = \"t\"\nmatch.tag = \"$label1\"\nactions = [\"flag\"]\n";
+        let mut m = msg("a@x", "p@x", "s", 100, false);
+        assert!(!fires(toml, &m));
+        m.flags = "\\Seen $Label1".into();
+        assert!(fires(toml, &m));
+        m.flags = "$label10".into();
+        assert!(!fires(toml, &m));
+    }
+
+    #[test]
+    fn rule_needing_a_missing_body_never_fires_even_negated() {
+        let toml = "[[rules]]\nname = \"b\"\nmatch.none = [{ body = { contains = \"keep\" } }]\nactions = [\"delete\"]\n";
+        let r = rules(toml, 0);
+        assert!(folder_needs_body(&r, "work", "INBOX"));
+        let mut m = msg("a@x", "p@x", "s", 100, false);
+        assert!(!fires(toml, &m));
+        m.body_text = Some("please keep this".into());
+        assert!(!fires(toml, &m));
+        m.body_text = Some("junk".into());
+        assert!(fires(toml, &m));
     }
 
     #[test]

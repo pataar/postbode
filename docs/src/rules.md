@@ -21,7 +21,7 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 | `match` | required | Conditions that must all hold. At least one. |
 | `actions` | required | What to do. At least one. |
 
-`name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
+A tag is printable ASCII without spaces, backslashes or `( ) { } % * " ]`, and `$PostbodeRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
 
 ## Conditions
 
@@ -31,15 +31,22 @@ Text conditions take exactly one of:
 - `equals`: the whole value, case-insensitive. On `from`, `to` and `cc` it also matches any single address in the field, so `equals = "a@example.com"` matches `Alice <a@example.com>, b@example.com`.
 - `regex`: Rust `regex` syntax. Start with `(?i)` for case-insensitive.
 
+`contains` and `equals` also take a list, which matches when any value does: `subject = { contains = ["receipt", "invoice"] }`.
+
 | Key | Takes | Matches |
 |---|---|---|
 | `from`, `to`, `cc`, `subject` | text condition | That header. |
 | `body` | text condition | The plain-text body; HTML mail is converted. Postbode downloads the body of new mail in the rule's folder for this. |
-| `header` | text condition plus `name` | Any header, such as `List-Id`. |
+| `header` | text condition plus `name`, or a list of them | Any header, such as `List-Id`. Every header in a list must match. |
 | `older_than` | duration: `30m`, `1h`, `2days` | Mail that arrived at least this long ago. |
 | `seen` | `true` or `false` | Read or unread mail. |
 | `to_me` | `true` or `false` | To, Cc or Delivered-To holds your address or an alias. `false` catches list and bcc mail. |
 | `alias` | address, `*` as wildcard | Mail sent to that alias. |
+| `tag` | IMAP keyword, such as `$label1` | Mail carrying that keyword, ignoring case. Thunderbird shows keywords as tags. |
+| `any` | list of conditions | Holds when at least one entry holds. |
+| `none` | list of conditions | Holds when no entry holds. |
+
+Each entry of `any` and `none` is a set of conditions that must all hold, written like `match` itself, so `none = [{ from = …, subject = … }]` only excludes mail that matches both. To exclude either, give each its own entry. Entries can hold `any` and `none` again, up to eight levels deep. A rule whose conditions need the body never fires on a message whose body could not be downloaded, even through `none`.
 
 ## Actions
 
@@ -50,10 +57,11 @@ Text conditions take exactly one of:
 | `"flag"` | Flags it. |
 | `"archive"` | Moves it to the server's Archive folder. |
 | `{ move = "Folder/Sub" }` | Moves it to that folder, creating the folder if needed. |
+| `{ tag = "$label1" }` | Adds that IMAP keyword, which Thunderbird and other clients show as a tag. The server must accept custom keywords. |
 | `"notify"` | Notifies even when the message was moved. |
 | `"silent"` | Never notifies. |
 
-A `delete` wins: when any matching rule deletes a message, no other rule's actions run for it. Otherwise flags are set before a move, and only the first `move` or `archive` that matches a message runs.
+A `delete` wins: when any matching rule deletes a message, no other rule's actions run for it. Otherwise flags and tags are set before a move, and only the first `move` or `archive` that matches a message runs.
 
 ## When rules act
 
@@ -98,6 +106,28 @@ Give a shop alias its own folder, but still notify:
 name = "shop alias"
 match.alias = "*@shop.example.com"
 actions = [{ move = "Shopping" }, "notify"]
+```
+
+Tag shop mail as Important (Thunderbird's `$label1`), except receipts and invoices:
+
+```toml
+[[rules]]
+name = "tag shop mail"
+match.from = { contains = "shop.example.com" }
+match.none = [{ subject = { contains = ["receipt", "invoice"] } }]
+actions = [{ tag = "$label1" }]
+```
+
+Flag mail from either of two people, or about an outage:
+
+```toml
+[[rules]]
+name = "flag the important ones"
+match.any = [
+  { from = { equals = ["alice@example.com", "bob@example.com"] } },
+  { subject = { contains = ["outage", "incident"] } },
+]
+actions = ["flag"]
 ```
 
 Archive read mail after 30 days:

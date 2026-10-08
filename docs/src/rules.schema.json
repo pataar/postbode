@@ -61,6 +61,19 @@
           "required": [
             "move"
           ]
+        },
+        {
+          "description": "Add this IMAP keyword, which Thunderbird shows as a tag (e.g. $label1)",
+          "type": "object",
+          "properties": {
+            "tag": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "tag"
+          ]
         }
       ]
     },
@@ -68,17 +81,25 @@
       "type": "object",
       "properties": {
         "contains": {
-          "description": "Case-insensitive substring",
-          "type": [
-            "string",
-            "null"
+          "description": "Case-insensitive substring; a list matches any of them",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "equals": {
-          "description": "The whole value, case-insensitive; on from, to and cc also any single address",
-          "type": [
-            "string",
-            "null"
+          "description": "The whole value, case-insensitive; on from, to and cc also any single address; a list matches any of them",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "name": {
@@ -107,6 +128,16 @@
             "string",
             "null"
           ]
+        },
+        "any": {
+          "description": "Holds when at least one of these holds",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Match"
+          }
         },
         "body": {
           "description": "The plain-text body; HTML mail is converted",
@@ -142,15 +173,25 @@
           ]
         },
         "header": {
-          "description": "Any header, by name",
+          "description": "Any header, by name; a list must all match",
           "anyOf": [
             {
-              "$ref": "#/$defs/HeaderMatch"
+              "$ref": "#/$defs/OneOrMany2"
             },
             {
               "type": "null"
             }
           ]
+        },
+        "none": {
+          "description": "Holds when no entry holds; an entry holds when all its conditions do",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/Match"
+          }
         },
         "older_than": {
           "description": "Arrived at least this long ago, e.g. 30m, 1h, 2days",
@@ -177,6 +218,13 @@
             }
           ]
         },
+        "tag": {
+          "description": "Carries this IMAP keyword, which Thunderbird shows as a tag (e.g. $label1); case-insensitive",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "to": {
           "description": "The To header",
           "anyOf": [
@@ -197,6 +245,34 @@
         }
       },
       "additionalProperties": false
+    },
+    "OneOrMany": {
+      "description": "One value, or a list of them",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "OneOrMany2": {
+      "description": "One value, or a list of them",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HeaderMatch"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeaderMatch"
+          }
+        }
+      ]
     },
     "Rule": {
       "type": "object",
@@ -255,17 +331,25 @@
       "type": "object",
       "properties": {
         "contains": {
-          "description": "Case-insensitive substring",
-          "type": [
-            "string",
-            "null"
+          "description": "Case-insensitive substring; a list matches any of them",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "equals": {
-          "description": "The whole value, case-insensitive; on from, to and cc also any single address",
-          "type": [
-            "string",
-            "null"
+          "description": "The whole value, case-insensitive; on from, to and cc also any single address; a list matches any of them",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "regex": {

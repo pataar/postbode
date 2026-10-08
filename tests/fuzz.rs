@@ -29,7 +29,7 @@ use postbode::message::{
     attachments, bare_addresses, body_text, clean, header_value, html_body, parse_headers,
     save_attachment, thread_id,
 };
-use postbode::rules::{self, Action, HeaderMatch, Match, Rule, RuleFile, TextMatch};
+use postbode::rules::{self, Action, HeaderMatch, Match, OneOrMany, Rule, RuleFile, TextMatch};
 use postbode::sync::{Activity, Command, Event};
 
 /// Cases per property unless `PROPTEST_CASES` is set.
@@ -543,10 +543,18 @@ fn hostile_text() -> BoxedStrategy<String> {
     .boxed()
 }
 
+fn values() -> BoxedStrategy<OneOrMany<String>> {
+    prop_oneof![
+        hostile_text().prop_map(OneOrMany::One),
+        proptest::collection::vec(hostile_text(), 0..3).prop_map(OneOrMany::Many),
+    ]
+    .boxed()
+}
+
 fn text_match() -> BoxedStrategy<TextMatch> {
     (
-        proptest::option::of(hostile_text()),
-        proptest::option::of(hostile_text()),
+        proptest::option::of(values()),
+        proptest::option::of(values()),
         proptest::option::of(hostile_text()),
     )
         .prop_map(|(contains, equals, regex)| TextMatch {
@@ -566,11 +574,23 @@ fn action() -> BoxedStrategy<Action> {
         Just(Action::Notify),
         Just(Action::Silent),
         hostile_text().prop_map(Action::Move),
+        hostile_text().prop_map(Action::Tag),
     ]
     .boxed()
 }
 
-fn rule() -> BoxedStrategy<Rule> {
+fn header_match() -> BoxedStrategy<HeaderMatch> {
+    (hostile_text(), text_match())
+        .prop_map(|(name, t)| HeaderMatch {
+            name,
+            contains: t.contains,
+            equals: t.equals,
+            regex: t.regex,
+        })
+        .boxed()
+}
+
+fn match_leaf() -> BoxedStrategy<Match> {
     let texts = (
         proptest::option::of(text_match()),
         proptest::option::of(text_match()),
@@ -580,36 +600,60 @@ fn rule() -> BoxedStrategy<Rule> {
     )
         .boxed();
     let others = (
-        proptest::option::of(
-            (hostile_text(), text_match()).prop_map(|(name, t)| HeaderMatch {
-                name,
-                contains: t.contains,
-                equals: t.equals,
-                regex: t.regex,
-            }),
-        ),
+        proptest::option::of(prop_oneof![
+            header_match().prop_map(OneOrMany::One),
+            proptest::collection::vec(header_match(), 0..3).prop_map(OneOrMany::Many),
+        ]),
         proptest::option::of(hostile_text()),
         proptest::option::of(any::<bool>()),
         proptest::option::of(any::<bool>()),
+        proptest::option::of(hostile_text()),
         proptest::option::of(hostile_text()),
     )
         .boxed();
-    let matches = (texts, others)
+    (texts, others)
         .prop_map(
-            |((from, to, cc, subject, body), (header, older_than, seen, to_me, alias))| Match {
-                from,
-                to,
-                cc,
-                subject,
-                body,
-                header,
-                older_than,
-                seen,
-                to_me,
-                alias,
+            |((from, to, cc, subject, body), (header, older_than, seen, to_me, alias, tag))| {
+                Match {
+                    from,
+                    to,
+                    cc,
+                    subject,
+                    body,
+                    header,
+                    older_than,
+                    seen,
+                    to_me,
+                    alias,
+                    tag,
+                    none: None,
+                    any: None,
+                }
             },
         )
-        .boxed();
+        .boxed()
+}
+
+/// Leaves wrapped in `none` and `any`, a few levels deep.
+fn match_tree() -> BoxedStrategy<Match> {
+    match_leaf()
+        .prop_recursive(3, 16, 3, |inner| {
+            (
+                match_leaf(),
+                proptest::option::of(proptest::collection::vec(inner.clone(), 0..3)),
+                proptest::option::of(proptest::collection::vec(inner, 0..3)),
+            )
+                .prop_map(|(mut leaf, none, any)| {
+                    leaf.none = none;
+                    leaf.any = any;
+                    leaf
+                })
+        })
+        .boxed()
+}
+
+fn rule() -> BoxedStrategy<Rule> {
+    let matches = match_tree();
     (
         hostile_text(),
         proptest::option::of(hostile_text()),

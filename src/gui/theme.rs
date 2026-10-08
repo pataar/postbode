@@ -47,8 +47,10 @@ pub(crate) const MOCHA: Palette = Palette {
     warning: hex(0xf9e2af),
 };
 
+/// Catppuccin Latte, except the teal and green: Latte's own (#179299, #40a02b) fail WCAG AA as text and under white
+/// text, so both are darkened.
 pub(crate) const LATTE: Palette = Palette {
-    accent: hex(0x179299),
+    accent: hex(0x10757a),
     background: hex(0xeff1f5),
     border: hex(0xbcc0cc),
     error: hex(0xd20f39),
@@ -56,12 +58,12 @@ pub(crate) const LATTE: Palette = Palette {
     highlight: hex(0xfe640b),
     hover: hex(0xccd0da),
     muted: hex(0x8c8fa1),
-    on_accent: hex(0x11111b),
+    on_accent: hex(0xffffff),
     panel: hex(0xe6e9ef),
-    pressed: hex(0x179299),
+    pressed: hex(0xbcc0cc),
     secondary: hex(0x6c6f85),
     strong: hex(0x11111b),
-    success: hex(0x40a02b),
+    success: hex(0x276b19),
     text: hex(0x4c4f69),
     warning: hex(0xdf8e1d),
 };
@@ -139,14 +141,25 @@ pub(crate) fn pane(frame: egui::Frame, ui: &egui::Ui, focused: bool) -> egui::Fr
     }
 }
 
-/// Runs `add` with the focus ring of a text field in the accent: egui draws it with `selection.stroke`, which stays
-/// `on_accent` for the text of selected rows.
-pub(crate) fn text_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    ui.scope(|ui| {
-        ui.visuals_mut().selection.stroke = Stroke::new(1.0, palette(ui).accent);
-        add(ui)
-    })
-    .inner
+/// Adds a text field through `add` and draws its focus ring in the accent.
+///
+/// egui paints that ring and the selected text both in `selection.stroke`, which stays `on_accent` so selected text
+/// stays readable on the accent selection; the accent ring is painted over egui's.
+pub(crate) fn text_field(
+    ui: &mut egui::Ui,
+    add: impl FnOnce(&mut egui::Ui) -> egui::Response,
+) -> egui::Response {
+    let response = add(ui);
+    if response.has_focus() {
+        let visuals = ui.style().interact(&response);
+        ui.painter().rect_stroke(
+            response.rect.expand(visuals.expansion.round()),
+            visuals.corner_radius,
+            Stroke::new(1.0, palette(ui).accent),
+            egui::StrokeKind::Inside,
+        );
+    }
+    response
 }
 
 #[cfg(test)]
@@ -169,8 +182,8 @@ mod tests {
         assert_eq!(MOCHA.accent, Color32::from_rgb(0x94, 0xe2, 0xd5));
         assert_eq!(MOCHA.background, Color32::from_rgb(0x1e, 0x1e, 0x2e));
         assert_eq!(MOCHA.highlight, Color32::from_rgb(0xfa, 0xb3, 0x87));
-        assert_eq!(LATTE.accent, Color32::from_rgb(0x17, 0x92, 0x99));
-        assert_eq!(LATTE.on_accent, Color32::from_rgb(0x11, 0x11, 0x1b));
+        assert_eq!(LATTE.accent, Color32::from_rgb(0x10, 0x75, 0x7a));
+        assert_eq!(LATTE.on_accent, Color32::from_rgb(0xff, 0xff, 0xff));
         assert_eq!(LATTE.text, Color32::from_rgb(0x4c, 0x4f, 0x69));
     }
 
@@ -242,22 +255,74 @@ mod tests {
     }
 
     #[test]
-    fn light_strong_text_and_pressed_widgets_keep_their_colours() {
-        let light = LATTE.visuals(false);
-        assert_eq!(light.strong_text_color(), LATTE.on_accent);
-        assert_eq!(light.widgets.active.bg_fill, LATTE.accent);
+    fn accent_fills_links_and_success_text_pass_aa_in_both_themes() {
+        for (name, p) in [("mocha", &MOCHA), ("latte", &LATTE)] {
+            let fill = contrast(p.on_accent, p.accent);
+            assert!(fill >= 4.5, "{name}: text on accent {fill}");
+            let link = contrast(p.accent, p.background);
+            assert!(link >= 4.5, "{name}: accent text {link}");
+            let success = contrast(p.success, p.panel);
+            assert!(success >= 4.5, "{name}: success text {success}");
+        }
     }
 
     #[test]
-    fn text_fields_get_an_accent_focus_ring_without_changing_selection_text() {
+    fn light_strong_text_and_pressed_widgets_keep_their_colours() {
+        let light = LATTE.visuals(false);
+        assert_eq!(light.strong_text_color(), LATTE.strong);
+        assert_eq!(light.widgets.active.bg_fill, LATTE.pressed);
+    }
+
+    /// Regression: the accent focus ring went through `selection.stroke`, which egui also uses for selected text.
+    #[test]
+    fn selected_text_in_text_fields_is_readable_in_both_themes() {
         for (dark, palette) in [(true, &MOCHA), (false, &LATTE)] {
             let mut harness = egui_kittest::Harness::new_ui(move |ui| {
                 *ui.visuals_mut() = palette.visuals(dark);
-                let inside = text_field(ui, |ui| ui.visuals().selection.stroke.color);
-                assert_eq!(inside, palette.accent);
-                assert_eq!(ui.visuals().selection.stroke.color, palette.on_accent);
+                let mut selection = ui.visuals().selection;
+                text_field(ui, |ui| {
+                    selection = ui.visuals().selection;
+                    ui.label("")
+                });
+                let ratio = contrast(selection.stroke.color, selection.bg_fill);
+                assert!(ratio >= 4.5, "dark={dark}: selected text contrast {ratio}");
             });
             harness.run();
+        }
+    }
+
+    #[test]
+    fn focused_text_fields_get_an_accent_focus_ring() {
+        for (dark, palette) in [(true, &MOCHA), (false, &LATTE)] {
+            let mut harness = egui_kittest::Harness::new_ui(move |ui| {
+                *ui.visuals_mut() = palette.visuals(dark);
+                let mut text = String::from("hello");
+                text_field(ui, |ui| {
+                    let response = ui.text_edit_singleline(&mut text);
+                    response.request_focus();
+                    response
+                });
+            });
+            harness.run();
+            let rings: Vec<_> = harness
+                .output()
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(rect) if rect.stroke.width > 0.0 => Some(rect.clone()),
+                    _ => None,
+                })
+                .collect();
+            let frame = rings
+                .iter()
+                .find(|rect| rect.fill == palette.visuals(dark).text_edit_bg_color());
+            let ring = rings
+                .iter()
+                .find(|rect| rect.stroke.color == palette.accent);
+            let (Some(frame), Some(ring)) = (frame, ring) else {
+                panic!("dark={dark}: no frame or accent ring in {rings:?}");
+            };
+            assert_eq!(ring.rect, frame.rect, "dark={dark}");
         }
     }
 }
