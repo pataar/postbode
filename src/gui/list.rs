@@ -1,7 +1,7 @@
 //! The middle column: one row per thread, followed by its members when expanded.
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Datelike, Local, TimeZone};
 use eframe::egui;
 
 use crate::message::clean;
@@ -9,6 +9,7 @@ use crate::rules::Action;
 use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::app::{App, UiAction, View};
+use super::icons;
 use super::theme::{self, Palette};
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
@@ -179,7 +180,7 @@ pub(crate) fn display_name(field: &str) -> String {
     }
 }
 
-/// The time if `ts` is today, the weekday within the past week, else the date.
+/// The time today, weekday and time within the past week, day and month this year, else day, month and year.
 pub(crate) fn list_date<Tz: TimeZone>(ts: i64, now: &DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
@@ -187,14 +188,71 @@ where
     let Some(at) = now.timezone().timestamp_opt(ts, 0).single() else {
         return String::new();
     };
-    match now
+    let days = now
         .date_naive()
         .signed_duration_since(at.date_naive())
-        .num_days()
-    {
-        0 => at.format("%H:%M").to_string(),
-        1..=6 => at.format("%a").to_string(),
-        _ => at.format("%Y-%m-%d").to_string(),
+        .num_days();
+    let format = match days {
+        0 => "%H:%M",
+        1..=6 => "%a %H:%M",
+        _ if at.year() == now.year() => "%-d %b",
+        _ => "%-d %b %Y",
+    };
+    at.format(format).to_string()
+}
+
+/// One list row split into what each column draws, cleaned of control characters.
+pub(crate) struct Columns {
+    pub unread: bool,
+    pub flagged: bool,
+    pub marked: bool,
+    pub who: String,
+    pub subject: String,
+    pub date: String,
+    pub member: bool,
+}
+
+/// The unread dot and the flag or mark, before the sender.
+const MARKERS: f32 = 24.0;
+const SENDER: f32 = 130.0;
+const GAP: f32 = 12.0;
+/// How much further a thread member's sender is indented than its thread row's.
+const MEMBER_INDENT: f32 = 12.0;
+
+/// (sender width, subject width) for a row of `total` px whose date needs `date` px.
+pub(crate) fn column_widths(total: f32, date: f32) -> (f32, f32) {
+    let rest = (total - MARKERS - date - 2.0 * GAP).max(0.0);
+    let sender = SENDER.min(rest / 2.0);
+    (sender, (rest - sender).max(0.0))
+}
+
+pub(crate) fn columns<Tz: TimeZone>(
+    row: &Row,
+    marked: bool,
+    recipient: bool,
+    in_search: bool,
+    now: &DateTime<Tz>,
+) -> Columns
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let who = display_name(if recipient { &row.to } else { &row.from });
+    let mut subject = String::new();
+    if in_search {
+        subject.push_str(&format!("[{}] ", row.folder));
+    }
+    subject.push_str(&row.subject);
+    if row.count > 1 {
+        subject.push_str(&format!(" ({})", row.count));
+    }
+    Columns {
+        unread: row.unread,
+        flagged: row.flagged,
+        marked,
+        who: clean(&who, false),
+        subject: clean(&subject, false),
+        date: list_date(row.date, now),
+        member: row.member,
     }
 }
 
@@ -227,47 +285,77 @@ where
     clean(&text, false)
 }
 
-/// A row's text in colour: the unread dot in the accent, flag and mark in the highlight, read rows dimmer and the date
-/// muted; everything on-accent when the row is selected.
-pub(crate) fn row_job(
-    text: &str,
-    unread: bool,
+/// Unread dot, flag or mark, sender, subject truncated with "…", and the date right-aligned; everything on-accent when
+/// the row is selected.
+fn draw_row(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    c: &Columns,
     selected: bool,
+    hovered: bool,
     palette: &Palette,
     font: &egui::FontId,
-) -> egui::text::LayoutJob {
-    let (main, date) = text.rsplit_once("  ·  ").unwrap_or((text, ""));
-    let markers = main
-        .find(|c: char| !matches!(c, '•' | '⚑' | '✔' | ' '))
-        .unwrap_or(main.len());
-    let mut parts: Vec<(String, egui::Color32)> = main[..markers]
-        .chars()
-        .map(|c| {
-            let color = match c {
-                '•' => palette.accent,
-                '⚑' | '✔' => palette.highlight,
-                _ => palette.text,
-            };
-            (c.to_string(), color)
-        })
-        .collect();
-    parts.push((
-        main[markers..].to_string(),
-        if unread {
-            palette.text
-        } else {
-            palette.secondary
-        },
-    ));
-    if !date.is_empty() {
-        parts.push((format!("  ·  {date}"), palette.muted));
+) {
+    let painter = ui.painter_at(rect);
+    if selected {
+        painter.rect_filled(rect, 2.0, palette.accent);
+    } else if hovered {
+        painter.rect_filled(rect, 2.0, palette.hover);
     }
-    let mut job = egui::text::LayoutJob::default();
-    for (part, color) in parts {
-        let color = if selected { palette.on_accent } else { color };
-        job.append(&part, 0.0, egui::TextFormat::simple(font.clone(), color));
+    let ink = |color| if selected { palette.on_accent } else { color };
+    let middle = rect.center().y;
+    let mut x = rect.left() + 6.0;
+    if c.unread {
+        painter.circle_filled(egui::pos2(x + 2.0, middle), 3.0, ink(palette.accent));
     }
-    job
+    x += 10.0;
+    let marker = if c.marked {
+        Some(icons::CHECK)
+    } else if c.flagged {
+        Some(icons::FLAG)
+    } else {
+        None
+    };
+    if let Some(marker) = marker {
+        let color = ink(palette.highlight);
+        painter.text(
+            egui::pos2(x + 6.0, middle),
+            egui::Align2::CENTER_CENTER,
+            marker,
+            font.clone(),
+            color,
+        );
+    }
+    x += 14.0;
+    let date_color = ink(palette.muted);
+    let date = painter.layout_no_wrap(c.date.clone(), font.clone(), date_color);
+    let date_at = egui::pos2(
+        rect.right() - 6.0 - date.size().x,
+        middle - date.size().y / 2.0,
+    );
+    let (sender_width, subject_width) = column_widths(rect.width() - 12.0, date.size().x);
+    painter.galley(date_at, date, date_color);
+    let text_color = ink(if c.unread {
+        palette.text
+    } else {
+        palette.secondary
+    });
+    let truncated = |text: &str, width: f32| {
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(text.to_string(), font.clone(), text_color);
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
+        painter.layout_job(job)
+    };
+    let indent = if c.member { MEMBER_INDENT } else { 0.0 };
+    let sender = truncated(&c.who, sender_width - indent);
+    painter.galley(
+        egui::pos2(x + indent, middle - sender.size().y / 2.0),
+        sender,
+        text_color,
+    );
+    let subject = truncated(&c.subject, subject_width);
+    let subject_at = egui::pos2(x + sender_width + GAP, middle - subject.size().y / 2.0);
+    painter.galley(subject_at, subject, text_color);
 }
 
 /// The scroll offset that shows the cursor row, moving the view as little as possible.
@@ -325,16 +413,18 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         for index in range {
             let row = &list.rows[index];
             let marked = list.marked.contains(&row.key());
-            let mut text = row_text(row, recipient, app.search.is_some(), &now);
-            if marked {
-                text = format!("✔ {text}");
-            }
             let selected = index == list.cursor || marked;
-            let job = row_job(&text, row.unread, selected, palette, &font);
-            let button = egui::Button::selectable(selected, job)
-                .truncate()
-                .min_size(egui::vec2(ui.available_width(), ROW_HEIGHT));
-            if ui.add(button).clicked() {
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), ROW_HEIGHT),
+                egui::Sense::click(),
+            );
+            let c = columns(row, marked, recipient, app.search.is_some(), &now);
+            draw_row(ui, rect, &c, selected, response.hovered(), palette, &font);
+            let name = row_text(row, recipient, app.search.is_some(), &now);
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
+            });
+            if response.clicked() {
                 actions.push(UiAction::SelectRow(index));
             }
         }
@@ -402,49 +492,6 @@ mod tests {
     use crate::gui::test_support::{Fixture, message};
     use crate::store::{MessageSummary, ThreadSummary};
 
-    #[test]
-    fn row_job_colours_markers_and_mutes_read_rows() {
-        let font = egui::FontId::proportional(14.0);
-        let parts = |job: &egui::text::LayoutJob| -> Vec<(String, egui::Color32)> {
-            job.sections
-                .iter()
-                .map(|s| {
-                    (
-                        job.text[s.byte_range.start.0..s.byte_range.end.0].to_string(),
-                        s.format.color,
-                    )
-                })
-                .collect()
-        };
-        let p = &crate::gui::theme::MOCHA;
-        let unread = row_job("• ⚑ Alice — hi  ·  09:30", true, false, p, &font);
-        assert_eq!(
-            parts(&unread),
-            [
-                ("•".to_string(), p.accent),
-                (" ".into(), p.text),
-                ("⚑".into(), p.highlight),
-                (" Alice — hi".into(), p.text),
-                ("  ·  09:30".into(), p.muted),
-            ]
-        );
-        let read = row_job("   Bob — re  ·  Sun", false, false, p, &font);
-        assert_eq!(
-            parts(&read),
-            [
-                ("   ".to_string(), p.text),
-                ("Bob — re".into(), p.secondary),
-                ("  ·  Sun".into(), p.muted),
-            ]
-        );
-        let selected = row_job("• Alice — hi  ·  09:30", true, true, p, &font);
-        assert!(
-            parts(&selected)
-                .iter()
-                .all(|(_, color)| *color == p.on_accent)
-        );
-    }
-
     fn summary(uid: u32, flags: &str) -> MessageSummary {
         MessageSummary {
             uid,
@@ -500,24 +547,47 @@ mod tests {
     }
 
     #[test]
-    fn list_date_is_time_today_weekday_this_week_else_the_date() {
+    fn list_date_is_time_today_weekday_and_time_this_week_day_month_this_year_else_with_year() {
         let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
-        let at = |d, h, m| {
-            Utc.with_ymd_and_hms(2026, 10, d, h, m, 0)
+        let at = |y, mo, d, h, mi| {
+            Utc.with_ymd_and_hms(y, mo, d, h, mi, 0)
                 .unwrap()
                 .timestamp()
         };
-        assert_eq!(list_date(at(6, 9, 30), &now), "09:30");
-        assert_eq!(list_date(at(4, 18, 0), &now), "Sun");
+        assert_eq!(list_date(at(2026, 10, 6, 9, 30), &now), "09:30");
+        assert_eq!(list_date(at(2026, 10, 4, 18, 0), &now), "Sun 18:00");
+        assert_eq!(list_date(at(2026, 9, 3, 8, 0), &now), "3 Sep");
+        assert_eq!(list_date(at(2025, 12, 10, 8, 0), &now), "10 Dec 2025");
+    }
+
+    #[test]
+    fn columns_split_markers_sender_subject_and_date() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 6, 12, 0, 0).unwrap();
+        let mut row = Row::from_message(&message("INBOX", 1, "Lunch?"));
+        row.unread = true;
+        row.flagged = true;
+        row.count = 3;
+        row.from = "Linus Example <linus@example.com>".into();
+        row.date = Utc
+            .with_ymd_and_hms(2026, 10, 6, 9, 13, 0)
+            .unwrap()
+            .timestamp();
+        let c = columns(&row, false, false, true, &now);
+        assert!(c.unread && c.flagged && !c.marked);
+        assert_eq!(c.who, "Linus Example");
+        assert_eq!(c.subject, "[INBOX] Lunch? (3)");
+        assert_eq!(c.date, "09:13");
+    }
+
+    #[test]
+    fn column_widths_keep_the_date_and_never_go_negative() {
         assert_eq!(
-            list_date(
-                Utc.with_ymd_and_hms(2026, 9, 26, 8, 0, 0)
-                    .unwrap()
-                    .timestamp(),
-                &now
-            ),
-            "2026-09-26"
+            column_widths(600.0, 80.0),
+            (130.0, 600.0 - 24.0 - 130.0 - 12.0 - 80.0 - 12.0)
         );
+        let (sender, subject) = column_widths(150.0, 80.0);
+        assert!(sender >= 0.0 && subject >= 0.0);
+        assert!(sender + subject <= 150.0 - 24.0 - 80.0 - 24.0);
     }
 
     #[test]

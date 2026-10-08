@@ -31,6 +31,10 @@ Actions apply to the selection when there is one, else to the current row; on a 
 
 Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, Trash) first, then your own folders as a tree that follows the server's hierarchy. Click the caret in front of a parent to fold or unfold its branch; folding lasts until you close the window. A parent the server does not list as a folder is shown but cannot be opened.
 
+## Message list
+
+Each row shows, in columns: a dot when it is unread, a flag (or a check when marked), the sender (the recipient in Sent and Drafts), the subject with the thread's message count, and the date on the right. Dates read "09:30" today, "Sun 18:00" within the past week, "3 Sep" earlier this year and "10 Dec 2025" before that. A long subject is cut off with "…" so the date always stays in view.
+
 ## Status bar
 
 One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. The light and dark themes are Catppuccin Latte and Mocha.
