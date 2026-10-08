@@ -4,7 +4,7 @@ use crate::mail_ops::{MailError, MailOps};
 use crate::message::body_text;
 use crate::rules::Action;
 use crate::rules::engine::{Plan, PlannedAction};
-use crate::store::{Folder, LogEntry, Message, Store, StoreError};
+use crate::store::{Folder, LogEntry, Message, Store, StoreError, has_flag};
 use crate::trash::Trash;
 
 #[derive(Debug, thiserror::Error)]
@@ -74,7 +74,7 @@ pub fn apply(
             Action::Unflag => ("\\Flagged", false),
             _ => continue,
         };
-        if has_flag(&current, flag) == wanted {
+        if has_flag(&current.flags, flag) == wanted {
             continue;
         }
         store.log_action(&log_entry(planned, msg, now))?;
@@ -145,10 +145,6 @@ fn delete(
     Ok(())
 }
 
-fn has_flag(msg: &Message, flag: &str) -> bool {
-    msg.flags.split(' ').any(|f| f == flag)
-}
-
 fn set_flag(
     current: &mut Message,
     flag: &str,
@@ -203,7 +199,7 @@ fn trash_target(
     Ok(trash_destination(store, msg)?)
 }
 
-/// When the server does not report the new uid, the local row is dropped and the next sync of the target folder re-adds it.
+/// The new uid is not known, so the local row goes and the next sync of the target folder adds it.
 fn move_to(
     current: &Message,
     target: &str,
@@ -215,7 +211,7 @@ fn move_to(
     if !known && let Err(e) = ops.create_folder(target) {
         log::debug!("{target}: create failed ({e}), trying the move anyway");
     }
-    let new_uid = ops.move_message(current.uid, target)?;
+    ops.move_message(current.uid, target)?;
     if !known {
         store.upsert_folder(&Folder {
             name: target.to_string(),
@@ -224,7 +220,7 @@ fn move_to(
             special_use: None,
         })?;
     }
-    store.move_message_row(&current.folder, current.uid, target, new_uid)?;
+    store.remove_message(&current.folder, current.uid)?;
     Ok(())
 }
 
@@ -268,19 +264,11 @@ mod tests {
             uid: 5,
             message_id: Some("m5@x".into()),
             from_addr: Some("a@x".into()),
-            to_addr: None,
-            cc_addr: None,
-            delivered_to: None,
-            in_reply_to: None,
-            refs: None,
             thread_id: "m5@x".into(),
             subject: Some("hi".into()),
-            date: None,
             internaldate: 100,
-            flags: String::new(),
-            size: None,
             headers: b"Subject: hi\r\n\r\n".to_vec(),
-            body_text: None,
+            ..Default::default()
         };
         store.insert_message(&msg).unwrap();
         let trash = Trash::new(dir.path().join("trash"));

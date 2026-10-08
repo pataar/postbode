@@ -1,5 +1,5 @@
-//! Direct actions on chosen messages: mark, move, archive and delete, through the same `apply` as rules, plus the
-//! dry-run and rule preview helpers the CLI, the window and the MCP server share.
+//! Direct actions on chosen messages: mark, move, archive and delete, through the same `apply` as rules, which the
+//! daemon's sync loop runs; plus the dry-run and rule preview helpers the CLI and the MCP server share.
 use crate::config::{AccountConfig, Identity};
 use crate::mail_ops::{MailError, MailOps};
 use crate::message::clean;
@@ -82,13 +82,12 @@ pub fn run(
     Ok(results)
 }
 
-/// Downloads and indexes every body `folder` lacks, calling `starting` with the count first. Returns how many arrived;
-/// a message that cannot be fetched is logged and skipped.
+/// Downloads and indexes every body `folder` lacks. Returns how many arrived; a message that cannot be fetched is
+/// logged and skipped.
 pub fn fetch_bodies(
     ops: &mut dyn MailOps,
     store: &Store,
     folder: &str,
-    starting: impl FnOnce(usize),
 ) -> Result<usize, ActionError> {
     let missing: Vec<Message> = store
         .messages_in_folder(folder)?
@@ -99,7 +98,6 @@ pub fn fetch_bodies(
         return Ok(0);
     }
     select_synced(ops, store, folder)?;
-    starting(missing.len());
     let mut fetched = 0;
     for msg in &missing {
         match ensure_raw(msg, ops, store) {
@@ -207,21 +205,11 @@ mod tests {
             .insert_message(&Message {
                 folder: "INBOX".into(),
                 uid: 5,
-                message_id: None,
-                from_addr: None,
-                to_addr: None,
-                cc_addr: None,
-                delivered_to: None,
-                in_reply_to: None,
-                refs: None,
                 thread_id: "t".into(),
                 subject: Some("hi".into()),
-                date: None,
                 internaldate: 100,
-                flags: String::new(),
-                size: None,
                 headers: b"Subject: hi\r\n\r\n".to_vec(),
-                body_text: None,
+                ..Default::default()
             })
             .unwrap();
         (ops, store, Trash::new(dir.path().join("trash")), dir)
@@ -305,16 +293,10 @@ mod tests {
     #[test]
     fn fetch_bodies_indexes_only_missing_bodies() {
         let (mut ops, store, _trash, _dir) = setup();
-        let mut announced = None;
-        assert_eq!(
-            fetch_bodies(&mut ops, &store, "INBOX", |n| announced = Some(n)).unwrap(),
-            1
-        );
-        assert_eq!(announced, Some(1));
+        assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 1);
         assert_eq!(store.search("body", None, 10).unwrap().len(), 1);
-        let again = fetch_bodies(&mut ops, &store, "INBOX", |_| {
-            panic!("nothing left to fetch")
-        });
-        assert_eq!(again.unwrap(), 0);
+        let calls = ops.calls.len();
+        assert_eq!(fetch_bodies(&mut ops, &store, "INBOX").unwrap(), 0);
+        assert_eq!(ops.calls.len(), calls, "nothing left to fetch");
     }
 }

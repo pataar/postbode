@@ -344,17 +344,15 @@ impl MailOps for ImapOps {
         })
     }
 
-    fn move_message(&mut self, uid: u32, to: &str) -> MailResult<Option<u32>> {
+    fn move_message(&mut self, uid: u32, to: &str) -> MailResult<()> {
         let has_move = self.has_move;
         let (rt, session) = self.parts()?;
         if has_move {
-            rt.block_on(async { session.uid_mv(uid.to_string(), to).await.map_err(proto) })?;
-            return Ok(None);
+            return rt.block_on(async { session.uid_mv(uid.to_string(), to).await.map_err(proto) });
         }
         rt.block_on(async { session.uid_copy(uid.to_string(), to).await.map_err(proto) })?;
         self.add_flags(uid, &["\\Deleted"])?;
-        self.expunge(uid)?;
-        Ok(None)
+        self.expunge(uid)
     }
 
     fn create_folder(&mut self, name: &str) -> MailResult<()> {
@@ -473,18 +471,10 @@ mod tests {
     }
 
     fn test_account(host: &str, port: u16) -> AccountConfig {
+        let password = PasswordSource::Keyring { keyring: true };
         AccountConfig {
-            name: "test".into(),
-            host: host.into(),
             port,
-            username: "me@example.com".into(),
-            password: PasswordSource::Keyring { keyring: true },
-            address: None,
-            aliases: vec![],
-            sync_interval_secs: 120,
-            trash_retention_days: 30,
-            notify: true,
-            ca_file: None,
+            ..AccountConfig::new("test", host, "me@example.com", password)
         }
     }
 

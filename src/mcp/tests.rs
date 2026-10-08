@@ -97,18 +97,14 @@ pub(super) fn fixture_message(folder: &str, uid: u32, subject: &str, body: &str)
         message_id: Some(format!("<{uid}@example.com>")),
         from_addr: Some(format!("Sender {uid} <sender{uid}@example.com>")),
         to_addr: Some("me@example.com".into()),
-        cc_addr: None,
-        delivered_to: None,
-        in_reply_to: None,
-        refs: None,
         thread_id: format!("<{uid}@example.com>"),
         subject: Some(subject.into()),
         date: Some(at),
         internaldate: at,
-        flags: String::new(),
         size: Some(100),
         headers: format!("Subject: {subject}\r\n\r\n").into_bytes(),
         body_text: Some(body.into()),
+        ..Default::default()
     }
 }
 
@@ -361,6 +357,18 @@ async fn a_bad_rule_returns_the_rules_check_error() {
     assert!(text.contains("rule 'x'"), "{text}");
     let text = error_text(&call(&client, "rules_test", json!({ "rule": bad })).await);
     assert!(text.contains("rule 'x'"), "{text}");
+    assert!(!fx.paths.rules_file().exists() || !rule_file(&fx).contains("name = \"x\""));
+}
+
+#[tokio::test]
+async fn rules_propose_refuses_blank_and_overlong_folders() {
+    let fx = fixture(&["work"]);
+    let client = connect(&fx, "rules:propose", &[]).await;
+    for folder in [String::new(), "   ".into(), "a".repeat(100_000)] {
+        let rule = json!({ "name": "x", "folder": folder, "match": { "seen": true }, "actions": ["flag"] });
+        let text = error_text(&call(&client, "rules_propose", rule).await);
+        assert!(text.contains("folder must"), "{text}");
+    }
     assert!(!fx.paths.rules_file().exists() || !rule_file(&fx).contains("name = \"x\""));
 }
 

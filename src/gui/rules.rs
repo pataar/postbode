@@ -8,7 +8,7 @@ use crate::message::{clean, parse_headers};
 use crate::paths::Paths;
 use crate::rules::{self, Rule, RuleFile};
 use crate::store::LogEntry;
-use crate::sync::local_time;
+use crate::time::local_time;
 use crate::trash::{Trash, TrashEntry};
 
 use super::app::{Account, App, UiAction};
@@ -309,6 +309,8 @@ mod tests {
     #[test]
     fn a_proposal_shows_its_toml_and_approve_enables_it() {
         let fx = Fixture::new(&["work"]);
+        // A clock left from when the rule ran before must not let it act on older mail.
+        fx.store("work").restart_rule_clock("codes", 1).unwrap();
         let (mut harness, wires) = rules_view(&fx);
         assert!(
             harness
@@ -323,12 +325,13 @@ mod tests {
         harness.get_by_label("Approve").click();
         harness.run();
         assert!(enabled(&fx, "codes"));
+        assert!(fx.store("work").rule_first_seen("codes", 0).unwrap() > 1);
         assert!(
             std::fs::read_to_string(fx.paths.rules_file())
                 .unwrap()
                 .starts_with("# keep me\n")
         );
-        assert_eq!(wires.sent(), [("work".to_string(), Command::SyncNow)]);
+        assert!(wires.sent().is_empty());
         assert!(harness.query_by_label("Approve").is_none());
     }
 
@@ -344,11 +347,11 @@ mod tests {
                 .unwrap()
                 .starts_with("# keep me\n")
         );
-        assert_eq!(wires.sent(), [("work".to_string(), Command::SyncNow)]);
+        assert!(wires.sent().is_empty());
     }
 
     #[test]
-    fn an_edit_from_outside_reloads_the_view_and_syncs() {
+    fn an_edit_from_outside_reloads_the_view() {
         let fx = Fixture::new(&["work"]);
         let (mut harness, wires) = rules_view(&fx);
         let more = format!(
@@ -358,7 +361,7 @@ mod tests {
         touch(&fx.paths.rules_file());
         poll(&mut harness);
         assert!(harness.query_by_label("receipts").is_some());
-        assert_eq!(wires.sent(), [("work".to_string(), Command::SyncNow)]);
+        assert!(wires.sent().is_empty());
     }
 
     #[test]

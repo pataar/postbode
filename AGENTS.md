@@ -20,6 +20,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `rules` parse + validate + schema (`mod.rs`), pure `evaluate` (`engine.rs`), side effects (`apply.rs`), the only writer of rules.toml (`edit.rs`)
 - `store` one SQLite file per account; migrations in `migrations/`
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
+- `time` the current Unix time, and timestamps shown in local time
 - `trash` `.eml` backups before any rule delete
 
 `tests/architecture.rs` checks the ownership rules above for `mcp`, `rules` (rules.toml writes), `gui` views and `cli`; allowed exceptions live there with a reason.
@@ -32,6 +33,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - Every new dependency has a one-line reason in `Cargo.toml`
 - Do not broaden a task into adjacent features
 - After changing CLI flags or rule types, run `POSTBODE_BLESS=1 cargo test` to regenerate `docs/src/cli.md` and `docs/src/rules.schema.json`, and commit them
+- After GUI work, run `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots` on Linux with lavapipe (`mesa-vulkan-drivers`) and look at the changed PNGs in `tests/snapshots/`
 - Prose lives in `docs/src/`; `README.md` contains `docs/src/index.md` verbatim
 
 ## Privacy
@@ -43,15 +45,21 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 
 ```sh
 docker compose -f tests/dovecot/compose.yml up -d
-POSTBODE_TEST_IMAP_HOST=localhost cargo test --test imap_live
+POSTBODE_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 ```
 
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
 
+## Property tests
+`tests/fuzz.rs` feeds hostile input to the message, rules and wire parsers; the only assertion is no panic. Deeper search: `PROPTEST_CASES=20000 cargo test --release --test fuzz`. A finding becomes a named test; unfixed ones go in `tests/known_bugs.rs` as `#[ignore = "BUG: …"]`.
+
+## Model-based sync tests
+`tests/sync_model.rs` runs random server events and sync passes against `RecordingOps`; search deeper with `PROPTEST_CASES=2000 cargo test --features testing --test sync_model`.
+
 ## Build speed
 `mise install` brings kache, cargo-nextest and actionlint. Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
 
-`assets/icon.png` (the window icon) is `assets/icon.svg` rendered at 512×512 by headless Chrome with `--default-background-color=00000000`; re-render it when the SVG changes.
+Run `packaging/icons.sh` after changing `assets/icon.svg`, and commit what it writes.
 
 ## Releasing
 Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand.

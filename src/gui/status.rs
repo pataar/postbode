@@ -1,7 +1,8 @@
 //! The bottom bar: a line per account from its latest activity, the history window, and the theme switch.
 use eframe::egui;
 
-use crate::sync::{Activity, clock};
+use crate::sync::Activity;
+use crate::time::clock;
 
 use super::app::{Account, App, UiAction};
 use super::theme;

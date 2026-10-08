@@ -297,6 +297,49 @@ fn a_config_change_starts_an_added_account() {
 }
 
 #[test]
+fn a_daemon_without_accounts_serves_and_starts_one_added_later() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = Paths::under(home.path());
+    let daemon = TestDaemon::serve(home, paths, options(recording_connector(), None));
+    assert!(status_of(&mut daemon.client()).accounts.is_empty());
+
+    write_config(&daemon.paths);
+    fs::File::options()
+        .write(true)
+        .open(daemon.paths.config_file())
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(10))
+        .unwrap();
+    status_until(&mut daemon.client(), |status| {
+        status.accounts.iter().any(|account| account.name == "work")
+    });
+}
+
+#[test]
+fn a_rules_change_syncs_every_account() {
+    let daemon = TestDaemon::start();
+    let mut watcher = subscribed(daemon.client());
+    let rules = daemon.paths.rules_file();
+    fs::write(&rules, "").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&rules)
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(10))
+        .unwrap();
+
+    let mut synced = std::collections::BTreeSet::new();
+    while synced.len() < 2 {
+        if let Event::Synced { account, .. } = watcher.event_where(
+            |event| matches!(event, Event::Synced { requests, .. } if requests.contains(&0)),
+        ) {
+            synced.insert(account);
+        }
+    }
+    assert_eq!(synced, ["play".to_string(), "work".to_string()].into());
+}
+
+#[test]
 fn a_socket_path_too_long_is_refused_naming_it() {
     let home = tempfile::tempdir().unwrap();
     let long: PathBuf = home.path().join("x".repeat(120));
@@ -541,7 +584,7 @@ mod client {
     }
 
     #[test]
-    fn a_sends_own_completion_arrives_as_request_zero_beside_the_broadcast() {
+    fn a_sends_own_completion_arrives_once_as_request_zero() {
         let daemon = TestDaemon::start_with(options(one_message_connector(), None));
         let client = Client::connect(&daemon.paths).unwrap();
         client.request("work", Command::SyncNow).unwrap();
@@ -553,17 +596,48 @@ mod client {
             by: "gui".into(),
         };
         assert!(client.send("work", apply));
-        let mut requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
+        // A sync of the same account after the action ends the stream of events that could carry a copy; `play` syncs
+        // on its own schedule, so its `Synced` says nothing.
+        assert!(client.send("work", Command::SyncNow));
+        let requests: Vec<u64> = std::iter::from_fn(|| events.recv_timeout(WAIT).ok())
+            .take_while(
+                |event| !matches!(event, Event::Synced { account, .. } if account == "work"),
+            )
             .filter_map(|event| match event {
                 Event::ActionDone { request, .. } => Some(request),
                 _ => None,
             })
-            .take(2)
             .collect();
-        requests.sort_unstable();
-        assert_eq!(requests.len(), 2, "{requests:?}");
-        assert_eq!(requests[0], 0);
-        assert_ne!(requests[1], 0);
+        assert_eq!(requests, [0]);
+    }
+
+    #[test]
+    fn a_waking_subscription_wakes_after_each_event_and_at_hang_up() {
+        let mut daemon = TestDaemon::start();
+        let client = Client::connect(&daemon.paths).unwrap();
+        let (woke, wakes) = std::sync::mpsc::channel();
+        let events = client
+            .subscribe_waking(move || {
+                let _ = woke.send(());
+            })
+            .unwrap();
+        client.request("work", Command::SyncNow).unwrap();
+        client.shutdown().unwrap();
+        daemon.finished().unwrap();
+        let mut received = 0;
+        loop {
+            match events.recv_timeout(WAIT) {
+                Ok(_) => received += 1,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(timeout) => panic!("the subscription never ended: {timeout}"),
+            }
+        }
+        assert!(received > 0);
+        assert_eq!(
+            wakes.try_iter().count(),
+            received + 1,
+            "one per event and one at hang-up"
+        );
     }
 
     #[test]
@@ -604,17 +678,17 @@ mod client {
             expected
         );
 
-        // Only this pass's Synced ends the wait: the other account's first pass may finish late on a loaded machine.
-        let Event::Synced { requests, .. } = client.request("work", Command::SyncNow).unwrap()
-        else {
-            panic!("SyncNow was not answered by Synced");
-        };
+        // The broadcast of this reply's own event ends the count. Any `Synced` cannot: play's first sync may land
+        // after the subscription and before the fetch's `BodyReady`.
+        let answered = client.request("work", Command::SyncNow).unwrap();
         let mut fetches = 0;
         loop {
-            match events.recv_timeout(WAIT).unwrap() {
-                Event::BodyReady { .. } => fetches += 1,
-                Event::Synced { requests: done, .. } if done == requests => break,
-                _ => {}
+            let event = events.recv_timeout(WAIT).unwrap();
+            if event == answered {
+                break;
+            }
+            if matches!(event, Event::BodyReady { .. }) {
+                fetches += 1;
             }
         }
         assert_eq!(fetches, 1);
@@ -779,9 +853,73 @@ fn connecting_while_the_daemon_stops_fails_at_once() {
     daemon.finished().unwrap();
 }
 
+/// Opens a `gated_connector`'s gate when dropped, so a failing test never leaves a sync thread stuck in its connect.
+struct Gate(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Gate {
+    fn open(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl Drop for Gate {
+    fn drop(&mut self) {
+        self.open();
+    }
+}
+
+/// Connections announce their account and then wait until the gate opens, so an account thread stays in its connect
+/// for exactly as long as the test wants.
+fn gated_connector() -> (
+    crate::engine::Connector,
+    std::sync::mpsc::Receiver<String>,
+    Gate,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let open = Arc::new(AtomicBool::new(false));
+    let (announce, connecting) = std::sync::mpsc::channel();
+    let announce = Mutex::new(announce);
+    let connector: crate::engine::Connector = Arc::new({
+        let open = open.clone();
+        move |account| {
+            let _ = announce.lock().unwrap().send(account.name.clone());
+            while !open.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(
+                Box::new(crate::mail_ops::RecordingOps::new().with_folder("INBOX", None))
+                    as Box<dyn crate::mail_ops::MailOps>,
+            )
+        }
+    });
+    (connector, connecting, Gate(open))
+}
+
+fn account_names(status: &Status) -> Vec<&str> {
+    status
+        .accounts
+        .iter()
+        .map(|account| account.name.as_str())
+        .collect()
+}
+
+/// Every answer below arrives while work's old thread is still stuck in its connect, which only the test ends; a
+/// daemon that waited for that thread would not answer at all, so no wall-clock budget is needed.
 #[test]
 fn a_config_change_never_stalls_the_daemon_while_an_old_account_thread_finishes() {
-    let daemon = TestDaemon::start_with(options(slow_connector(Duration::from_secs(4)), None));
+    let (connector, connecting, gate) = gated_connector();
+    let daemon = TestDaemon::start_with(options(connector, None));
+    // Bound after the daemon, so the gate opens before the daemon's drop waits for its threads.
+    let gate = gate;
+    let mut first = [
+        connecting.recv_timeout(WAIT).unwrap(),
+        connecting.recv_timeout(WAIT).unwrap(),
+    ];
+    first.sort();
+    assert_eq!(first, ["play", "work"]);
+
     let config = daemon.paths.config_file();
     let text = fs::read_to_string(&config).unwrap().replacen(
         "notify = false",
@@ -795,17 +933,30 @@ fn a_config_change_never_stalls_the_daemon_while_an_old_account_thread_finishes(
         .unwrap()
         .set_modified(SystemTime::now() + Duration::from_secs(10))
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        let asked = Instant::now();
-        status_of(&mut daemon.client());
-        assert!(
-            asked.elapsed() < Duration::from_secs(1),
-            "a client waited {:?} for the daemon",
-            asked.elapsed()
+    status_until(&mut daemon.client(), |status| {
+        account_names(status) == ["play"]
+    });
+
+    for id in 0..3 {
+        assert_eq!(account_names(&status_of(&mut daemon.client())), ["play"]);
+        assert_eq!(
+            daemon
+                .client()
+                .request(command(id, "work", Command::SyncNow)),
+            Outcome::Error("work is restarting".into())
         );
-        std::thread::sleep(Duration::from_millis(50));
     }
+    assert_eq!(
+        connecting.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty),
+        "work's new thread waits for its old one"
+    );
+
+    gate.open();
+    assert_eq!(connecting.recv_timeout(WAIT).unwrap(), "work");
+    status_until(&mut daemon.client(), |status| {
+        account_names(status) == ["work", "play"]
+    });
 }
 
 #[test]

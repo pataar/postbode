@@ -2,7 +2,8 @@
 use eframe::egui;
 
 use crate::message::clean;
-use crate::sync::{Activity, local_time};
+use crate::sync::Activity;
+use crate::time::local_time;
 
 use super::app::{Account, App, UiAction};
 

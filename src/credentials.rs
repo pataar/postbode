@@ -148,21 +148,10 @@ mod tests {
     use super::*;
 
     fn account(command: &str) -> AccountConfig {
-        AccountConfig {
-            name: "t".into(),
-            host: "h".into(),
-            port: 993,
-            username: "u@example.com".into(),
-            password: PasswordSource::Command {
-                command: command.into(),
-            },
-            address: None,
-            aliases: vec![],
-            sync_interval_secs: 120,
-            trash_retention_days: 30,
-            notify: true,
-            ca_file: None,
-        }
+        let password = PasswordSource::Command {
+            command: command.into(),
+        };
+        AccountConfig::new("t", "h", "u@example.com", password)
     }
 
     #[test]

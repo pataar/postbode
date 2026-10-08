@@ -218,20 +218,13 @@ mod tests {
     use crate::config::{AccountConfig, PasswordSource};
 
     fn offline_account(name: &str) -> AccountConfig {
+        let password = PasswordSource::Command {
+            command: "printf x".into(),
+        };
         AccountConfig {
-            name: name.into(),
-            host: "127.0.0.1".into(),
             port: 1,
-            username: "me@example.com".into(),
-            password: PasswordSource::Command {
-                command: "printf x".into(),
-            },
-            address: None,
-            aliases: vec![],
-            sync_interval_secs: 120,
-            trash_retention_days: 30,
             notify: false,
-            ca_file: None,
+            ..AccountConfig::new(name, "127.0.0.1", "me@example.com", password)
         }
     }
 

@@ -34,7 +34,14 @@ impl Trash {
 
     pub fn save(&self, folder: &str, uid: u32, raw: &[u8], now: i64) -> io::Result<PathBuf> {
         let encoded = folder.replace('%', "%25").replace('/', "%2F");
-        let path = self.dir.join(format!("{now}-{encoded}-{uid}.eml"));
+        let name = |at: i64| self.dir.join(format!("{at}-{encoded}-{uid}.eml"));
+        // After a UIDVALIDITY change the same folder and uid name another message, which can be deleted within the same
+        // second: never overwrite a backup, take the next free second instead.
+        let mut at = now;
+        while name(at).symlink_metadata().is_ok() {
+            at += 1;
+        }
+        let path = name(at);
         write_atomic(&path, raw)?;
         Ok(path)
     }
@@ -125,6 +132,19 @@ mod tests {
             (2000, "INBOX", 3)
         );
         assert_eq!(list[1].folder, "Lists/GitHub");
+    }
+
+    /// Found by tests/sync_model.rs: a delete after a UIDVALIDITY reset overwrote the backup of another message.
+    #[test]
+    fn save_never_overwrites_a_backup_with_the_same_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let trash = Trash::new(dir.path().to_path_buf());
+        let first = trash.save("INBOX", 2, b"first message", 1000).unwrap();
+        let second = trash.save("INBOX", 2, b"other message", 1000).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).unwrap(), b"first message");
+        assert_eq!(std::fs::read(&second).unwrap(), b"other message");
+        assert_eq!(second.file_name().unwrap(), "1001-INBOX-2.eml");
     }
 
     #[test]

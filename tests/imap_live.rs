@@ -46,23 +46,18 @@ fn account(host: &str, port: u16, test: &str) -> AccountConfig {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let password = PasswordSource::Command {
+        command: format!("printf {PASSWORD}"),
+    };
+    let username = format!("{test}-{nanos}@example.com");
     AccountConfig {
-        name: "live".into(),
-        host: host.into(),
         port,
-        username: format!("{test}-{nanos}@example.com"),
-        password: PasswordSource::Command {
-            command: format!("printf {PASSWORD}"),
-        },
-        address: None,
-        aliases: vec![],
-        sync_interval_secs: 120,
-        trash_retention_days: 30,
         notify: false,
         ca_file: Some(PathBuf::from(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/dovecot/certs/ca.pem"
         ))),
+        ..AccountConfig::new("live", host, &username, password)
     }
 }
 
@@ -399,8 +394,9 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
 fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
     let Some(host) = host() else { return };
     let account = account(&host, PORT, "cli-sync-error");
-    // Dovecot refuses a 300-character mailbox name, so the move fails for this message only.
-    let target = "x".repeat(300);
+    // Rules allow 255 characters, but these are 510 bytes: Dovecot refuses the mailbox name, so the move fails for
+    // this message only.
+    let target = "é".repeat(255);
     let home = home_with(
         &account,
         &format!(

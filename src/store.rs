@@ -32,7 +32,7 @@ pub struct Folder {
     pub special_use: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub folder: String,
     pub uid: u32,
@@ -55,7 +55,7 @@ pub struct Message {
 }
 
 /// Whether the space-separated `flags` contain `flag`.
-fn has_flag(flags: &str, flag: &str) -> bool {
+pub(crate) fn has_flag(flags: &str, flag: &str) -> bool {
     flags.split_whitespace().any(|f| f == flag)
 }
 
@@ -357,26 +357,6 @@ impl Store {
         Ok(removed)
     }
 
-    /// Moves the row to `new_folder` under `new_uid`, or deletes it when the new uid is unknown (next sync re-adds it).
-    pub fn move_message_row(
-        &self,
-        folder: &str,
-        uid: u32,
-        new_folder: &str,
-        new_uid: Option<u32>,
-    ) -> Result<(), StoreError> {
-        match new_uid {
-            Some(new_uid) => {
-                self.conn.execute(
-                    "UPDATE messages SET folder = ?3, uid = ?4 WHERE folder = ?1 AND uid = ?2",
-                    params![folder, uid, new_folder, new_uid],
-                )?;
-                Ok(())
-            }
-            None => self.remove_message(folder, uid),
-        }
-    }
-
     pub fn messages(&self, folder: &str, limit: u32) -> Result<Vec<Message>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT {MESSAGE_COLUMNS} FROM messages WHERE folder = ?1 ORDER BY internaldate DESC, uid DESC LIMIT ?2"
@@ -639,18 +619,13 @@ mod tests {
             message_id: Some(format!("m{uid}@x")),
             from_addr: Some("Alice <alice@x>".into()),
             to_addr: Some("bob@x".into()),
-            cc_addr: None,
-            delivered_to: None,
-            in_reply_to: None,
-            refs: None,
             thread_id: format!("m{uid}@x"),
             subject: Some(format!("subject {uid}")),
             date: Some(internaldate),
             internaldate,
-            flags: String::new(),
             size: Some(100),
             headers: b"From: alice@x\r\n\r\n".to_vec(),
-            body_text: None,
+            ..Default::default()
         }
     }
 
@@ -799,17 +774,7 @@ mod tests {
             before + 1,
             "a flag change does not touch the FTS index"
         );
-        s.upsert_folder(&Folder {
-            name: "Archive".into(),
-            uidvalidity: 1,
-            last_uid: 0,
-            special_use: None,
-        })
-        .unwrap();
-        s.move_message_row("INBOX", 1, "Archive", Some(9)).unwrap();
-        assert_eq!(fts_hits(&s, "pineapple"), 1);
-        fts_integrity_check(&s);
-        s.remove_message("Archive", 9).unwrap();
+        s.remove_message("INBOX", 1).unwrap();
         assert_eq!(fts_hits(&s, "pineapple"), 0);
         fts_integrity_check(&s);
     }
@@ -842,28 +807,6 @@ mod tests {
             .map(|m| m.uid)
             .collect();
         assert_eq!(left, vec![1, 3]);
-    }
-
-    #[test]
-    fn move_row_with_and_without_new_uid() {
-        let s = store_with_inbox();
-        s.upsert_folder(&Folder {
-            name: "Archive".into(),
-            uidvalidity: 1,
-            last_uid: 0,
-            special_use: Some("Archive".into()),
-        })
-        .unwrap();
-        s.insert_message(&msg("INBOX", 1, 10)).unwrap();
-        s.insert_message(&msg("INBOX", 2, 20)).unwrap();
-        s.move_message_row("INBOX", 1, "Archive", Some(7)).unwrap();
-        assert_eq!(
-            s.message("Archive", 7).unwrap().unwrap().subject.as_deref(),
-            Some("subject 1")
-        );
-        s.move_message_row("INBOX", 2, "Archive", None).unwrap();
-        assert_eq!(s.message("INBOX", 2).unwrap(), None);
-        assert_eq!(s.messages_in_folder("Archive").unwrap().len(), 1);
     }
 
     #[test]
@@ -1022,6 +965,20 @@ mod tests {
         assert_eq!(s.notified_uid("INBOX").unwrap(), 40);
         s.set_notified_uid("INBOX", 42).unwrap();
         assert_eq!(s.notified_uid("INBOX").unwrap(), 42);
+    }
+
+    #[test]
+    fn migration_004_drops_the_message_id_index() {
+        let s = store_with_inbox();
+        let indexes: i64 = s
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'messages_message_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexes, 0);
     }
 
     #[test]

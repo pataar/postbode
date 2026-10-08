@@ -30,13 +30,23 @@ cargo audit
 - User-facing prose lives in `docs/src/`. `README.md` contains `docs/src/index.md` verbatim, so edit both together.
 - Keep a pull request to one change.
 
+## Property tests
+
+`tests/fuzz.rs` throws arbitrary and mutated input at the message, rules and daemon wire parsers and checks that none of them panic. `cargo test` runs a few cases; for a deeper search:
+
+```sh
+PROPTEST_CASES=20000 cargo test --release --test fuzz
+```
+
+If it finds a panic, add the input as a named test next to the fix.
+
 ## Live IMAP tests
 
 `tests/imap_live.rs` runs against two local Dovecot servers and is skipped unless `POSTBODE_TEST_IMAP_HOST` is set:
 
 ```sh
 docker compose -f tests/dovecot/compose.yml up -d
-POSTBODE_TEST_IMAP_HOST=localhost cargo test --test imap_live
+POSTBODE_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 ```
 
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither.

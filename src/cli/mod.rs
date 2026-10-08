@@ -17,6 +17,7 @@ use postbode::paths::Paths;
 use postbode::rules::{Action, CompiledRule, Rule, RuleFile};
 use postbode::store::{Message, Store};
 use postbode::sync::{self, Event};
+use postbode::time;
 use postbode::trash::Trash;
 
 #[derive(Parser)]
@@ -72,7 +73,7 @@ enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Sync once, apply rules, exit
+    /// Ask the daemon to sync now and apply rules; waits for the result
     Sync {
         #[arg(long)]
         account: Option<String>,
@@ -341,14 +342,19 @@ enum AccountCommand {
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let paths = match std::env::var_os("POSTBODE_HOME") {
-        Some(home) => Paths::under(Path::new(&home)),
-        None => Paths::discover()?,
+        Some(home) => Ok(Paths::under(Path::new(&home))),
+        None => Paths::discover(),
     };
+    // The window explains its own startup errors, since it may have no terminal to print them in.
+    if matches!(cli.command, Command::Gui) {
+        return cmd_gui(paths);
+    }
+    let paths = paths?;
     let config = Config::load(&paths.config_file())?;
     match cli.command {
-        Command::Run { idle_exit } => cmd_run(&config, &paths, idle_exit),
+        Command::Run { idle_exit } => cmd_run(&paths, idle_exit),
         Command::Daemon { command } => cmd_daemon(command, &paths),
-        Command::Gui => cmd_gui(&config, &paths),
+        Command::Gui => cmd_gui(Ok(paths)),
         Command::Service { command } => cmd_service(command, &paths),
         Command::Sync { account } => cmd_sync(&config, &paths, account.as_deref()),
         Command::Attachment { command } => cmd_attachment(command, &config, &paths),
@@ -550,16 +556,13 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         }
         return Ok(());
     }
-    let command = sync::Command::Apply {
-        folder: selection.folder.clone(),
-        uids: selection.uids.clone(),
-        action: action.clone(),
-        by: postbode::actions::RULE_NAME.into(),
-    };
-    let results = LazyClient::new(paths).request(&acc.name, command, |reply| match reply {
-        Event::ActionDone { results, .. } => Ok(results),
-        other => Err(other),
-    })?;
+    let results = LazyClient::new(paths).apply(
+        &acc.name,
+        &selection.folder,
+        &selection.uids,
+        &action,
+        postbode::actions::RULE_NAME,
+    )?;
     let mut failed = 0;
     for (uid, result) in &results {
         if let Err(message) = result {
@@ -567,13 +570,9 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
             failed += 1;
         }
     }
-    let label = match action {
-        Action::Trash => Action::Delete.label(),
-        _ => action.label(),
-    };
     println!(
         "{}: {} of {} messages",
-        clean(&label, false),
+        clean(&action.command_label(), false),
         results.len() - failed,
         results.len()
     );
@@ -785,10 +784,9 @@ fn single_account<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Acco
     }
 }
 
+/// In local time, as the mail window shows it.
 fn format_time(timestamp: i64) -> String {
-    chrono::DateTime::from_timestamp(timestamp, 0)
-        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
+    time::local_time(timestamp, "%Y-%m-%d %H:%M")
 }
 
 /// `account  * INBOX/42  date  from  subject`; `*` marks unread, `depth` indents the subject in thread views.
@@ -814,15 +812,12 @@ fn truncate(s: &str, width: usize) -> String {
 }
 
 #[cfg(feature = "gui")]
-fn cmd_gui(config: &Config, paths: &Paths) -> Result<()> {
-    if config.accounts.is_empty() {
-        bail!("no accounts configured; run `postbode account add`");
-    }
-    postbode::gui::run(config, paths)
+fn cmd_gui(paths: Result<Paths>) -> Result<()> {
+    postbode::gui::run(paths)
 }
 
 #[cfg(not(feature = "gui"))]
-fn cmd_gui(_config: &Config, _paths: &Paths) -> Result<()> {
+fn cmd_gui(_paths: Result<Paths>) -> Result<()> {
     bail!("this postbode was built without the GUI; install it with the default features")
 }
 
@@ -873,10 +868,9 @@ fn cmd_mcp(
     bail!("this postbode was built without the MCP server; install it with the default features")
 }
 
-fn cmd_run(config: &Config, paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
-    if config.accounts.is_empty() {
-        bail!("no accounts configured; run `postbode account add`");
-    }
+/// Starts even without accounts: a login service would otherwise restart it in a loop, and accounts added to
+/// config.toml later start on their own.
+fn cmd_run(paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
     // Test hook: lets tests idle an auto-started daemon out in seconds.
     let override_secs = std::env::var("POSTBODE_IDLE_EXIT_SECS")
         .ok()
@@ -943,11 +937,8 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                         other => Err(other),
                     })?;
                 failed |= !errors.is_empty();
-                for message in errors {
-                    postbode::daemon::report(&Event::Error {
-                        account: acc.name.clone(),
-                        message,
-                    });
+                for message in &errors {
+                    postbode::daemon::report_error(&acc.name, message);
                 }
                 println!("{}: {actions} actions on {evaluated} messages", acc.name);
             }
@@ -994,10 +985,9 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Approve { name } => {
-            postbode::rules::edit::approve(&paths.rules_file(), &name)?;
-            for acc in &config.accounts {
-                Store::open_account(paths, &acc.name)?.restart_rule_clock(&name, sync::now())?;
-            }
+            let accounts: Vec<String> =
+                config.accounts.iter().map(|acc| acc.name.clone()).collect();
+            postbode::rules::edit::approve_from_now(paths, &accounts, &name, time::now())?;
             println!(
                 "enabled '{}'; it acts on mail that arrives from now on",
                 clean(&name, false)
@@ -1038,7 +1028,7 @@ fn print_planned_actions(
     account: &AccountConfig,
     identity: &Identity,
 ) -> Result<()> {
-    for p in postbode::actions::planned(rules, store, account, identity, sync::now())? {
+    for p in postbode::actions::planned(rules, store, account, identity, time::now())? {
         println!(
             "{}\t{}/{}\t{}\t{}",
             clean(&p.rule, false),
@@ -1075,16 +1065,9 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         }
         TrashCommand::Restore { file, account } => {
             let acc = single_account(config, account.as_deref())?;
-            let command = sync::Command::Restore {
-                file: std::path::absolute(&file)?,
-            };
-            let folder =
-                LazyClient::new(paths).request(&acc.name, command, |reply| match reply {
-                    Event::Restored { folder, .. } => Ok(folder),
-                    other => Err(other),
-                })?;
+            let folder = LazyClient::new(paths).restore(&acc.name, std::path::absolute(&file)?)?;
             println!(
-                "restored to {}; rules leave restored mail alone. Run `postbode sync` to see it",
+                "restored to {}; rules leave restored mail alone",
                 clean(&folder, false)
             );
             Ok(())
@@ -1092,7 +1075,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
         TrashCommand::Purge { account } => {
             for acc in select_accounts(config, account.as_deref())? {
                 let removed = Trash::new(paths.trash_dir(&acc.name))
-                    .purge(acc.trash_retention_days as i64 * 86_400, sync::now())?;
+                    .purge(acc.trash_retention_days as i64 * 86_400, time::now())?;
                 println!("{}: removed {removed}", acc.name);
             }
             Ok(())
@@ -1126,17 +1109,10 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
         PasswordSource::Keyring { keyring: true }
     };
     let account = AccountConfig {
-        name,
-        host,
         port,
-        username,
-        password,
         address,
-        aliases: vec![],
-        sync_interval_secs: 120,
-        trash_retention_days: 30,
-        notify: true,
         ca_file,
+        ..AccountConfig::new(&name, &host, &username, password)
     };
     config.accounts.retain(|a| a.name != account.name);
     config.accounts.push(account);

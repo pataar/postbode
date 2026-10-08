@@ -11,7 +11,8 @@ use crate::output;
 use crate::paths::Paths;
 use crate::rules::{self, Action, Rule, RuleFile};
 use crate::store::{Message, Store};
-use crate::sync::{self, Command, Event};
+use crate::sync::{Command, Event};
+use crate::time;
 use crate::trash::Trash;
 
 pub const MAX_LIMIT: u32 = 500;
@@ -245,18 +246,7 @@ impl Backend {
                 json!({ "account": acc.name, "folder": folder, "dry_run": true, "would": would, "missing": missing }),
             );
         }
-        let command = Command::Apply {
-            folder: folder.into(),
-            uids: uids.to_vec(),
-            action: action.clone(),
-            by: by.into(),
-        };
-        let results = self
-            .daemon
-            .request(&acc.name, command, |reply| match reply {
-                Event::ActionDone { results, .. } => Ok(results),
-                other => Err(other),
-            })?;
+        let results = self.daemon.apply(&acc.name, folder, uids, &action, by)?;
         let failed: Vec<Value> = results
             .iter()
             .filter_map(|(uid, result)| {
@@ -266,12 +256,8 @@ impl Backend {
                     .map(|message| json!({ "uid": uid, "error": message }))
             })
             .collect();
-        let label = match action {
-            Action::Trash => Action::Delete.label(),
-            _ => action.label(),
-        };
         Ok(
-            json!({ "account": acc.name, "folder": folder, "action": label, "done": results.len() - failed.len(), "failed": failed }),
+            json!({ "account": acc.name, "folder": folder, "action": action.command_label(), "done": results.len() - failed.len(), "failed": failed }),
         )
     }
 
@@ -293,15 +279,7 @@ impl Backend {
                 json!({ "account": acc.name, "file": file, "dry_run": true, "would": format!("restore to {folder}") }),
             );
         }
-        let folder =
-            self.daemon.request(
-                &acc.name,
-                Command::Restore { file: path },
-                |reply| match reply {
-                    Event::Restored { folder, .. } => Ok(folder),
-                    other => Err(other),
-                },
-            )?;
+        let folder = self.daemon.restore(&acc.name, path)?;
         Ok(json!({ "account": acc.name, "restored_to": folder }))
     }
 
@@ -392,7 +370,7 @@ impl Backend {
         let mut rows = Vec::new();
         for acc in self.select(account)? {
             let store = self.store(acc)?;
-            for p in actions::planned(&compiled, &store, acc, &acc.identity()?, sync::now())? {
+            for p in actions::planned(&compiled, &store, acc, &acc.identity()?, time::now())? {
                 rows.push(json!({
                     "account": acc.name, "rule": p.rule, "folder": p.message.folder,
                     "uid": p.message.uid, "action": p.action.label(), "subject": p.message.subject,
@@ -419,10 +397,7 @@ impl Backend {
     /// Enables the rule and restarts its clock in every account, so it acts only on mail that arrives from now on.
     pub fn approve(&self, name: &str) -> Result<Value> {
         self.ensure_rule_visible(name, true)?;
-        rules::edit::approve(&self.paths.rules_file(), name)?;
-        for account in &self.all_accounts {
-            Store::open_account(&self.paths, account)?.restart_rule_clock(name, sync::now())?;
-        }
+        rules::edit::approve_from_now(&self.paths, &self.all_accounts, name, time::now())?;
         Ok(json!({ "rule": name, "enabled": true }))
     }
 
