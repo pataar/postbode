@@ -521,7 +521,8 @@ pub fn load_rules_for(
         .collect();
     store.forget_rules_except(&enabled)?;
     for rule in compiled.iter_mut().filter(|r| r.rule.enabled) {
-        rule.first_seen_at = store.rule_first_seen(&rule.rule.name, now)?;
+        rule.first_seen_at =
+            store.rule_first_seen(&rule.rule.name, &rule.rule.definition()?, now)?;
     }
     Ok(compiled)
 }

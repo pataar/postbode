@@ -515,11 +515,20 @@ impl Store {
         Ok(())
     }
 
-    /// Returns when the rule name was first seen, inserting `now` if it is new.
-    pub fn rule_first_seen(&self, name: &str, now: i64) -> Result<i64, StoreError> {
+    /// Returns when the rule was first seen with this definition, starting its clock at `now` if it is new or changed.
+    pub fn rule_first_seen(
+        &self,
+        name: &str,
+        definition: &str,
+        now: i64,
+    ) -> Result<i64, StoreError> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO rules_seen (name, first_seen_at) VALUES (?1, ?2)",
-            params![name, now],
+            "INSERT INTO rules_seen (name, first_seen_at, definition) VALUES (?1, ?2, ?3)
+             ON CONFLICT (name) DO UPDATE SET
+               first_seen_at = CASE WHEN definition IS NULL OR definition = excluded.definition
+                                    THEN first_seen_at ELSE excluded.first_seen_at END,
+               definition = excluded.definition",
+            params![name, now, definition],
         )?;
         Ok(self.conn.query_row(
             "SELECT first_seen_at FROM rules_seen WHERE name = ?1",
@@ -528,7 +537,7 @@ impl Store {
         )?)
     }
 
-    /// Starts the rule's clock at `now`, replacing any stale first-seen time.
+    /// Starts the rule's clock at `now`, replacing any stale first-seen time; the next load adopts its definition.
     pub fn restart_rule_clock(&self, name: &str, now: i64) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO rules_seen (name, first_seen_at) VALUES (?1, ?2)",
@@ -835,21 +844,46 @@ mod tests {
     }
 
     #[test]
-    fn rule_first_seen_is_sticky() {
+    fn rule_first_seen_is_sticky_while_the_definition_is_unchanged() {
         let s = store_with_inbox();
-        assert_eq!(s.rule_first_seen("purge", 100).unwrap(), 100);
-        assert_eq!(s.rule_first_seen("purge", 200).unwrap(), 100);
-        assert_eq!(s.rule_first_seen("other", 200).unwrap(), 200);
+        assert_eq!(s.rule_first_seen("purge", "a", 100).unwrap(), 100);
+        assert_eq!(s.rule_first_seen("purge", "a", 200).unwrap(), 100);
+        assert_eq!(s.rule_first_seen("other", "a", 200).unwrap(), 200);
+    }
+
+    #[test]
+    fn rule_first_seen_restarts_when_the_definition_changes() {
+        let s = store_with_inbox();
+        assert_eq!(s.rule_first_seen("purge", "a", 100).unwrap(), 100);
+        assert_eq!(s.rule_first_seen("purge", "b", 200).unwrap(), 200);
+        assert_eq!(s.rule_first_seen("purge", "b", 300).unwrap(), 200);
     }
 
     #[test]
     fn restart_rule_clock_overwrites_the_first_seen_time() {
         let s = store_with_inbox();
-        assert_eq!(s.rule_first_seen("purge", 100).unwrap(), 100);
+        assert_eq!(s.rule_first_seen("purge", "a", 100).unwrap(), 100);
         s.restart_rule_clock("purge", 300).unwrap();
-        assert_eq!(s.rule_first_seen("purge", 400).unwrap(), 300);
+        assert_eq!(s.rule_first_seen("purge", "a", 400).unwrap(), 300);
         s.restart_rule_clock("fresh", 500).unwrap();
-        assert_eq!(s.rule_first_seen("fresh", 600).unwrap(), 500);
+        assert_eq!(s.rule_first_seen("fresh", "a", 600).unwrap(), 500);
+    }
+
+    #[test]
+    fn migration_006_keeps_rule_clocks_and_adopts_the_next_definition() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        Store::migrations()
+            .unwrap()
+            .to_version(&mut conn, 5)
+            .unwrap();
+        conn.execute(
+            "INSERT INTO rules_seen (name, first_seen_at) VALUES ('purge', 100)",
+            [],
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.rule_first_seen("purge", "a", 200).unwrap(), 100);
+        assert_eq!(s.rule_first_seen("purge", "b", 300).unwrap(), 300);
     }
 
     #[test]

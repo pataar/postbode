@@ -169,7 +169,8 @@ CREATE VIRTUAL TABLE messages_fts USING fts5 (
 
 CREATE TABLE rules_seen (
   name           TEXT PRIMARY KEY,
-  first_seen_at  INTEGER NOT NULL
+  first_seen_at  INTEGER NOT NULL,
+  definition     TEXT              -- the rule's account, folder, match and actions as JSON
 );
 
 CREATE TABLE rule_log (
@@ -191,7 +192,7 @@ Threading: on insert, `thread_id` is the first id in `References` if present, el
 
 Special-use folders come from `LIST (SPECIAL-USE)` or the folder attributes in a plain `LIST`. If the server marks none, `Trash`, `Sent`, `Junk`, `Drafts`, `Archive` by name are used as a fallback.
 
-`rules_seen` records when a rule name was first loaded by this account. A rule only acts on messages whose `internaldate` is at or after its `first_seen_at`, so adding a rule never mass-deletes history. Renaming a rule resets this. `rules apply-existing` is the explicit opt-in to older mail.
+`rules_seen` records when a rule name was first loaded by this account. A rule only acts on messages whose `internaldate` is at or after its `first_seen_at`, so adding a rule never mass-deletes history. Renaming a rule, or changing its account, folder, match or actions, resets this, so a widened rule only acts on mail that arrives after the edit. `rules apply-existing` is the explicit opt-in to older mail.
 
 Disabled rules have no entry: a rule's clock starts the first time it is loaded enabled, or at approval time when `rules approve` enables it, so a proposal approved a week later does not act on that week's mail, and disabling then enabling a rule restarts it.
 
