@@ -18,3 +18,5 @@ pub mod store;
 pub mod sync;
 pub mod time;
 pub mod trash;
+#[cfg(feature = "gui")]
+pub mod update;

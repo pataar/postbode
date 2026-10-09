@@ -1,4 +1,5 @@
-//! The bottom bar: a line per account from its latest activity, the history window, and the theme switch.
+//! The bottom bar: a line per account from its latest activity, the history window, the theme switch, the version and a
+//! newer release.
 use eframe::egui;
 
 use crate::sync::Activity;
@@ -94,6 +95,9 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if let Some(version) = app.newer_release() {
+                update_link(ui, version);
+            }
             ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
             for (preference, label) in [
                 (egui::ThemePreference::Dark, "Dark"),
@@ -129,6 +133,18 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         }
     }
     actions
+}
+
+/// Monospace because the default proportional font lacks the arrow.
+fn update_link(ui: &mut egui::Ui, version: &str) {
+    let highlight = theme::palette(ui).highlight;
+    ui.scope(|ui| {
+        ui.visuals_mut().hyperlink_color = highlight;
+        ui.hyperlink_to(
+            egui::RichText::new(format!("↑ v{version} available")).monospace(),
+            crate::update::release_url(version),
+        );
+    });
 }
 
 /// The `?` window. Keys are spelled out, since the default fonts lack some arrow and modifier glyphs.
@@ -182,6 +198,7 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     use super::*;
+    use crate::gui::app::UpdateCheck;
     use crate::gui::test_support::{Fixture, message};
     use crate::sync::Event;
 
@@ -447,5 +464,43 @@ mod tests {
         let (harness, _wires) = fx.harness();
         let left = |label| harness.get_by_label(label).rect().left();
         assert!(left("System") < left("Light") && left("Light") < left("Dark"));
+    }
+
+    #[test]
+    fn a_newer_release_links_to_its_notes() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().update = UpdateCheck::Done(Some("9.9.9".into()));
+        harness.run();
+        harness.get_by_label("↑ v9.9.9 available").click();
+        harness.step();
+        let opened: Vec<_> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            opened,
+            ["https://github.com/pataar/postbode/releases/tag/v9.9.9"]
+        );
+    }
+
+    #[test]
+    fn no_newer_release_shows_only_the_version() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = fx.harness();
+        harness.state_mut().update = UpdateCheck::Done(None);
+        harness.run();
+        assert!(harness.query_by_label_contains("available").is_none());
+        assert!(
+            harness
+                .query_by_label(&format!("v{}", env!("CARGO_PKG_VERSION")))
+                .is_some()
+        );
     }
 }

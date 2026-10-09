@@ -90,6 +90,7 @@ impl Fixture {
         let (client, received, states) = session(client, Box::new(|| {})).unwrap();
         let mut app = App::new(&config, self.paths.clone(), client, received, states);
         app.reconnect = |_, _| Err(anyhow::anyhow!("no daemon in tests"));
+        app.fetch_release = || Err(anyhow::anyhow!("no network in tests"));
         app.downloads = self.paths.cache_dir.join("downloads");
         std::fs::create_dir_all(&app.downloads).unwrap();
         let harness = Harness::builder()

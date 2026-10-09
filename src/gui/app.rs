@@ -15,6 +15,7 @@ use crate::paths::Paths;
 use crate::rules::{self as rule_file, Action, RulesError};
 use crate::store::{LogEntry, Message, Store, StoreError};
 use crate::sync::{Activity, Command, Event};
+use crate::update;
 
 use super::body;
 use super::folders;
@@ -218,6 +219,15 @@ pub(crate) enum Focus {
     List,
 }
 
+/// The release check: off in config, waiting for the first frame, running on its thread, or done with the version to
+/// announce.
+pub(crate) enum UpdateCheck {
+    Off,
+    Waiting,
+    Running(Receiver<Option<String>>),
+    Done(Option<String>),
+}
+
 pub struct App {
     pub(crate) accounts: Vec<Account>,
     pub(crate) activity_log: Vec<(String, LogEntry)>,
@@ -232,6 +242,7 @@ pub struct App {
     pub(crate) downloads: PathBuf,
     pub(crate) error: Option<String>,
     pub(crate) events: Receiver<Event>,
+    pub(crate) fetch_release: fn() -> anyhow::Result<String>,
     pub(crate) focus: Focus,
     pub(crate) focus_search: bool,
     pub(crate) help_open: bool,
@@ -260,6 +271,7 @@ pub struct App {
     pub(crate) theme: egui::ThemePreference,
     pub(crate) theme_applied: bool,
     pub(crate) trash: Vec<TrashRow>,
+    pub(crate) update: UpdateCheck,
     pub(crate) view: View,
     pub(crate) view_dirty: bool,
 }
@@ -305,6 +317,7 @@ impl App {
             downloads: downloads_dir(),
             error: None,
             events,
+            fetch_release: update::fetch,
             focus: Focus::List,
             focus_search: false,
             help_open: false,
@@ -328,6 +341,11 @@ impl App {
             theme: preference(config.ui.theme),
             theme_applied: false,
             trash: Vec::new(),
+            update: if config.ui.check_updates {
+                UpdateCheck::Waiting
+            } else {
+                UpdateCheck::Off
+            },
             view: View::Folder {
                 account: 0,
                 folder: "INBOX".into(),
@@ -350,6 +368,7 @@ impl App {
         self.receive(now);
         self.receive_html(&ctx);
         self.keep_daemon(&ctx, now);
+        self.check_release(&ctx);
         if std::mem::take(&mut self.view_dirty) {
             self.reload_view();
         }
@@ -489,6 +508,45 @@ impl App {
             ctx.request_repaint();
         });
         attempt
+    }
+
+    /// Starts the release check at the first frame, after the test fixture has swapped `fetch_release`, then takes its
+    /// answer.
+    fn check_release(&mut self, ctx: &egui::Context) {
+        let next = match &self.update {
+            UpdateCheck::Waiting => {
+                let (done, answer) = mpsc::channel();
+                let (cache, fetch, ctx) =
+                    (self.paths.update_check(), self.fetch_release, ctx.clone());
+                std::thread::spawn(move || {
+                    let _ = done.send(update::check(
+                        &cache,
+                        crate::time::now(),
+                        env!("CARGO_PKG_VERSION"),
+                        fetch,
+                    ));
+                    ctx.request_repaint();
+                });
+                Some(UpdateCheck::Running(answer))
+            }
+            UpdateCheck::Running(answer) => match answer.try_recv() {
+                Ok(newer) => Some(UpdateCheck::Done(newer)),
+                Err(TryRecvError::Disconnected) => Some(UpdateCheck::Done(None)),
+                Err(TryRecvError::Empty) => None,
+            },
+            UpdateCheck::Off | UpdateCheck::Done(_) => None,
+        };
+        if let Some(next) = next {
+            self.update = next;
+        }
+    }
+
+    /// The newer release to announce, once the check has found one.
+    pub(crate) fn newer_release(&self) -> Option<&str> {
+        match &self.update {
+            UpdateCheck::Done(newer) => newer.as_deref(),
+            _ => None,
+        }
     }
 
     /// Commands sent before the loss may never be answered, so their edits go and the view reloads from the store, which
@@ -2084,5 +2142,48 @@ mod tests {
         assert_eq!(uids(&harness), [3, 2, 1]);
         assert_eq!(harness.state().accounts[0].queued, 0);
         assert!(harness.query_by_label_contains("queued").is_none());
+    }
+
+    /// Steps frames until the background release check has answered.
+    fn finish_update_check(harness: &mut egui_kittest::Harness<'_, App>) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !matches!(harness.state().update, UpdateCheck::Done(_)) && Instant::now() < deadline {
+            harness.step();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(matches!(harness.state().update, UpdateCheck::Done(_)));
+    }
+
+    #[test]
+    fn a_cached_newer_release_reaches_the_window() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ncheck_updates = true\n");
+        let cached = update::Cached {
+            checked_at: crate::time::now(),
+            latest: Some("999.0.0".into()),
+        };
+        update::save(&fx.paths.update_check(), &cached).unwrap();
+        let (mut harness, _wires) = fx.harness();
+        finish_update_check(&mut harness);
+        assert_eq!(harness.state().newer_release(), Some("999.0.0"));
+    }
+
+    #[test]
+    fn a_failed_check_shows_nothing_and_is_remembered() {
+        let fx = Fixture::new(&["work"]);
+        fx.append_config("[ui]\ncheck_updates = true\n");
+        let (mut harness, _wires) = fx.harness();
+        finish_update_check(&mut harness);
+        assert_eq!(harness.state().newer_release(), None);
+        assert!(update::load(&fx.paths.update_check()).is_some());
+    }
+
+    #[test]
+    fn by_default_no_check_starts() {
+        let fx = Fixture::new(&["work"]);
+        let (mut harness, _wires) = fx.harness();
+        harness.run();
+        assert!(matches!(harness.state().update, UpdateCheck::Off));
+        assert!(!fx.paths.update_check().exists());
     }
 }
