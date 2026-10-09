@@ -135,7 +135,7 @@ fn platform_store() -> Result<std::sync::Arc<keyring_core::CredentialStore>, Str
 }
 
 fn map_keyring_error(e: keyring_core::Error, account_name: &str) -> CredentialError {
-    log::debug!("keyring error for '{account_name}': {e:?}");
+    log::debug!("keyring error for '{account_name}': {e}");
     match e {
         keyring_core::Error::NoEntry => CredentialError::NotFound(account_name.to_string()),
         keyring_core::Error::NoStorageAccess(_) => CredentialError::Locked,
