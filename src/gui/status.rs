@@ -8,6 +8,13 @@ use crate::time::clock;
 use super::app::{Account, App, UiAction};
 use super::{icons, theme, toolbar};
 
+// Fixed in tests so a release bump does not change every GUI snapshot.
+pub(crate) const VERSION: &str = if cfg!(test) {
+    "0.0.0"
+} else {
+    env!("CARGO_PKG_VERSION")
+};
+
 /// The account's status line: its error or its latest activity; plus queued commands.
 pub(crate) fn account_line(account: &Account) -> String {
     let state = match (&account.error, &account.activity) {
@@ -142,7 +149,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                 update_link(ui, version);
             }
             ui.label(
-                egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                egui::RichText::new(format!("v{VERSION}"))
                     .monospace()
                     .weak(),
             );
@@ -563,10 +570,6 @@ mod tests {
         harness.state_mut().update = UpdateCheck::Done(None);
         harness.run();
         assert!(harness.query_by_label_contains("available").is_none());
-        assert!(
-            harness
-                .query_by_label(&format!("v{}", env!("CARGO_PKG_VERSION")))
-                .is_some()
-        );
+        assert!(harness.query_by_label(&format!("v{VERSION}")).is_some());
     }
 }
