@@ -282,12 +282,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyrender"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1755d0ef8e00e87b6b825dfbe5a35d34d3b302e97e80a48e93f9cd361fbada06"
+dependencies = [
+ "kurbo",
+ "peniko",
+ "raw-window-handle",
+ "smallvec",
+]
+
+[[package]]
 name = "anyrender_svg"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9a06a9cab20563ae5b392239db09d42222820fd3706fe483db7d3cb25546c24"
 dependencies = [
- "anyrender",
+ "anyrender 0.13.0",
  "image",
  "kurbo",
  "peniko",
@@ -300,7 +312,7 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fb392bf738b1e50c50fc82824ff3f875f15632717ba732fe68e2fe6e1011e6c"
 dependencies = [
- "anyrender",
+ "anyrender 0.13.0",
  "bytemuck",
  "color",
  "debug_timer",
@@ -708,7 +720,7 @@ version = "0.3.0-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0563058329a06eb1f6d08e6ccd9ec139bac23ff9fd6598a19269e1faacda5f16"
 dependencies = [
- "anyrender",
+ "anyrender 0.13.0",
  "anyrender_svg",
  "blitz-dom",
  "blitz-traits",
@@ -4042,7 +4054,7 @@ name = "postbode"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "anyrender",
+ "anyrender 0.14.0",
  "anyrender_vello_cpu",
  "apple-native-keyring-store",
  "async-imap",

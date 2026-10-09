@@ -15,7 +15,7 @@ include = ["/assets/fonts/**", "/assets/icon.png", "/CHANGELOG.md", "/Cargo.lock
 
 [dependencies]
 anyhow = "1"                                         # error context in the binary and sync loop
-anyrender = { version = "=0.13.0", optional = true }  # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
+anyrender = { version = "=0.14.0", optional = true }  # the drawing trait Blitz paints into; pinned to the version blitz-paint uses
 anyrender_vello_cpu = { version = "=0.17.0", optional = true }  # CPU raster for Blitz, so HTML mail becomes an egui texture without a GPU path
 async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }  # IMAP client, maintained, IDLE support
 blitz-dom = { version = "=0.3.0-beta.2", optional = true, default-features = false, features = ["system-fonts", "svg", "floats"] }  # HTML mail: style and layout (Stylo, Taffy, Parley); beta, so pinned exactly
