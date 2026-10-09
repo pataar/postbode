@@ -1,8 +1,8 @@
 # Postbode
 
-A fast, simple IMAP mail client for powerusers and developers, with rules that keep your mailbox clean. Postbode syncs your mail into a local store, moves it into folders and deletes transient mail such as sign-in codes and magic links once you no longer need it. Agents can propose rules; you approve them.
+A fast, simple IMAP mail client for powerusers and developers, with rules that keep your mailbox clean. Postbode syncs your mail into a local store, moves it into folders and deletes transient mail such as sign-in codes and magic links once you no longer need it.
 
-Run it headless, as a background service that syncs and applies rules on a server or at login, or use it through an interface: `postbode gui` opens a keyboard-driven mail window, everything also works from the command line, and agents can use it over MCP (see [Agents over MCP](https://postbode.pataar.nl/mcp.html)).
+Run it headless, as a background service that syncs and applies rules on a server or at login, or use it through an interface: `postbode gui` opens a keyboard-driven mail window, everything also works from the command line, and agents can use it over MCP. That access is scoped: by default an agent sees headers but no message bodies, can only propose rules for you to approve, and can be limited to one account (see [Agents over MCP](https://postbode.pataar.nl/mcp.html)).
 
 ![The Postbode mail window](https://raw.githubusercontent.com/pataar/postbode/main/tests/snapshots/gui_inbox_light.png#gh-light-mode-only)
 ![The Postbode mail window](https://raw.githubusercontent.com/pataar/postbode/main/tests/snapshots/gui_inbox_dark.png#gh-dark-mode-only)

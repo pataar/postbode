@@ -1,14 +1,16 @@
 <p align="center"><img src="assets/logo.svg" alt="Postbode" width="400"></p>
 
-[![CI](https://github.com/pataar/postbode/actions/workflows/ci.yml/badge.svg)](https://github.com/pataar/postbode/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-postbode.pataar.nl-orange)](https://postbode.pataar.nl/)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
+<p align="center">
+  <a href="https://github.com/pataar/postbode/actions/workflows/ci.yml"><img src="https://github.com/pataar/postbode/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://postbode.pataar.nl/"><img src="https://img.shields.io/badge/docs-postbode.pataar.nl-orange" alt="Docs"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
+</p>
 
 # Postbode
 
-A fast, simple IMAP mail client for powerusers and developers, with rules that keep your mailbox clean. Postbode syncs your mail into a local store, moves it into folders and deletes transient mail such as sign-in codes and magic links once you no longer need it. Agents can propose rules; you approve them.
+A fast, simple IMAP mail client for powerusers and developers, with rules that keep your mailbox clean. Postbode syncs your mail into a local store, moves it into folders and deletes transient mail such as sign-in codes and magic links once you no longer need it.
 
-Run it headless, as a background service that syncs and applies rules on a server or at login, or use it through an interface: `postbode gui` opens a keyboard-driven mail window, everything also works from the command line, and agents can use it over MCP (see [Agents over MCP](https://postbode.pataar.nl/mcp.html)).
+Run it headless, as a background service that syncs and applies rules on a server or at login, or use it through an interface: `postbode gui` opens a keyboard-driven mail window, everything also works from the command line, and agents can use it over MCP. That access is scoped: by default an agent sees headers but no message bodies, can only propose rules for you to approve, and can be limited to one account (see [Agents over MCP](https://postbode.pataar.nl/mcp.html)).
 
 ![The Postbode mail window](https://raw.githubusercontent.com/pataar/postbode/main/tests/snapshots/gui_inbox_light.png#gh-light-mode-only)
 ![The Postbode mail window](https://raw.githubusercontent.com/pataar/postbode/main/tests/snapshots/gui_inbox_dark.png#gh-dark-mode-only)
