@@ -23,14 +23,8 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - uses: kunobi-ninja/kache-action@v1
-        with:
-          save-cache: ${{ github.ref == 'refs/heads/main' }}
-          cache-key-prefix: kache-lint
-          pr-comment: false
       - uses: Swatinem/rust-cache@v2
         with:
-          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2
         with:
@@ -52,14 +46,8 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
-      - uses: kunobi-ninja/kache-action@v1
-        with:
-          save-cache: ${{ github.ref == 'refs/heads/main' }}
-          cache-key-prefix: kache-test
-          pr-comment: false
       - uses: Swatinem/rust-cache@v2
         with:
-          cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Start Dovecot
         if: runner.os == 'Linux'
