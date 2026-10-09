@@ -57,6 +57,9 @@ pub enum PasswordSource {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UiConfig {
+    /// Ask GitHub once a day whether a newer release is out.
+    #[serde(default)]
+    pub check_updates: bool,
     #[serde(default)]
     pub theme: Theme,
 }
@@ -412,5 +415,15 @@ notify = false
         let path = dir.path().join("config.toml");
         Config::parse(SAMPLE).unwrap().save(&path).unwrap();
         assert!(!std::fs::read_to_string(&path).unwrap().contains("[ui]"));
+    }
+
+    #[test]
+    fn check_updates_is_off_unless_turned_on() {
+        assert!(!Config::default().ui.check_updates);
+        assert!(!Config::parse(SAMPLE).unwrap().ui.check_updates);
+        let theme_only = format!("{SAMPLE}\n[ui]\ntheme = \"dark\"\n");
+        assert!(!Config::parse(&theme_only).unwrap().ui.check_updates);
+        let on = format!("{SAMPLE}\n[ui]\ncheck_updates = true\n");
+        assert!(Config::parse(&on).unwrap().ui.check_updates);
     }
 }
