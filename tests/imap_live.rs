@@ -119,10 +119,27 @@ fn append_fetch_and_flags_round_trip() {
     let uid = new[0].uid;
     ops.add_flags(uid, &["\\Seen", "\\Flagged"]).unwrap();
     ops.remove_flags(uid, &["\\Flagged"]).unwrap();
-    let flags = ops.fetch_flags(uid).unwrap().remove(0).flags;
+    let flags = ops.fetch_flags(uid, None).unwrap().remove(0).flags;
     assert!(flags.iter().any(|f| f == "\\Seen"), "{flags:?}");
     assert!(!flags.iter().any(|f| f == "\\Flagged"), "{flags:?}");
     assert_eq!(ops.fetch_raw(uid).unwrap().unwrap(), mail("hello"));
+}
+
+#[test]
+fn condstore_fetches_only_flags_changed_since_a_modseq() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT, "condstore"));
+    ops.append("INBOX", &mail("one"), &[]).unwrap();
+    ops.append("INBOX", &mail("two"), &[]).unwrap();
+    let before = ops.select("INBOX").unwrap();
+    assert_eq!(before.exists, 2);
+    let since = before.highest_modseq.expect("Dovecot advertises CONDSTORE");
+    let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+    ops.add_flags(uids[1], &["\\Seen"]).unwrap();
+    let changed = ops.fetch_flags(uids[1], Some(since)).unwrap();
+    assert_eq!(changed.len(), 1, "{changed:?}");
+    assert_eq!(changed[0].uid, uids[1]);
+    assert!(ops.select("INBOX").unwrap().highest_modseq > Some(since));
 }
 
 fn move_round_trip(port: u16, test: &str, expect_move: bool) {

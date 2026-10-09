@@ -13,6 +13,10 @@ pub struct RemoteFolder {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectInfo {
     pub uidvalidity: u32,
+    /// Messages in the folder (EXISTS).
+    pub exists: u32,
+    /// HIGHESTMODSEQ when the server supports CONDSTORE for this folder.
+    pub highest_modseq: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,8 +62,12 @@ pub trait MailOps {
     fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>>;
     /// Envelopes with `first <= uid <= last` in the selected folder.
     fn fetch_envelopes(&mut self, first: u32, last: u32) -> MailResult<Vec<Envelope>>;
-    /// Current flags for every uid <= `upto_uid` in the selected folder.
-    fn fetch_flags(&mut self, upto_uid: u32) -> MailResult<Vec<FlagUpdate>>;
+    /// Current flags for uids <= `upto_uid` in the selected folder; with `changed_since`, only those whose modseq is above it.
+    fn fetch_flags(
+        &mut self,
+        upto_uid: u32,
+        changed_since: Option<u64>,
+    ) -> MailResult<Vec<FlagUpdate>>;
     fn fetch_raw(&mut self, uid: u32) -> MailResult<Option<Vec<u8>>>;
     fn add_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
     fn remove_flags(&mut self, uid: u32, flags: &[&str]) -> MailResult<()>;
@@ -105,6 +113,11 @@ mod recording {
         pub shutdown_on_list_folders: Option<Arc<AtomicBool>>,
         /// A non-zero value becomes INBOX's uidvalidity at its next select; a test can set it while the fake is borrowed.
         pub next_inbox_uidvalidity: Option<Arc<AtomicU32>>,
+        /// Reports HIGHESTMODSEQ and honours CHANGEDSINCE, like a CONDSTORE server.
+        pub condstore: bool,
+        /// Per message the flags last seen and the modseq they got, so tests may edit `mail` directly.
+        modseqs: HashMap<(String, u32), (Vec<String>, u64)>,
+        highest_modseq: HashMap<String, u64>,
         envelope_fetches: usize,
         selected: String,
         next_uid: HashMap<String, u32>,
@@ -125,6 +138,9 @@ mod recording {
                 shutdown_when_idle_empty: None,
                 shutdown_on_list_folders: None,
                 next_inbox_uidvalidity: None,
+                condstore: true,
+                modseqs: HashMap::new(),
+                highest_modseq: HashMap::new(),
                 envelope_fetches: 0,
                 selected: String::new(),
                 next_uid: HashMap::new(),
@@ -163,6 +179,23 @@ mod recording {
             }
             let next = self.next_uid.entry(folder.into()).or_insert(1);
             *next = (*next).max(uid + 1);
+        }
+
+        /// Gives every message whose flags changed since last looked at a new modseq; returns the folder's highest.
+        fn refresh_modseqs(&mut self, folder: &str) -> u64 {
+            let highest = self.highest_modseq.entry(folder.into()).or_insert(1);
+            for env in self.mail.get(folder).into_iter().flatten() {
+                let key = (folder.to_string(), env.uid);
+                if self
+                    .modseqs
+                    .get(&key)
+                    .is_none_or(|(flags, _)| *flags != env.flags)
+                {
+                    *highest += 1;
+                    self.modseqs.insert(key, (env.flags.clone(), *highest));
+                }
+            }
+            *highest
         }
 
         fn envelope_mut(&mut self, uid: u32) -> MailResult<&mut Envelope> {
@@ -206,7 +239,12 @@ mod recording {
                 .get(folder)
                 .ok_or_else(|| MailError::Protocol(format!("no folder {folder}")))?;
             self.selected = folder.to_string();
-            Ok(SelectInfo { uidvalidity })
+            let highest_modseq = self.refresh_modseqs(folder);
+            Ok(SelectInfo {
+                uidvalidity,
+                exists: self.mail.get(folder).map_or(0, |list| list.len() as u32),
+                highest_modseq: self.condstore.then_some(highest_modseq),
+            })
         }
 
         fn search_uids(&mut self, from_uid: u32) -> MailResult<Vec<u32>> {
@@ -250,15 +288,31 @@ mod recording {
             Ok(out)
         }
 
-        fn fetch_flags(&mut self, upto_uid: u32) -> MailResult<Vec<FlagUpdate>> {
+        fn fetch_flags(
+            &mut self,
+            upto_uid: u32,
+            changed_since: Option<u64>,
+        ) -> MailResult<Vec<FlagUpdate>> {
+            let since = changed_since
+                .map(|m| format!(" since {m}"))
+                .unwrap_or_default();
             self.calls
-                .push(format!("fetch_flags {} {upto_uid}", self.selected));
+                .push(format!("fetch_flags {} {upto_uid}{since}", self.selected));
+            let folder = self.selected.clone();
+            self.refresh_modseqs(&folder);
+            let changed = |uid: u32| {
+                changed_since.is_none_or(|since| {
+                    self.modseqs
+                        .get(&(folder.clone(), uid))
+                        .is_some_and(|(_, modseq)| *modseq > since)
+                })
+            };
             Ok(self
                 .mail
-                .get(&self.selected)
+                .get(&folder)
                 .map(|l| {
                     l.iter()
-                        .filter(|e| e.uid <= upto_uid)
+                        .filter(|e| e.uid <= upto_uid && changed(e.uid))
                         .map(|e| FlagUpdate {
                             uid: e.uid,
                             flags: e.flags.clone(),
