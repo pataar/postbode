@@ -13,7 +13,7 @@ use crate::daemon::wire::AccountStatus;
 use crate::message::{self, Attachment, HtmlBody, clean};
 use crate::paths::Paths;
 use crate::rules::{self as rule_file, Action, RulesError};
-use crate::store::{LogEntry, Message, Store, StoreError};
+use crate::store::{LogEntry, Message, Store, StoreError, has_flag};
 use crate::sync::{Activity, Command, Event};
 use crate::update;
 
@@ -124,23 +124,42 @@ impl Account {
 
     pub fn reload_folders(&mut self) {
         let Ok(store) = &self.store else { return };
-        match folder_rows(store) {
+        match folder_rows(store, &self.pending) {
             Ok(rows) => self.folders = rows,
             Err(e) => log::warn!("[{}] could not list folders: {e}", self.name),
         }
     }
 }
 
-fn folder_rows(store: &Store) -> Result<Vec<FolderRow>, StoreError> {
+/// The folders with their unread counts as the pending edits will leave them.
+fn folder_rows(
+    store: &Store,
+    pending: &HashMap<RowKey, Vec<Optimistic>>,
+) -> Result<Vec<FolderRow>, StoreError> {
+    let mut delta: HashMap<&str, i64> = HashMap::new();
+    for ((folder, uid), edits) in pending {
+        let Some(stored) = store.message(folder, *uid)? else {
+            continue;
+        };
+        let was_unread = !has_flag(&stored.flags, "\\Seen");
+        let unread = edits.iter().fold(was_unread, |unread, edit| match edit {
+            Optimistic::Hidden => false,
+            Optimistic::Seen(seen) => !seen,
+            Optimistic::Flagged(_) => unread,
+        });
+        *delta.entry(folder).or_default() += i64::from(unread) - i64::from(was_unread);
+    }
     let mut folders = store.folders()?;
     folders::sort(&mut folders);
     folders
         .into_iter()
         .map(|f| {
+            let unread =
+                i64::from(store.unread_count(&f.name)?) + delta.get(f.name.as_str()).unwrap_or(&0);
             Ok(FolderRow {
                 delimiter: f.delimiter,
                 special_use: f.special_use,
-                unread: store.unread_count(&f.name)?,
+                unread: u32::try_from(unread).unwrap_or(0),
                 name: f.name,
             })
         })
@@ -786,8 +805,11 @@ impl App {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
             }
             UiAction::Restore(account, file) => {
+                // A failed restore reloads the view, which lists the backup again.
+                self.trash.retain(|row| row.entry.path != file);
                 if !self.send(account, Command::Restore { file }) {
                     self.note_error(Some(account), DAEMON_LOST.into());
+                    self.refresh(account);
                 }
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
@@ -1066,6 +1088,9 @@ impl App {
             return;
         }
         self.body = current.map(|(account, key)| self.load_body(account, key, now, armed));
+        if let Some(account) = self.view_account() {
+            self.prefetch_neighbours(account);
+        }
     }
 
     /// The message, its attachments and its HTML as stored now.
@@ -1109,18 +1134,39 @@ impl App {
         }
     }
 
+    /// Asks the sync thread for a body once per message.
+    fn request_body(&mut self, account: usize, key: &RowKey) {
+        if self.requested.insert((account, key.clone())) {
+            let (folder, uid) = key.clone();
+            self.send(account, Command::FetchBody { folder, uid });
+        }
+    }
+
+    /// Asks for the missing bodies of the rows beside the cursor, so stepping to them shows text at once.
+    fn prefetch_neighbours(&mut self, account: usize) {
+        let Ok(store) = &self.accounts[account].store else {
+            return;
+        };
+        let cursor = self.list.cursor;
+        let missing: Vec<RowKey> = [cursor.checked_sub(1), Some(cursor + 1)]
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.list.rows.get(index))
+            .map(Row::key)
+            .filter(|(folder, uid)| {
+                matches!(store.message(folder, *uid), Ok(Some(m)) if m.body_text.is_none())
+            })
+            .collect();
+        for key in missing {
+            self.request_body(account, &key);
+        }
+    }
+
     /// The stored message and its attachments; asks the sync thread for a missing body once per message.
     fn load_body(&mut self, account: usize, key: RowKey, now: f64, armed: bool) -> BodyState {
         let (stored, attachments, html) = self.read_stored(account, &key);
-        let missing = stored.as_ref().is_some_and(|m| m.body_text.is_none());
-        if missing && self.requested.insert((account, key.clone())) {
-            self.send(
-                account,
-                Command::FetchBody {
-                    folder: key.0.clone(),
-                    uid: key.1,
-                },
-            );
+        if stored.as_ref().is_some_and(|m| m.body_text.is_none()) {
+            self.request_body(account, &key);
         }
         let text = body_text(stored.as_ref());
         BodyState {
@@ -1437,6 +1483,7 @@ impl App {
             for key in keys {
                 state.pending.entry(key).or_default().push(optimistic);
             }
+            state.reload_folders();
         } else {
             self.note_error(Some(account), DAEMON_LOST.into());
         }
@@ -1924,6 +1971,47 @@ mod tests {
         assert!(harness.state().move_picker.is_some());
         harness.state_mut().select_view(View::Rules);
         assert!(harness.state().move_picker.is_none());
+    }
+
+    #[test]
+    fn the_unread_count_follows_sent_actions_before_the_daemon_answers() {
+        let fx = Fixture::new(&["work"]);
+        for uid in [1, 2] {
+            let mut unread = message("INBOX", uid, "hello");
+            unread.flags = String::new();
+            fx.add("work", unread);
+        }
+        let (mut harness, _wires) = fx.harness();
+        let inbox_unread = |harness: &egui_kittest::Harness<'_, App>| {
+            let folders = &harness.state().accounts[0].folders;
+            folders.iter().find(|f| f.name == "INBOX").map(|f| f.unread)
+        };
+        assert_eq!(inbox_unread(&harness), Some(2));
+        press(&mut harness, "u");
+        assert_eq!(inbox_unread(&harness), Some(1));
+        press(&mut harness, "j");
+        press(&mut harness, "e");
+        assert_eq!(inbox_unread(&harness), Some(0));
+    }
+
+    #[test]
+    fn the_next_rows_body_is_fetched_before_the_cursor_reaches_it() {
+        let fx = Fixture::new(&["work"]);
+        inbox(&fx, &[1, 3]);
+        let mut later = message("INBOX", 2, "later");
+        later.body_text = None;
+        fx.add("work", later);
+        let (mut harness, wires) = fx.harness();
+        let fetch = (
+            "work".to_string(),
+            Command::FetchBody {
+                folder: "INBOX".into(),
+                uid: 2,
+            },
+        );
+        assert_eq!(wires.sent(), [fetch]);
+        press(&mut harness, "j");
+        assert!(wires.sent().is_empty());
     }
 
     #[test]

@@ -740,6 +740,19 @@ fn run_commands(
     Ok(run)
 }
 
+/// Syncs `folder` now so front ends see a change at once; a failure is left to the next full pass.
+fn sync_now(ops: &mut dyn MailOps, store: &Store, folder: &str) {
+    let stored = store.folder(folder).ok().flatten();
+    let remote = RemoteFolder {
+        name: folder.to_string(),
+        special_use: stored.as_ref().and_then(|f| f.special_use.clone()),
+        delimiter: stored.and_then(|f| f.delimiter),
+    };
+    if let Err(e) = sync_folder_with(ops, store, &remote, &mut |_, _| Ok(false)) {
+        log::warn!("{folder}: sync after a command failed: {e}");
+    }
+}
+
 /// Runs one command other than `SyncNow` and sends its answer; `Err` only for a lost connection.
 #[allow(clippy::too_many_arguments)]
 fn run_command(
@@ -786,12 +799,18 @@ fn run_command(
                     connection_lost(&e).then_some(e),
                 ),
             };
-            // Only the source folder is updated locally; the target shows the message once it is synced.
-            let moved = matches!(
-                action,
-                Action::Archive | Action::Delete | Action::Move(_) | Action::Trash
-            );
-            run.wants_full_pass = moved && results.iter().any(|(_, result)| result.is_ok());
+            /* A move only drops the source row, so the target is synced before `ActionDone` makes the GUI reload. The
+            full pass after it runs the target folder's rules. */
+            if results.iter().any(|(_, result)| result.is_ok()) {
+                let target = crate::rules::apply::move_target(store, &folder, &action);
+                if let Ok(Some(target)) = target {
+                    sync_now(ops, store, &target);
+                }
+                run.wants_full_pass = matches!(
+                    action,
+                    Action::Archive | Action::Delete | Action::Move(_) | Action::Trash
+                );
+            }
             let _ = events.send(Event::ActionDone {
                 account: name(),
                 folder,
@@ -888,6 +907,7 @@ fn run_command(
             run.used_connection = true;
             match trash.restore(ops, &file) {
                 Ok(folder) => {
+                    sync_now(ops, store, &folder);
                     run.wants_full_pass = true;
                     let _ = events.send(Event::Restored {
                         account: name(),
