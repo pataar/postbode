@@ -377,7 +377,11 @@ impl App {
             let image = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
             self.logo = Some(ctx.load_texture("logo", image, egui::TextureOptions::LINEAR));
         }
+        let bar = egui::Frame::side_top_panel(ui.style());
+        // The toolbar's and status bar's first and last items are icon buttons on one side, whose glyphs sit a
+        // padding inside them, so that side gets one padding less to line the glyphs up with the panes' content.
         egui::Panel::top("toolbar")
+            .frame(bar.inner_margin(margin(theme::INSET, theme::PAD, 2.0)))
             .exact_size(theme::TOP_BAR)
             .show(ui, |ui| actions.extend(toolbar::show(self, ui)));
         if self.config_changed {
@@ -388,12 +392,14 @@ impl App {
                 );
             });
         }
-        egui::Panel::bottom("status").show(ui, |ui| actions.extend(status::show(self, ui)));
-        let side = egui::Frame::side_top_panel(ui.style());
-        egui::Panel::left("folders")
+        egui::Panel::bottom("status")
+            .frame(bar.inner_margin(margin(theme::PAD, theme::INSET, theme::PAD)))
+            .show(ui, |ui| actions.extend(status::show(self, ui)));
+        let side = egui::Frame::side_top_panel(ui.style()).inner_margin(theme::PAD);
+        egui::Panel::left(FOLDERS)
             .frame(theme::pane(side, ui, self.focus == Focus::Folders))
             .resizable(true)
-            .default_size(220.0)
+            .default_size(FOLDERS_WIDTH)
             .show(ui, |ui| actions.extend(folders::show(self, ui)));
         // Rules, Activity and Trash have no list pane, so the central panel stands for both list and body there.
         let central = central_panel(ui, self.focus != Focus::Folders);
@@ -1516,8 +1522,25 @@ impl App {
 
 /// The central panel on the base colour; side panels and the status bar keep the darker panel colour.
 pub(crate) fn central_panel(ui: &egui::Ui, focused: bool) -> egui::CentralPanel {
-    let frame = egui::Frame::central_panel(ui.style()).fill(ui.visuals().window_fill);
+    let frame = egui::Frame::central_panel(ui.style())
+        .fill(ui.visuals().window_fill)
+        .inner_margin(margin(theme::INSET, theme::INSET, theme::PAD));
     egui::CentralPanel::default().frame(theme::pane(frame, ui, focused))
+}
+
+/// The folder pane's id, which the toolbar reads its width from.
+pub(crate) const FOLDERS: &str = "folders";
+pub(crate) const FOLDERS_WIDTH: f32 = 220.0;
+
+fn margin(left: f32, right: f32, vertical: f32) -> egui::Margin {
+    #[allow(clippy::cast_possible_truncation, reason = "margins are a few points")]
+    let (left, right, vertical) = (left as i8, right as i8, vertical as i8);
+    egui::Margin {
+        left,
+        right,
+        top: vertical,
+        bottom: vertical,
+    }
 }
 
 /// A stored message, its attachments and its HTML.

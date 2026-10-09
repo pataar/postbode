@@ -63,6 +63,8 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             actions.push(UiAction::SyncNow);
         }
         ui.vertical(|ui| {
+            // Text lines, not rows of controls, though each line can be clicked.
+            ui.spacing_mut().interact_size.y = 0.0;
             if let Some(error) = &app.error
                 && ui
                     .add(
@@ -159,7 +161,7 @@ pub(crate) fn show_help(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
         .open(&mut open)
         .collapsible(false)
         .show(ctx, |ui| {
-            egui::Grid::new("keys").num_columns(2).show(ui, |ui| {
+            theme::grid("keys", ui).num_columns(2).show(ui, |ui| {
                 for (key, what) in KEYS {
                     ui.strong(key);
                     ui.label(what);
