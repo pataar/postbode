@@ -6,7 +6,10 @@ use crate::rules::Action;
 
 use super::app::{App, FOLDERS, FOLDERS_WIDTH, UiAction, View};
 use super::icons;
-use super::theme::{CONTROL, ICON, INSET};
+use super::theme::{self, CONTROL, ICON, INSET, PAD};
+
+/// Width of the search field.
+const SEARCH_WIDTH: f32 = 260.0;
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
@@ -35,44 +38,47 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         let in_folder = matches!(app.view, View::Folder { .. });
         // Closed picker only: an action would move the cursor, and the picker would then move a different message.
         let has_row = in_folder && !app.list.rows.is_empty() && app.move_picker.is_none();
-        for (icon, name, hint, action) in [
-            (
-                icons::ARCHIVE,
-                "Archive message",
-                "Archive · e",
-                UiAction::Act(Action::Archive),
-            ),
-            (
-                icons::MOVE,
-                "Move message",
-                "Move · m",
-                UiAction::OpenMovePicker,
-            ),
-            (
-                icons::TRASH,
-                "Delete message",
-                "Delete · #",
-                UiAction::Act(Action::Trash),
-            ),
-            (
-                icons::FLAG,
-                "Flag message",
-                "Flag · s",
-                UiAction::ToggleFlag,
-            ),
-            (
-                icons::MARK_UNREAD,
-                "Mark read or unread",
-                "Read or unread · u",
-                UiAction::ToggleRead,
-            ),
-        ] {
-            if icon_button(ui, has_row, icon, name, hint).clicked() {
-                actions.push(action);
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = PAD / 2.0;
+            for (icon, name, hint, action) in [
+                (
+                    icons::ARCHIVE,
+                    "Archive message",
+                    "Archive · e",
+                    UiAction::Act(Action::Archive),
+                ),
+                (
+                    icons::MOVE,
+                    "Move message",
+                    "Move · m",
+                    UiAction::OpenMovePicker,
+                ),
+                (
+                    icons::TRASH,
+                    "Delete message",
+                    "Delete · #",
+                    UiAction::Act(Action::Trash),
+                ),
+                (
+                    icons::FLAG,
+                    "Flag message",
+                    "Flag · s",
+                    UiAction::ToggleFlag,
+                ),
+                (
+                    icons::MARK_UNREAD,
+                    "Mark read or unread",
+                    "Read or unread · u",
+                    UiAction::ToggleRead,
+                ),
+            ] {
+                if icon_button(ui, has_row, icon, name, hint).clicked() {
+                    actions.push(action);
+                }
             }
-        }
+        });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icon_button(ui, in_folder, icons::SEARCH, "Search", "Search · /").clicked() {
+            if search_field(ui, in_folder).clicked() {
                 actions.push(UiAction::StartSearch);
             }
         });
@@ -99,6 +105,46 @@ pub(crate) fn icon_button(
     let name = name.to_string();
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, &name));
     response
+}
+
+/// Looks like a search field and starts the list pane's search, as `/` does; typing happens there.
+fn search_field(ui: &mut egui::Ui, enabled: bool) -> egui::Response {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(SEARCH_WIDTH, CONTROL), sense);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Search"));
+    if ui.is_rect_visible(rect) {
+        let palette = theme::palette(ui);
+        let fill = if enabled && response.hovered() {
+            palette.pressed
+        } else {
+            palette.faint
+        };
+        let mut painter = ui.painter().clone();
+        if !enabled {
+            painter.multiply_opacity(ui.visuals().disabled_alpha());
+        }
+        painter.rect_filled(rect, PAD, fill);
+        let left = rect.left_center() + egui::vec2(PAD, 0.0);
+        let icon = painter.text(
+            left,
+            egui::Align2::LEFT_CENTER,
+            icons::SEARCH,
+            egui::FontId::proportional(ICON),
+            palette.muted,
+        );
+        painter.text(
+            left + egui::vec2(icon.width() + PAD, 0.0),
+            egui::Align2::LEFT_CENTER,
+            "Search mail",
+            egui::TextStyle::Body.resolve(ui.style()),
+            palette.muted,
+        );
+    }
+    response.on_hover_text("Search · /")
 }
 
 #[cfg(test)]
