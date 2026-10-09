@@ -79,6 +79,8 @@ pub(crate) struct BodyState {
     pub shown_at: f64,
     /// Set by `v`: the text view for this message even though it has HTML.
     pub show_text: bool,
+    /// The raw message, while the source window shows it.
+    pub source: Option<body::Source>,
     /// Why the HTML could not be shown; the text view shows instead, under this note.
     pub text_note: Option<&'static str>,
     /// The body text cleaned once on load, since the panel draws it every frame.
@@ -166,6 +168,7 @@ pub(crate) enum UiAction {
     Act(Action),
     ApproveRule(String),
     Collapse,
+    CloseSource,
     Escape,
     Expand,
     /// The pointer over the HTML page, in page points, or `None` once it left.
@@ -190,6 +193,7 @@ pub(crate) enum UiAction {
     NextFocus,
     OpenMovePicker,
     OpenRulesFile,
+    OpenSource,
     RejectRule(String),
     Restore(usize, PathBuf),
     SaveAttachment(usize),
@@ -420,6 +424,7 @@ impl App {
             }
         }
         actions.extend(list::show_move_picker(self, &ctx));
+        actions.extend(body::show_source(self, &ctx));
         actions.extend(status::show_help(self, &ctx));
         for action in actions {
             self.apply(&ctx, action);
@@ -655,6 +660,11 @@ impl App {
                     rule_file::edit::approve_from_now(&paths, &accounts, &name, crate::time::now())
                 });
             }
+            UiAction::CloseSource => {
+                if let Some(body) = &mut self.body {
+                    body.source = None;
+                }
+            }
             UiAction::Collapse => self.collapse(),
             UiAction::HtmlHover(at) => self.html_hover(at),
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
@@ -665,6 +675,8 @@ impl App {
             UiAction::Escape => {
                 if self.move_picker.is_some() {
                     self.move_picker = None;
+                } else if let Some(body) = self.body.as_mut().filter(|b| b.source.is_some()) {
+                    body.source = None;
                 } else if self.help_open {
                     self.help_open = false;
                 } else if self.history_open {
@@ -704,6 +716,7 @@ impl App {
                     self.move_picker = Some(String::new());
                 }
             }
+            UiAction::OpenSource => self.open_source(),
             UiAction::OpenRulesFile => self.open_rules_file(),
             UiAction::RejectRule(name) => {
                 self.edit_rules(|path| rule_file::edit::reject(path, &name));
@@ -1059,6 +1072,7 @@ impl App {
             saved: None,
             show_text: false,
             shown_at: now,
+            source: None,
             text,
         }
     }
@@ -1127,6 +1141,17 @@ impl App {
             Some(saved_note(raw.map(|raw| {
                 message::save_eml(&raw, subject, &self.downloads)
             })));
+    }
+
+    fn open_source(&mut self) {
+        let raw = self.shown_raw();
+        let Some(body) = &mut self.body else { return };
+        match raw {
+            Some(raw) => body.source = Some(body::Source::new(&raw)),
+            None => {
+                body.saved = Some("Could not show the source: the message is not downloaded".into())
+            }
+        }
     }
 
     /// Takes the render thread's replies for the shown layout; replies for an older one are dropped.

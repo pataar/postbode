@@ -1,4 +1,6 @@
 //! The right column: headers, attachments, and the body as HTML or as text with its links.
+use std::ops::Range;
+
 use eframe::egui;
 
 use crate::message::clean;
@@ -157,12 +159,18 @@ fn toolbar(body: &BodyState, account: &Account, ui: &mut egui::Ui) -> Vec<UiActi
     // The horizontal wrapper keeps right_to_left(Center) from centring in the pane's whole height.
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut save = icon_button(ui, downloaded, icons::SAVE, "Save .eml", "Save .eml");
-            if !downloaded {
-                save = save.on_disabled_hover_text(missing_text(account));
-            }
-            if save.clicked() {
-                actions.push(UiAction::SaveEml);
+            // Right to left, so View source is rightmost.
+            for (icon, name, action) in [
+                (icons::SOURCE, "View source", UiAction::OpenSource),
+                (icons::SAVE, "Save .eml", UiAction::SaveEml),
+            ] {
+                let mut button = icon_button(ui, downloaded, icon, name, name);
+                if !downloaded {
+                    button = button.on_disabled_hover_text(missing_text(account));
+                }
+                if button.clicked() {
+                    actions.push(action);
+                }
             }
         });
     });
@@ -202,6 +210,79 @@ fn show_text(ui: &mut egui::Ui, text: &str) {
         });
     }
 }
+
+/// Characters per row of the source window; a longer line is split so every row lays out quickly.
+pub(crate) const SOURCE_ROW: usize = 1000;
+
+/// A raw message as the source window shows it: the cleaned text once, and the byte range of each row in it.
+pub(crate) struct Source {
+    pub rows: Vec<Range<usize>>,
+    pub text: String,
+}
+
+impl Source {
+    /// ponytail: converts the whole message on the UI thread when the window opens; a message of tens of MB stalls one
+    /// frame. Build it on a thread if that is ever felt.
+    pub fn new(raw: &[u8]) -> Source {
+        let text = clean(&String::from_utf8_lossy(raw), true);
+        let rows = source_rows(&text);
+        Source { rows, text }
+    }
+}
+
+/// One range per line of `text`, and one per `SOURCE_ROW` characters of a longer line.
+pub(crate) fn source_rows(text: &str) -> Vec<Range<usize>> {
+    let mut rows = Vec::new();
+    let mut line_start = 0;
+    for line in text.split('\n') {
+        let mut row_start = line_start;
+        for (count, (at, _)) in line.char_indices().enumerate() {
+            if count > 0 && count % SOURCE_ROW == 0 {
+                rows.push(row_start..line_start + at);
+                row_start = line_start + at;
+            }
+        }
+        rows.push(row_start..line_start + line.len());
+        line_start += line.len() + 1;
+    }
+    rows
+}
+
+/// The source window of the shown message, while it is open. Copy copies the cleaned text, so a paste into a terminal
+/// cannot replay escape sequences.
+pub(crate) fn show_source(app: &App, ctx: &egui::Context) -> Vec<UiAction> {
+    let Some(source) = app.body.as_ref().and_then(|b| b.source.as_ref()) else {
+        return Vec::new();
+    };
+    let mut open = true;
+    egui::Window::new("Message source")
+        .open(&mut open)
+        .collapsible(false)
+        .default_size([720.0, 480.0])
+        .show(ctx, |ui| {
+            if ui.button("Copy").clicked() {
+                ui.ctx().copy_text(source.text.clone());
+            }
+            let height = ui.text_style_height(&egui::TextStyle::Monospace);
+            egui::ScrollArea::both().auto_shrink(false).show_rows(
+                ui,
+                height,
+                source.rows.len(),
+                |ui, visible| {
+                    for row in source.rows.get(visible).unwrap_or_default() {
+                        let line = source.text.get(row.clone()).unwrap_or_default();
+                        ui.add(egui::Label::new(egui::RichText::new(line).monospace()).extend());
+                    }
+                },
+            );
+        });
+    if open {
+        Vec::new()
+    } else {
+        vec![UiAction::CloseSource]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -821,12 +902,116 @@ mod tests {
         fx.add("work", m);
         let (mut harness, wires) = fx.harness();
         assert_eq!(wires.sent(), [fetch(1)]);
-        let button = harness.get_by_label("Save .eml");
-        assert!(button.accesskit_node().is_disabled());
-        button.click();
-        harness.run();
+        for name in ["Save .eml", "View source"] {
+            let button = harness.get_by_label(name);
+            assert!(button.accesskit_node().is_disabled(), "{name}");
+            button.click();
+            harness.run();
+        }
         assert!(wires.sent().is_empty());
         let downloads = fx.paths.cache_dir.join("downloads");
         assert_eq!(std::fs::read_dir(downloads).unwrap().count(), 0);
+        assert!(
+            harness
+                .state()
+                .body
+                .as_ref()
+                .is_some_and(|b| b.source.is_none())
+        );
+    }
+
+    const HOSTILE: &[u8] =
+        b"From: a@example.com\r\nSubject: \x1b]0;pwned\x07report\r\n\r\nline one\r\n";
+
+    #[test]
+    fn source_rows_split_lines_and_long_lines_on_char_boundaries() {
+        assert_eq!(source_rows("ab\ncd"), [0..2, 3..5]);
+        assert_eq!(source_rows(""), [0..0]);
+        let long = "é".repeat(2 * SOURCE_ROW + 500);
+        let rows = source_rows(&long);
+        let lengths: Vec<usize> = rows
+            .iter()
+            .map(|r| long[r.clone()].chars().count())
+            .collect();
+        assert_eq!(lengths, [SOURCE_ROW, SOURCE_ROW, 500]);
+    }
+
+    #[test]
+    fn the_source_window_shows_the_raw_message_cleaned_and_copies_it() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "report"));
+        fx.store("work")
+            .set_raw("INBOX", 1, HOSTILE, "line one")
+            .unwrap();
+        let (mut harness, _wires) = fx.harness();
+        harness.get_by_label("View source").click();
+        harness.run();
+        assert!(harness.query_by_label("Subject: ]0;pwnedreport").is_some());
+        harness.get_by_label("Copy").click();
+        harness.step();
+        let copied: Vec<&str> = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            copied,
+            ["From: a@example.com\nSubject: ]0;pwnedreport\n\nline one\n"]
+        );
+        harness.key_press(egui::Key::Escape);
+        harness.run();
+        assert!(harness.query_by_label("Subject: ]0;pwnedreport").is_none());
+    }
+
+    #[test]
+    fn a_megabyte_line_opens_as_short_rows() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "minified"));
+        let raw = format!("Subject: minified\r\n\r\n{}\r\n", "x".repeat(1 << 20));
+        fx.store("work")
+            .set_raw("INBOX", 1, raw.as_bytes(), "x")
+            .unwrap();
+        let (mut harness, _wires) = fx.harness();
+        harness.get_by_label("View source").click();
+        harness.run();
+        let body = harness.state().body.as_ref().unwrap();
+        let source = body.source.as_ref().unwrap();
+        assert!(source.rows.len() > (1 << 20) / SOURCE_ROW);
+        assert!(
+            source
+                .rows
+                .iter()
+                .all(|r| source.text[r.clone()].chars().count() <= SOURCE_ROW)
+        );
+        assert!(harness.query_by_label("Subject: minified").is_some());
+    }
+
+    #[test]
+    fn moving_to_another_message_closes_the_source() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "older"));
+        fx.add("work", message("INBOX", 2, "report"));
+        fx.store("work")
+            .set_raw("INBOX", 2, HOSTILE, "line one")
+            .unwrap();
+        let (mut harness, _wires) = fx.harness();
+        harness.get_by_label("View source").click();
+        harness.run();
+        assert!(harness.query_by_label("Subject: ]0;pwnedreport").is_some());
+        harness.event(egui::Event::Text("j".into()));
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .body
+                .as_ref()
+                .is_some_and(|b| b.source.is_none())
+        );
+        assert!(harness.query_by_label("Subject: ]0;pwnedreport").is_none());
     }
 }

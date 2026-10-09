@@ -18,6 +18,7 @@ pub(crate) const RULES: &str = ph::FUNNEL;
 pub(crate) const SAVE: &str = ph::DOWNLOAD_SIMPLE;
 pub(crate) const SEARCH: &str = ph::MAGNIFYING_GLASS;
 pub(crate) const SENT: &str = ph::PAPER_PLANE_TILT;
+pub(crate) const SOURCE: &str = ph::CODE;
 pub(crate) const SYNC: &str = ph::ARROWS_CLOCKWISE;
 pub(crate) const TRASH: &str = ph::TRASH;
 
