@@ -4,6 +4,8 @@ A fast, simple IMAP mail client for powerusers and developers, with rules that k
 
 Run it headless, as a background service that syncs and applies rules on a server or at login, or use it through an interface: `postbode gui` opens a keyboard-driven mail window, everything also works from the command line, and agents can use it over MCP (see [Agents over MCP](https://postbode.pataar.nl/mcp.html)).
 
+![The Postbode mail window](https://raw.githubusercontent.com/pataar/postbode/main/tests/snapshots/gui_inbox_dark.png)
+
 ## Quickstart
 
 ```sh
