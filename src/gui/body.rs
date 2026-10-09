@@ -933,6 +933,8 @@ mod tests {
         fx.add("work", hit);
         fx.add("work", message("INBOX", 2, "lunch"));
         let (mut harness, wires) = fx.harness();
+        // The hit sits beside the cursor, so its body was prefetched before the search.
+        wires.sent();
         harness.input_mut().time = Some(10.0);
         harness.event(egui::Event::Text("/".into()));
         harness.step();

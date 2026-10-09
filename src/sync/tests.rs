@@ -2110,7 +2110,7 @@ fn apply_reports_a_result_per_uid_and_keeps_going() {
 }
 
 #[test]
-fn a_move_asks_for_a_full_pass_so_the_target_folder_shows_the_message() {
+fn a_move_syncs_the_target_folder_before_it_reports_done_then_asks_for_a_pass() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());
     let apply = Command::Apply {
@@ -2121,10 +2121,11 @@ fn a_move_asks_for_a_full_pass_so_the_target_folder_shows_the_message() {
     };
     let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
     assert!(run.unwrap().wants_full_pass);
+    assert_eq!(store.messages_in_folder("Done").unwrap().len(), 1);
 }
 
 #[test]
-fn a_trash_asks_for_a_full_pass_so_the_trash_folder_shows_the_message() {
+fn a_trash_syncs_the_trash_folder_before_it_reports_done() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());
     let apply = Command::Apply {
@@ -2135,10 +2136,11 @@ fn a_trash_asks_for_a_full_pass_so_the_trash_folder_shows_the_message() {
     };
     let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
     assert!(run.unwrap().wants_full_pass);
+    assert_eq!(store.messages_in_folder("Trash").unwrap().len(), 1);
 }
 
 #[test]
-fn a_failed_move_does_not_ask_for_a_full_pass() {
+fn a_failed_move_syncs_nothing() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());
     let apply = Command::Apply {
@@ -2149,6 +2151,7 @@ fn a_failed_move_does_not_ask_for_a_full_pass() {
     };
     let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
     assert!(!run.unwrap().wants_full_pass);
+    assert!(!ops.calls.iter().any(|call| call == "select Done"));
 }
 
 #[test]
@@ -2175,7 +2178,7 @@ fn fetch_body_stores_the_body_and_reports_it() {
 }
 
 #[test]
-fn restore_appends_the_backup_and_asks_for_a_full_pass() {
+fn restore_appends_the_backup_syncs_its_folder_and_asks_for_a_full_pass() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());
     let file = trash
@@ -2184,6 +2187,7 @@ fn restore_appends_the_backup_and_asks_for_a_full_pass() {
     let restore = Command::Restore { file: file.clone() };
     let (run, events) = drain(&mut ops, &store, &trash, vec![restore]);
     assert!(run.unwrap().wants_full_pass);
+    assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 3);
     assert!(!file.exists());
     assert!(ops.calls.iter().any(|c| c.starts_with("append INBOX")));
     assert!(events.contains(&Event::Restored {

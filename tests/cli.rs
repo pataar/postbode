@@ -927,3 +927,21 @@ fn sync_prints_the_errors_of_its_own_pass_and_fails() {
     );
     assert!(!stderr.contains("unrelated"), "{stderr}");
 }
+
+#[test]
+fn account_list_shows_configured_accounts_without_secrets() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("config")).unwrap();
+    std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
+    let out = postbode(home.path(), &["account", "list"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "work\tme@example.com\t127.0.0.1:1\n"
+    );
+    let out = postbode(home.path(), &["account", "list", "--json"]);
+    let row: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(row["account"], "work");
+    assert_eq!(row["port"], 1);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("printf"));
+}

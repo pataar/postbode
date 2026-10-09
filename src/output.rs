@@ -1,6 +1,7 @@
 //! JSON rows shared by the CLI's `--json` and the MCP results; each row carries its account.
 use serde_json::{Value, json};
 
+use crate::config::AccountConfig;
 use crate::rules::Rule;
 use crate::store::{Folder, Message};
 
@@ -14,6 +15,11 @@ pub fn with_account(account: &str, row: &impl serde::Serialize) -> serde_json::R
 
 pub fn folder(account: &str, folder: &Folder, total: u32, unread: u32) -> Value {
     json!({ "account": account, "folder": folder.name, "total": total, "unread": unread, "special_use": folder.special_use })
+}
+
+/// An account's listing row; leaves out the password source, which may be a command holding a secret.
+pub fn account(account: &AccountConfig) -> Value {
+    json!({ "account": account.name, "address": account.address, "aliases": account.aliases, "host": account.host, "port": account.port, "username": account.username })
 }
 
 /// Each message's indent in its thread, relative to the thread's shallowest message and capped at 4.
