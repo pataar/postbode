@@ -1,6 +1,6 @@
 [package]
 name = "postvak"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
@@ -11,7 +11,7 @@ homepage = "https://postvak.pataar.nl/"
 keywords = ["automation", "email", "email-client", "imap", "mail-filter"]
 categories = ["command-line-utilities", "email"]
 # Only what the build needs; keeps the test CA key, design docs and CI config out of the published crate.
-include = ["/assets/fonts/**", "/assets/icon.png", "/CHANGELOG.md", "/Cargo.lock", "/LICENSE-*", "/README.md", "/docs/src/agent-guide.md", "/migrations/**", "/src/**"]
+include = ["/assets/fonts/**", "/assets/icon.png", "/assets/macos.iconset/icon_512x512@2x.png", "/CHANGELOG.md", "/Cargo.lock", "/LICENSE-*", "/README.md", "/docs/src/agent-guide.md", "/migrations/**", "/src/**"]
 
 [dependencies]
 anyhow = "1"                                         # error context in the binary and sync loop

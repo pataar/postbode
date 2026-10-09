@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/postvak-app/postvak/compare/v0.2.0...v0.3.0) - 2026-10-09
+
+### Changed
+
+- **Renamed to Postvak.** The crate, binary, app, Homebrew formula and cask are now `postvak`, the repository is [postvak-app/postvak](https://github.com/postvak-app/postvak) and the docs are at [postvak.pataar.nl](https://postvak.pataar.nl/). Nothing carries over from a `postbode` install ([#111](https://github.com/postvak-app/postvak/pull/111))
+
+### Added
+
+- *(gui)* search field and tighter action spacing in the toolbar ([#102](https://github.com/postvak-app/postvak/pull/102))
+- *(gui)* Ossenbloed visual identity ([#99](https://github.com/postvak-app/postvak/pull/99))
+- *(cli)* add `account list` to print configured accounts ([#97](https://github.com/postvak-app/postvak/pull/97))
+- *(gui)* reader toolbar with Save .eml, View source and a Text | HTML switch ([#91](https://github.com/postvak-app/postvak/pull/91))
+- *(gui)* opt-in notice for a newer release in the status bar ([#90](https://github.com/postvak-app/postvak/pull/90))
+- *(gui)* group counts by the device's region ([#82](https://github.com/postvak-app/postvak/pull/82))
+- *(gui)* add a toolbar, a sync button and the version ([#81](https://github.com/postvak-app/postvak/pull/81))
+- *(gui)* show the full date with seconds and offset in the reader ([#80](https://github.com/postvak-app/postvak/pull/80))
+- *(gui)* remember window size, position and pane widths ([#83](https://github.com/postvak-app/postvak/pull/83))
+- *(gui)* align message rows in columns with the date on the right ([#79](https://github.com/postvak-app/postvak/pull/79))
+- *(gui)* show custom folders as a collapsible tree ([#78](https://github.com/postvak-app/postvak/pull/78))
+- *(store)* keep each folder's IMAP hierarchy delimiter ([#77](https://github.com/postvak-app/postvak/pull/77))
+- *(gui)* full-width folder rows with icons and counts, views pinned below ([#74](https://github.com/postvak-app/postvak/pull/74))
+- *(gui)* add the Phosphor icon font ([#73](https://github.com/postvak-app/postvak/pull/73))
+- *(rules)* any, none, tags and value lists in conditions ([#71](https://github.com/postvak-app/postvak/pull/71))
+- AppImage for Linux, one file for window, CLI and MCP ([#66](https://github.com/postvak-app/postvak/pull/66))
+- macOS app bundle, DMG and Homebrew cask ([#38](https://github.com/postvak-app/postvak/pull/38))
+- *(gui)* render HTML mail with Blitz ([#65](https://github.com/postvak-app/postvak/pull/65))
+
+### Fixed
+
+- *(package)* ship the window icon the GUI embeds, so `cargo install postvak` builds
+- *(sync)* forget stored folders a clean pass did not sync ([#109](https://github.com/postvak-app/postvak/pull/109))
+- *(store)* renumber rule-definition migration to 007 ([#108](https://github.com/postvak-app/postvak/pull/108))
+- two mail-loss paths (rule clock on edit, plain EXPUNGE) ([#105](https://github.com/postvak-app/postvak/pull/105))
+- *(sync)* make syncing a Gmail account safe ([#104](https://github.com/postvak-app/postvak/pull/104))
+- *(log)* never let RUST_LOG trace IMAP commands or keyring secret bytes ([#103](https://github.com/postvak-app/postvak/pull/103))
+- *(gui)* draw text in Ubuntu Medium instead of egui's Ubuntu Light ([#95](https://github.com/postvak-app/postvak/pull/95))
+- *(sync)* show archived, moved and trashed mail in the target folder ([#92](https://github.com/postvak-app/postvak/pull/92))
+- *(gui)* give the macOS Dock icon Apple's margin ([#89](https://github.com/postvak-app/postvak/pull/89))
+- *(gui)* prefer the integrated GPU on macOS ([#84](https://github.com/postvak-app/postvak/pull/84))
+- *(gui)* keep selected text readable in text fields ([#75](https://github.com/postvak-app/postvak/pull/75))
+- *(gui)* darken the light theme's teal and green to pass WCAG AA ([#72](https://github.com/postvak-app/postvak/pull/72))
+
+### Other
+
+- *(gui)* pin the shown version in tests so a release bump keeps the snapshots ([#107](https://github.com/postvak-app/postvak/pull/107))
+- describe MCP's privacy-friendly scopes and move it out of the headline ([#106](https://github.com/postvak-app/postvak/pull/106))
+- lead the README with rules and say what Postvak does not do ([#101](https://github.com/postvak-app/postvak/pull/101))
+- show the light or dark screenshot to match the reader's theme ([#100](https://github.com/postvak-app/postvak/pull/100))
+- *(daemon)* make the 'restarting' reply test independent of thread scheduling ([#98](https://github.com/postvak-app/postvak/pull/98))
+- show moves, restores and unread counts before the daemon answers ([#96](https://github.com/postvak-app/postvak/pull/96))
+- *(gui)* stop racing the HTML render thread with Harness::run ([#93](https://github.com/postvak-app/postvak/pull/93))
+- *(gui)* align panes on one 16 px grid, truncate long reader headers ([#88](https://github.com/postvak-app/postvak/pull/88))
+- show GUI screenshots from the snapshot tests ([#85](https://github.com/postvak-app/postvak/pull/85))
+- running headless on a server or in Docker ([#76](https://github.com/postvak-app/postvak/pull/76))
+- refresh after the AppImage and macOS app merges ([#69](https://github.com/postvak-app/postvak/pull/69))
+
 ## [0.2.0](https://github.com/pataar/postbode/compare/v0.1.0...v0.2.0) - 2026-10-07
 
 ### Added
