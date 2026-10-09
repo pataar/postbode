@@ -32,6 +32,12 @@ const fn hex(rgb: u32) -> Color32 {
 pub(crate) const CONTROL: f32 = 28.0;
 /// Height of the toolbar.
 pub(crate) const TOP_BAR: f32 = 40.0;
+/// Height of rows, text buttons and fields.
+pub(crate) const ROW: f32 = 24.0;
+/// Space between a row's edge and its content; a pane's edge and its rows are 8 px apart too, so content sits 16 px in.
+pub(crate) const PAD: f32 = 8.0;
+/// Space between a pane's edge and content that is not in a row.
+pub(crate) const INSET: f32 = 2.0 * PAD;
 
 pub(crate) const MOCHA: Palette = Palette {
     accent: hex(0x94e2d5),
@@ -126,6 +132,13 @@ pub(crate) fn install(ctx: &egui::Context) {
     ctx.set_fonts(fonts());
     ctx.set_visuals_of(egui::Theme::Dark, MOCHA.visuals(true));
     ctx.set_visuals_of(egui::Theme::Light, LATTE.visuals(false));
+    ctx.all_styles_mut(|style| {
+        style.spacing.button_padding = egui::vec2(PAD, 4.0);
+        style.spacing.interact_size.y = ROW;
+        #[allow(clippy::cast_possible_truncation, reason = "a margin of a few points")]
+        let inset = INSET as i8;
+        style.spacing.window_margin = egui::Margin::same(inset);
+    });
 }
 
 /// The palette of the mode `ui` is drawn in.
@@ -135,6 +148,11 @@ pub(crate) fn palette(ui: &egui::Ui) -> &'static Palette {
     } else {
         &LATTE
     }
+}
+
+/// A grid whose columns are an inset apart, so neighbouring cells never read as one.
+pub(crate) fn grid(id: &str, ui: &egui::Ui) -> egui::Grid {
+    egui::Grid::new(id).spacing(egui::vec2(INSET, ui.spacing().item_spacing.y))
 }
 
 /// `frame` with an accent outline when its pane has the keyboard focus.

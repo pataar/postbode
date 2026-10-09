@@ -164,6 +164,8 @@ fn missing_text(account: &Account) -> String {
 /// The body line by line with clickable links. ponytail: every line is laid out each frame; draw only the visible
 /// lines with `show_rows` if long mail scrolls slowly.
 fn show_text(ui: &mut egui::Ui, text: &str) {
+    // Text lines, not rows of controls: a link must not make its line taller.
+    ui.spacing_mut().interact_size.y = 0.0;
     for line in text.lines() {
         if line.trim().is_empty() {
             ui.label(" ");
