@@ -270,7 +270,7 @@ mod tests {
         let (harness, _wires) = fx.harness();
         assert!(
             harness
-                .query_by_label(&format!("v{}", env!("CARGO_PKG_VERSION")))
+                .query_by_label(&format!("v{}", crate::gui::status::VERSION))
                 .is_some()
         );
     }

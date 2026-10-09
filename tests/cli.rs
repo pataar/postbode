@@ -132,7 +132,10 @@ fn rules_test_previews_fresh_rule() {
         stdout.contains("flag-invoices") && stdout.contains("INBOX/42"),
         "{stdout}"
     );
-    assert_eq!(store.rule_first_seen("flag-invoices", 999).unwrap(), 999);
+    assert_eq!(
+        store.rule_first_seen("flag-invoices", "", 999).unwrap(),
+        999
+    );
 }
 
 const ONE_ACCOUNT: &str = "[[accounts]]\nname = \"work\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n";
@@ -514,7 +517,7 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
     );
     assert!(list(home.path()).contains("on \tcodes"));
     assert!(
-        store.rule_first_seen("codes", 0).unwrap() > 1_000_000_000,
+        store.rule_first_seen("codes", "", 0).unwrap() > 1_000_000_000,
         "approval stamps the rule's clock with the current time"
     );
     assert!(

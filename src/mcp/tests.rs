@@ -463,12 +463,15 @@ async fn rules_list_hides_rules_of_hidden_accounts_and_approve_restarts_every_cl
     assert_eq!(listed[0]["name"], "for-work");
     let rule = json!({ "name": "for-work" });
     for account in ["home", "work"] {
-        fx.store(account).rule_first_seen("for-work", 1).unwrap();
+        fx.store(account).restart_rule_clock("for-work", 1).unwrap();
     }
     let approved = call(&client, "rules_approve", rule).await;
     assert_ne!(approved.is_error, Some(true), "{approved:?}");
     for account in ["home", "work"] {
-        let restarted = fx.store(account).rule_first_seen("for-work", 1).unwrap();
+        let restarted = fx
+            .store(account)
+            .rule_first_seen("for-work", "", 1)
+            .unwrap();
         assert!(restarted > 1, "{account} clock was not restarted");
     }
 }

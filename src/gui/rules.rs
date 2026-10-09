@@ -326,7 +326,7 @@ mod tests {
         harness.get_by_label("Approve").click();
         harness.run();
         assert!(enabled(&fx, "codes"));
-        assert!(fx.store("work").rule_first_seen("codes", 0).unwrap() > 1);
+        assert!(fx.store("work").rule_first_seen("codes", "", 0).unwrap() > 1);
         assert!(
             std::fs::read_to_string(fx.paths.rules_file())
                 .unwrap()
