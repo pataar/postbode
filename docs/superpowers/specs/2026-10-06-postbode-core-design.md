@@ -199,7 +199,7 @@ Disabled rules have no entry: a rule's clock starts the first time it is loaded 
 
 One std thread per account owning one IMAP connection on a current-thread tokio runtime. Loop:
 
-1. **Full sync** on start. `LIST` folders. For each folder `SELECT`, compare `UIDVALIDITY`; on change, delete the folder's rows and resync from UID 1. Otherwise `UID FETCH last_uid+1:* (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])` for new rows. The full header block is parsed locally with `mail-parser` and stored, so `header` rules and threading never need a body fetch, `UID FETCH 1:last_uid (UID FLAGS)` to update flags and detect removed UIDs. Store in one transaction per folder.
+1. **Full sync** on start. `LIST` folders. For each folder `SELECT`, compare `UIDVALIDITY`; on change, delete the folder's rows and resync from UID 1. Otherwise `UID FETCH last_uid+1:* (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])` for new rows. The full header block is parsed locally with `mail-parser` and stored, so `header` rules and threading never need a body fetch, `UID FETCH 1:last_uid (UID FLAGS)` to update flags and detect removed UIDs. Store in one transaction per folder. A pass that listed and finished, even with folders skipped for errors, then deletes stored folders it did not sync, with their messages, except placeholders a rule move made for a folder not listed yet.
 2. **Rules pass** for the account (section 8).
 3. **IDLE** on INBOX. Wake on server push, on a timer every `sync_interval_secs`, or on shutdown. IDLE is re-issued before 29 minutes regardless.
 4. On push: sync INBOX only. On timer: sync all folders. Then rules pass. `NewMail` events from the pass go out over an `std::sync::mpsc` channel the account thread was given at start. Back to 3.

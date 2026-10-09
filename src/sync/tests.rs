@@ -270,6 +270,72 @@ fn placeholder_folder_adopts_server_uidvalidity_quietly() {
 }
 
 #[test]
+fn clean_pass_forgets_folders_the_server_no_longer_lists() {
+    let mut ops = ops_with_inbox().with_folder("[Gmail]/All Mail", None);
+    ops.add_mail(
+        "[Gmail]/All Mail",
+        1,
+        10 * H,
+        &headers("alice@x", "hello", "m1@x"),
+        None,
+    );
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(
+        store.messages_in_folder("[Gmail]/All Mail").unwrap().len(),
+        1
+    );
+    ops.folders.retain(|f| f.name != "[Gmail]/All Mail");
+    sync_all(&mut ops, &store).unwrap();
+    assert_eq!(store.folder("[Gmail]/All Mail").unwrap(), None);
+    assert!(
+        store
+            .messages_in_folder("[Gmail]/All Mail")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .search("hello", None, 10)
+            .unwrap()
+            .iter()
+            .all(|m| m.folder == "INBOX")
+    );
+    assert_eq!(store.messages_in_folder("INBOX").unwrap().len(), 2);
+}
+
+#[test]
+fn stopped_pass_keeps_folders_it_did_not_list() {
+    let mut ops = ops_with_inbox().with_folder("Old", None);
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    ops.folders.retain(|f| f.name != "Old");
+    let mut stop_at_second = |_: &mut dyn MailOps, activity| match activity {
+        Activity::SyncingFolder { index: 2, .. } => Err(SyncError::Stopped),
+        _ => Ok(false),
+    };
+    assert!(sync_all_with(&mut ops, &store, &mut stop_at_second).is_err());
+    assert!(store.folder("Old").unwrap().is_some());
+}
+
+#[test]
+fn unlisted_rule_move_placeholder_survives_a_pass() {
+    let mut ops = ops_with_inbox();
+    let store = Store::open_in_memory().unwrap();
+    store
+        .upsert_folder(&Folder {
+            name: "Newsletters".into(),
+            uidvalidity: 0,
+            last_uid: 0,
+            special_use: None,
+            delimiter: None,
+        })
+        .unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    assert!(store.folder("Newsletters").unwrap().is_some());
+}
+
+#[test]
 fn rules_run_deletes_old_seen_code_and_notifies_untouched_new_mail() {
     let mut ops = RecordingOps::new()
         .with_folder("INBOX", None)
@@ -914,7 +980,9 @@ fn missing_rule_folder_is_skipped() {
         &store,
         0,
     );
-    sync_all(&mut ops, &store).unwrap();
+    // Only INBOX: a full pass would forget Gone, and a rule on a folder the store does not know is skipped silently.
+    let inbox = ops.folders[0].clone();
+    sync_folder(&mut ops, &store, &inbox).unwrap();
     let run = run_rules(
         &mut ops,
         &store,

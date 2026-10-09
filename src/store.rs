@@ -308,6 +308,13 @@ impl Store {
         Ok(())
     }
 
+    /// Removes the folder with its messages and its rule and notification state.
+    pub fn remove_folder(&self, name: &str) -> Result<(), StoreError> {
+        self.conn
+            .execute("DELETE FROM folders WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
     pub fn insert_message(&self, m: &Message) -> Result<(), StoreError> {
         self.conn.execute(
             &format!(

@@ -485,7 +485,22 @@ pub fn sync_all_with(
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
         }
     }
+    forget_unlisted_folders(store, &folders)?;
     Ok((new, errors))
+}
+
+/// Drops store folders this pass did not sync, with their messages; rule-move placeholders wait for the server to list them.
+fn forget_unlisted_folders(store: &Store, synced: &[RemoteFolder]) -> Result<(), SyncError> {
+    for stored in store.folders()? {
+        if stored.uidvalidity != 0 && !synced.iter().any(|f| f.name == stored.name) {
+            log::info!(
+                "{}: no longer synced, removing it from the store",
+                stored.name
+            );
+            store.remove_folder(&stored.name)?;
+        }
+    }
+    Ok(())
 }
 
 /// Spec section 6: a role no folder is marked with goes to the folder carrying that name, ignoring case.
