@@ -329,3 +329,58 @@ fn a_new_width_lays_out_again_once_it_held_still() {
         .collect();
     assert_eq!(loads, [first + 1]);
 }
+
+#[test]
+fn a_drag_selects_page_text_and_copy_copies_it() {
+    let fx = Fixture::new(&["work"]);
+    let words = "word ".repeat(2000);
+    add_html(
+        &fx,
+        1,
+        &format!("<p style=\"font-size:40px\">{words}</p>"),
+        "words",
+    );
+    let (mut harness, _wires) = fx.harness();
+    wait_for(&mut harness, painted);
+    let (from, to) = (egui::pos2(900.0, 600.0), egui::pos2(1100.0, 600.0));
+    let button = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    harness.event(egui::Event::PointerMoved(from));
+    harness.step();
+    assert_eq!(
+        harness.output().platform_output.cursor_icon,
+        egui::CursorIcon::Text
+    );
+    harness.event(button(from, true));
+    harness.step();
+    harness.event(egui::Event::PointerMoved(to));
+    harness.step();
+    let selection = |app: &App| {
+        app.body
+            .as_ref()
+            .and_then(|b| b.html_view.as_ref())
+            .and_then(|v| v.selection.clone())
+    };
+    wait_for(&mut harness, |app| selection(app).is_some());
+    harness.event(button(to, false));
+    harness.step();
+    let selected = selection(harness.state()).unwrap();
+    assert!(selected.contains("word"), "{selected:?}");
+    harness.event(egui::Event::Copy);
+    harness.step();
+    let copied: Vec<_> = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(copied, [selected]);
+}

@@ -90,6 +90,12 @@ pub(crate) enum Request {
         x: f32,
         y: f32,
     },
+    /// The text between two points in the page, in points; the same point twice clears the selection.
+    Select {
+        generation: u64,
+        from: egui::Pos2,
+        to: egui::Pos2,
+    },
 }
 
 // Without the `html` feature there is no render thread to read or build these.
@@ -98,7 +104,9 @@ impl Request {
     pub fn generation(&self) -> u64 {
         match self {
             Request::Load(load) => load.generation,
-            Request::Paint { generation, .. } | Request::Hit { generation, .. } => *generation,
+            Request::Paint { generation, .. }
+            | Request::Hit { generation, .. }
+            | Request::Select { generation, .. } => *generation,
         }
     }
 }
@@ -120,6 +128,11 @@ pub(crate) enum Reply {
         generation: u64,
         href: Option<String>,
     },
+    /// The selected text; the strips painted before it lack its highlight.
+    Selected {
+        generation: u64,
+        text: Option<String>,
+    },
     Strip {
         generation: u64,
         image: egui::ColorImage,
@@ -133,6 +146,7 @@ impl Reply {
             Reply::Failed { generation }
             | Reply::Laid { generation, .. }
             | Reply::Link { generation, .. }
+            | Reply::Selected { generation, .. }
             | Reply::Strip { generation, .. } => *generation,
         }
     }
@@ -149,6 +163,9 @@ pub(crate) struct HtmlState {
     pub page: Option<egui::Vec2>,
     pub remote: bool,
     pub requested: BTreeSet<u32>,
+    /// The two points of the last `Select`, so a still drag sends nothing.
+    pub selected_at: Option<(egui::Pos2, egui::Pos2)>,
+    pub selection: Option<String>,
     /// The scale and width (points) of the last `Load`.
     pub sent: (f32, f32),
     pub strips: BTreeMap<u32, egui::TextureHandle>,
@@ -165,6 +182,8 @@ impl HtmlState {
             page: None,
             remote: false,
             requested: BTreeSet::new(),
+            selected_at: None,
+            selection: None,
             sent: (scale, width),
             strips: BTreeMap::new(),
             wanted: None,
@@ -217,8 +236,10 @@ pub(crate) fn show(state: Option<&HtmlState>, width: f32, ui: &mut egui::Ui) -> 
     if state.remote {
         ui.weak("Remote content not loaded.");
     }
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(page.x.max(width), page.y), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(page.x.max(width), page.y),
+        egui::Sense::click_and_drag(),
+    );
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, egui::Color32::WHITE);
     let points = STRIP as f32 / scale;
@@ -245,10 +266,12 @@ pub(crate) fn show(state: Option<&HtmlState>, width: f32, ui: &mut egui::Ui) -> 
             bottom: visible.max.y - rect.min.y,
         });
     }
-    let pointer = response.hover_pos().map(|pos| (pos - rect.min).to_pos2());
+    let in_page = |pos: egui::Pos2| (pos - rect.min).to_pos2();
+    let pointer = response.hover_pos().map(in_page);
     if pointer != state.hovered_at {
         actions.push(UiAction::HtmlHover(pointer));
     }
+    actions.extend(select(state, &response, in_page, ui));
     let link = state.hover.as_deref().filter(|_| pointer.is_some());
     if let Some(href) = link {
         let response = response.on_hover_text_at_pointer(crate::message::clean(href, false));
@@ -258,8 +281,38 @@ pub(crate) fn show(state: Option<&HtmlState>, width: f32, ui: &mut egui::Ui) -> 
         {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
+    } else if pointer.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
     }
     actions
+}
+
+/// A drag selects the page's text, a click clears it, and Copy copies it unless a widget has the keyboard.
+fn select(
+    state: &HtmlState,
+    response: &egui::Response,
+    in_page: impl Fn(egui::Pos2) -> egui::Pos2,
+    ui: &egui::Ui,
+) -> Option<UiAction> {
+    let copy = ui.input(|input| input.events.contains(&egui::Event::Copy));
+    if let Some(text) = &state.selection
+        && copy
+        && ui.memory(|memory| memory.focused().is_none())
+    {
+        ui.ctx().copy_text(text.clone());
+    }
+    let origin = ui.input(|input| input.pointer.press_origin());
+    let at = match (origin, response.interact_pointer_pos()) {
+        (Some(from), Some(to)) if response.dragged() => (in_page(from), in_page(to)),
+        (_, Some(to)) if response.clicked() && state.selection.is_some() => {
+            (in_page(to), in_page(to))
+        }
+        _ => return None,
+    };
+    (state.selected_at != Some(at)).then_some(UiAction::HtmlSelect {
+        from: at.0,
+        to: at.1,
+    })
 }
 
 #[cfg(test)]
