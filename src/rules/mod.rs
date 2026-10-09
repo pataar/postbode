@@ -596,13 +596,13 @@ mod tests {
     #[test]
     fn schema_file_is_current() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src/rules.schema.json");
-        if std::env::var_os("POSTBODE_BLESS").is_some() {
+        if std::env::var_os("POSTVAK_BLESS").is_some() {
             std::fs::write(path, schema()).unwrap();
         }
         assert_eq!(
             std::fs::read_to_string(path).unwrap(),
             schema(),
-            "docs/src/rules.schema.json is stale; run POSTBODE_BLESS=1 cargo test"
+            "docs/src/rules.schema.json is stale; run POSTVAK_BLESS=1 cargo test"
         );
     }
 
@@ -948,8 +948,8 @@ actions = [{ tag = "$label4" }, { move = "Shop" }]
             "a)b",
             "x\\r\\nA1 LOGOUT",
             "naïve",
-            "$PostbodeRestored",
-            "$postbodeRESTORED",
+            "$PostvakRestored",
+            "$postvakRESTORED",
         ] {
             for text in [action(bad), matcher(bad)] {
                 assert!(

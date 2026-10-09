@@ -8,8 +8,8 @@ reviews:
     - "!.github/workflows/release.yml"  # dist generate
     - "!CHANGELOG.md"                   # release-plz
     - "!Cargo.lock"
-    - "!docs/src/cli.md"                # POSTBODE_BLESS=1 cargo test
-    - "!docs/src/rules.schema.json"     # POSTBODE_BLESS=1 cargo test
+    - "!docs/src/cli.md"                # POSTVAK_BLESS=1 cargo test
+    - "!docs/src/rules.schema.json"     # POSTVAK_BLESS=1 cargo test
   path_instructions:
     - path: "Cargo.toml"
       instructions: "Every dependency needs a one-line trailing comment giving the reason for it."

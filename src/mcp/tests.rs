@@ -197,7 +197,7 @@ async fn server_info_carries_the_agent_guide() {
     let fx = fixture(&["work"]);
     let client = connect(&fx, "read", &[]).await;
     let info = client.peer_info().unwrap();
-    assert_eq!(info.server_info.as_ref().unwrap().name, "postbode");
+    assert_eq!(info.server_info.as_ref().unwrap().name, "postvak");
     assert!(
         info.instructions
             .as_deref()

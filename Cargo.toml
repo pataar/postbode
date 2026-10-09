@@ -1,13 +1,13 @@
 [package]
-name = "postbode"
+name = "postvak"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 description = "A fast, simple mail client with automatic mailbox rules"
-documentation = "https://postbode.pataar.nl/"
-repository = "https://github.com/pataar/postbode"
-homepage = "https://postbode.pataar.nl/"
+documentation = "https://postvak.pataar.nl/"
+repository = "https://github.com/postvak-app/postvak"
+homepage = "https://postvak.pataar.nl/"
 keywords = ["automation", "email", "email-client", "imap", "mail-filter"]
 categories = ["command-line-utilities", "email"]
 # Only what the build needs; keeps the test CA key, design docs and CI config out of the published crate.
@@ -38,7 +38,7 @@ log = "0.4"                                          # logging facade
 mail-parser = "0.11"                                 # RFC 5322 header and body parsing
 notify-rust = "4"                                    # desktop notifications from `run`
 regex = "1"                                          # rule regex conditions
-rmcp = { version = "3.5", optional = true, default-features = false, features = ["server", "transport-io"] }  # MCP server for `postbode mcp`, hand-written handler on stdio
+rmcp = { version = "3.5", optional = true, default-features = false, features = ["server", "transport-io"] }  # MCP server for `postvak mcp`, hand-written handler on stdio
 rpassword = "7"                                      # hidden password prompt in `account add`
 rusqlite = { version = "0.40", features = ["bundled"] }       # SQLite, bundled build includes FTS5
 rusqlite_migration = { version = "2", features = ["from-directory"] }  # numbered SQL migrations
@@ -95,9 +95,9 @@ dbg_macro = "warn"                                   # debug output stays out of
 
 [features]
 default = ["gui", "html", "mcp"]
-gui = ["dep:eframe", "dep:egui-phosphor", "dep:sys-locale"]           # `postbode gui`; off builds the CLI alone
+gui = ["dep:eframe", "dep:egui-phosphor", "dep:sys-locale"]           # `postvak gui`; off builds the CLI alone
 html = ["gui", "dep:blitz-dom", "dep:blitz-html", "dep:blitz-paint", "dep:blitz-traits", "dep:anyrender", "dep:anyrender_vello_cpu", "dep:data-url", "dep:fontique"]  # HTML mail rendered in the body panel; off shows text
-mcp = ["dep:rmcp"]                                   # `postbode mcp`; off builds without the MCP server
+mcp = ["dep:rmcp"]                                   # `postvak mcp`; off builds without the MCP server
 testing = []                                         # exposes RecordingOps and the one-shot sync steps to integration tests
 
 [profile.dev.package."*"]

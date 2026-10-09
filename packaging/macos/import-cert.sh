@@ -28,8 +28,8 @@ fi
 : "${KEYCHAIN_PASSWORD:?KEYCHAIN_PASSWORD is required with APPLE_CERTIFICATE}"
 
 dir=${RUNNER_TEMP:-$(mktemp -d)}
-keychain=$dir/postbode-signing.keychain-db
-cert=$dir/postbode-signing.p12
+keychain=$dir/postvak-signing.keychain-db
+cert=$dir/postvak-signing.p12
 trap 'rm -f "$cert"' EXIT
 
 printf '%s' "$APPLE_CERTIFICATE" | base64 --decode >"$cert"

@@ -1,10 +1,10 @@
 # Mail window
 
-![The mail window in the light theme](https://raw.githubusercontent.com/pataar/postbode/main/tests/snapshots/gui_inbox_light.png)
+![The mail window in the light theme](https://raw.githubusercontent.com/postvak-app/postvak/main/tests/snapshots/gui_inbox_light.png)
 
-`postbode gui` opens a window with three columns: your accounts and folders, the threads in the chosen folder, and the selected message. Sync, rules and notifications run in the [daemon](daemon.md), which the window starts when none is running, so the window, the CLI and agents over MCP can all be open at once.
+`postvak gui` opens a window with three columns: your accounts and folders, the threads in the chosen folder, and the selected message. Sync, rules and notifications run in the [daemon](daemon.md), which the window starts when none is running, so the window, the CLI and agents over MCP can all be open at once.
 
-When the window cannot start, for instance because no account is set up yet, a small window says why and what to do; the error also goes to stderr. Closing the window does not stop sync. A daemon the window started stops a minute after its last client goes; one you run with `postbode run` keeps going. If the daemon goes away while the window is open, the status bar says "background sync stopped — reconnecting" and the window tries again every five seconds.
+When the window cannot start, for instance because no account is set up yet, a small window says why and what to do; the error also goes to stderr. Closing the window does not stop sync. A daemon the window started stops a minute after its last client goes; one you run with `postvak run` keeps going. If the daemon goes away while the window is open, the status bar says "background sync stopped — reconnecting" and the window tries again every five seconds.
 
 The window remembers its size, its position and the width of its columns in `window.ron`, next to `daemon.log` in the state directory. Delete the file to start from the defaults.
 
@@ -37,7 +37,7 @@ Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, T
 
 ## Toolbar and status bar
 
-The toolbar above the panes has buttons for Archive, Move, Delete, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postbode's version.
+The toolbar above the panes has buttons for Archive, Move, Delete, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postvak's version.
 
 ## Message list
 
@@ -45,11 +45,11 @@ Each row shows, in columns: a dot when it is unread, a flag (or a check when mar
 
 ## Status bar
 
-One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an oxblood frame: warm paper in light mode, dark brown in dark mode. Next to the version, a link appears when a newer release is out; it opens that release's notes on GitHub. Postbode does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
+One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. Both themes put the panes in an oxblood frame: warm paper in light mode, dark brown in dark mode. Next to the version, a link appears when a newer release is out; it opens that release's notes on GitHub. Postvak does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
 
 ## Rules, Activity and Backups
 
-![Rules view with an agent proposal](https://raw.githubusercontent.com/pataar/postbode/main/tests/snapshots/gui_rules.png)
+![Rules view with an agent proposal](https://raw.githubusercontent.com/postvak-app/postvak/main/tests/snapshots/gui_rules.png)
 
 These three views sit at the bottom of the folder pane.
 
@@ -59,7 +59,7 @@ The daemon applies changes to `config.toml` by itself; the window's account list
 
 ## HTML mail
 
-![An HTML message rendered in the reader](https://raw.githubusercontent.com/pataar/postbode/main/tests/snapshots/gui_html_light.png)
+![An HTML message rendered in the reader](https://raw.githubusercontent.com/postvak-app/postvak/main/tests/snapshots/gui_html_light.png)
 
 Mail with an HTML part shows as its sender laid it out, on a white page in both themes; `v` switches that message to its text and back. Nothing is fetched over the network: images and stylesheets from the web are not loaded, and the line "Remote content not loaded." says when a message asked for some. Images sent inside the message show. No scripts run and forms do nothing. Hover over a link to see where it goes; in HTML and in text, only `http`, `https` and `mailto` links open, in your browser or mail app.
 

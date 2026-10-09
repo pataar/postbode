@@ -39,7 +39,7 @@ pub fn header_value(raw_headers: &[u8], name: &str) -> Option<String> {
 }
 
 pub fn synthetic_message_id(folder: &str, uid: u32) -> String {
-    format!("{uid}@{folder}.postbode")
+    format!("{uid}@{folder}.postvak")
 }
 
 pub fn thread_id(parsed: &Parsed, folder: &str, uid: u32) -> String {
@@ -341,7 +341,7 @@ List-Id: Dev <dev.lists.example.com>\r\n\
     #[test]
     fn thread_id_without_message_id_is_synthetic_and_stable() {
         let p = Parsed::default();
-        assert_eq!(thread_id(&p, "INBOX", 42), "42@INBOX.postbode");
+        assert_eq!(thread_id(&p, "INBOX", 42), "42@INBOX.postvak");
         assert_eq!(
             thread_id(&p, "INBOX", 42),
             synthetic_message_id("INBOX", 42)

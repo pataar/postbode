@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Install Postbode's desktop entry and icons, so it shows up in the app launcher.
-# The postbode binary itself must already be on PATH.
+# Install Postvak's desktop entry and icons, so it shows up in the app launcher.
+# The postvak binary itself must already be on PATH.
 #
 # Usage: packaging/linux/install.sh [--prefix DIR] [--uninstall]
 #   DIR defaults to ${XDG_DATA_HOME:-~/.local/share}; use /usr/local/share for all users.
 set -euo pipefail
 
-app_id=io.github.pataar.postbode
+app_id=io.github.postvak_app.postvak
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 icons=$here/../../assets/hicolor
 prefix=${XDG_DATA_HOME:-$HOME/.local/share}

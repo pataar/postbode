@@ -403,14 +403,14 @@ mod tests {
     #[test]
     fn tree_nests_by_delimiter_and_adds_unlisted_parents() {
         let rows = tree(&[
-            custom("Projects/Postbode/GitHub", "/"),
+            custom("Projects/Postvak/GitHub", "/"),
             custom("Projects/Website", "/"),
         ]);
         assert_eq!(
             shape(&rows),
             [
                 (0, "Projects", false),
-                (1, "Postbode", false),
+                (1, "Postvak", false),
                 (2, "GitHub", true),
                 (1, "Website", true)
             ]
@@ -465,7 +465,7 @@ mod tests {
     fn stepping_from_a_folder_in_a_collapsed_branch_stays_in_its_account() {
         let fx = Fixture::new(&["home", "work"]);
         let store = fx.store("work");
-        for name in ["Projects/Postbode", "Projects/Website", "Zeta"] {
+        for name in ["Projects/Postvak", "Projects/Website", "Zeta"] {
             store.upsert_folder(&stored(name)).unwrap();
         }
         let (mut harness, _wires) = fx.harness();
@@ -473,7 +473,7 @@ mod tests {
             account: 1,
             folder: name.into(),
         };
-        harness.state_mut().select_view(work("Projects/Postbode"));
+        harness.state_mut().select_view(work("Projects/Postvak"));
         harness.run();
         harness.get_by_label("Collapse Projects").click();
         harness.run();
@@ -504,7 +504,7 @@ mod tests {
     fn clicking_a_caret_collapses_its_folder() {
         let fx = Fixture::new(&["work"]);
         let store = fx.store("work");
-        for name in ["Projects/Postbode", "Projects/Website"] {
+        for name in ["Projects/Postvak", "Projects/Website"] {
             store.upsert_folder(&stored(name)).unwrap();
         }
         let (mut harness, _wires) = fx.harness();
@@ -524,7 +524,7 @@ mod tests {
     fn arrow_keys_follow_the_tree_and_skip_collapsed_folders() {
         let fx = Fixture::new(&["work"]);
         let store = fx.store("work");
-        for name in ["Projects/Postbode", "Projects/Website", "Zeta"] {
+        for name in ["Projects/Postvak", "Projects/Website", "Zeta"] {
             store.upsert_folder(&stored(name)).unwrap();
         }
         let (mut harness, _wires) = fx.harness();
@@ -532,7 +532,7 @@ mod tests {
             account: 0,
             folder: name.into(),
         };
-        harness.state_mut().select_view(folder("Projects/Postbode"));
+        harness.state_mut().select_view(folder("Projects/Postvak"));
         harness.state_mut().focus = Focus::Folders;
         harness.run();
         harness.key_press(egui::Key::ArrowDown);

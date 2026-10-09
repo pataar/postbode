@@ -1,19 +1,19 @@
-# Postbode daemon design
+# Postvak daemon design
 
 Date: 2026-10-07. Status: draft for review. Phase 4. It builds on:
-- the core spec `2026-10-06-postbode-core-design.md` (§17 "Daemon split");
-- the GUI spec `2026-10-06-postbode-gui-design.md` (the `Command` and `Event` types);
-- the MCP spec `2026-10-07-postbode-mcp-design.md` (§10, and `Backend` as the switch-over point).
+- the core spec `2026-10-06-postvak-core-design.md` (§17 "Daemon split");
+- the GUI spec `2026-10-06-postvak-gui-design.md` (the `Command` and `Event` types);
+- the MCP spec `2026-10-07-postvak-mcp-design.md` (§10, and `Backend` as the switch-over point).
 
 ## 1. Purpose and scope
 
 One process owns IMAP. The daemon runs every account's sync thread, holds the account locks, applies rules, sends notifications and runs every command that needs the server. The GUI, CLI and MCP server become clients over a private Unix socket, so they can run side by side with one sync per account and rules applied once.
 
 In scope:
-- **Daemon:** `postbode run` as the daemon, auto-start with idle exit, and single-instance locking.
+- **Daemon:** `postvak run` as the daemon, auto-start with idle exit, and single-instance locking.
 - **Wire protocol:** a JSON-lines protocol carrying the existing `Command` and `Event` types.
 - **Clients:** the GUI, the CLI's IMAP commands and the MCP backend move to the daemon.
-- **Service:** `postbode service install|remove` for launchd (macOS) and systemd user units (Linux).
+- **Service:** `postvak service install|remove` for launchd (macOS) and systemd user units (Linux).
 - **Cleanup:** removal of the code that exists only because several processes could sync.
 - **Docs:** a "Background sync" page and updates elsewhere.
 
@@ -45,11 +45,11 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 
 | Command | Behaviour |
 |---|---|
-| `postbode run` | The daemon in the foreground. It never idles out, logs to stderr, and Ctrl-C stops it. It still prints `[account] new mail from …` and `synced: N new` lines. |
-| `postbode run --idle-exit SECS` (hidden) | What auto-start spawns: a new process group, stdin from `/dev/null`, stdout and stderr appended to `<state>/daemon.log`. That log is truncated at start once it exceeds 1 MB. |
-| `postbode daemon status` | Shows pid, version, uptime, connected clients, and each account's latest activity, such as `up to date · 12:04`, `offline (<reason>) · retry 12:09`, or `not running (<reason>)` when its sync thread could not be spawned. |
-| `postbode daemon stop` | Sends `shutdown` and waits up to 5 s for the socket to close. |
-| `postbode service install\|remove [--dry-run]` | Described in §8. |
+| `postvak run` | The daemon in the foreground. It never idles out, logs to stderr, and Ctrl-C stops it. It still prints `[account] new mail from …` and `synced: N new` lines. |
+| `postvak run --idle-exit SECS` (hidden) | What auto-start spawns: a new process group, stdin from `/dev/null`, stdout and stderr appended to `<state>/daemon.log`. That log is truncated at start once it exceeds 1 MB. |
+| `postvak daemon status` | Shows pid, version, uptime, connected clients, and each account's latest activity, such as `up to date · 12:04`, `offline (<reason>) · retry 12:09`, or `not running (<reason>)` when its sync thread could not be spawned. |
+| `postvak daemon stop` | Sends `shutdown` and waits up to 5 s for the socket to close. |
+| `postvak service install\|remove [--dry-run]` | Described in §8. |
 
 **Single instance.**
 - The daemon takes an exclusive try-lock on `<state>/daemon.lock` and writes its pid there.
@@ -58,7 +58,7 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 - A socket path longer than the OS limit (`sun_path`: 104 bytes on macOS, 108 on Linux) fails at start with an error naming the path.
 
 **Auto-start.**
-- `Client::connect_or_start` connects. If the socket is missing or refuses, it spawns `postbode run --idle-exit 60` from its own `current_exe` and retries the connection for up to 5 s.
+- `Client::connect_or_start` connects. If the socket is missing or refuses, it spawns `postvak run --idle-exit 60` from its own `current_exe` and retries the connection for up to 5 s.
 - Clients that race resolve through the daemon lock: one daemon wins and all clients connect to it.
 - If no connection succeeds, the client reports the last 20 lines of `daemon.log`.
 
@@ -74,7 +74,7 @@ Out of scope, recorded in §11: Windows, reads over the socket, remote or multi-
 
 **Upgrades.**
 - If `hello` shows an older crate version (dotted numbers compared; a pre-release or unparsable version sorts as older), or the same version with another protocol, the client sends `shutdown`, waits for the socket to close, and auto-starts its own binary.
-- If it shows a newer crate version, the client leaves the daemon running and fails with `the daemon is version <theirs>, newer than this postbode (<ours>); restart this program`. The GUI shows that on its status line and keeps retrying every 5 s; MCP returns it as the call's error. So an old window or MCP server left open after an upgrade never stops the new daemon.
+- If it shows a newer crate version, the client leaves the daemon running and fails with `the daemon is version <theirs>, newer than this postvak (<ours>); restart this program`. The GUI shows that on its status line and keeps retrying every 5 s; MCP returns it as the call's error. So an old window or MCP server left open after an upgrade never stops the new daemon.
 - A service-run daemon is restarted by launchd or systemd on the new binary.
 
 ## 5. Wire protocol
@@ -175,15 +175,15 @@ Commands already queued when an account goes offline are failed with the same te
 - `notify::new_mail` in `cmd_run` and the GUI's `notifier`.
 - `sync::run_once` callers outside the live tests.
 
-## 8. `postbode service`
+## 8. `postvak service`
 
 - **macOS:**
-  - `install` writes `~/Library/LaunchAgents/nl.pataar.postbode.plist`: the absolute binary path plus `run`, `RunAtLoad`, `KeepAlive`, and stdout and stderr to `<state>/daemon.log`.
+  - `install` writes `~/Library/LaunchAgents/io.github.postvak_app.postvak.plist`: the absolute binary path plus `run`, `RunAtLoad`, `KeepAlive`, and stdout and stderr to `<state>/daemon.log`.
   - It then runs `launchctl bootstrap gui/<uid> <plist>`.
   - `remove` runs `launchctl bootout` and deletes the file.
 - **Linux:**
-  - `install` writes `~/.config/systemd/user/postbode.service` (`ExecStart=<binary> run`, `Restart=always`, `RestartSec=10`), so the service comes back after `daemon stop` or an upgrade, like `KeepAlive`.
-  - It then runs `systemctl --user daemon-reload` and `systemctl --user enable --now postbode`.
+  - `install` writes `~/.config/systemd/user/postvak.service` (`ExecStart=<binary> run`, `Restart=always`, `RestartSec=10`), so the service comes back after `daemon stop` or an upgrade, like `KeepAlive`.
+  - It then runs `systemctl --user daemon-reload` and `systemctl --user enable --now postvak`.
   - `remove` runs `disable --now` and deletes the file.
 - **Common:**
   - Both are re-runnable.
@@ -210,7 +210,7 @@ Commands already queued when an account goes offline are failed with the same te
   - the second daemon refused, a stale socket removed, idle exit with a short timeout, an older daemon replaced and a newer one left running;
   - a too-long socket path refused.
 - **Live Dovecot.**
-  - `postbode archive` auto-starts a daemon, archives, and the daemon exits after the idle timeout.
+  - `postvak archive` auto-starts a daemon, archives, and the daemon exits after the idle timeout.
   - MCP `sync` and `delete` go through the daemon.
   - The action log shows `mcp:<client>` and `cli`.
 - **GUI.** A kittest with `Client::in_memory()`: sending a command, applying its reply, and the reconnect line.
@@ -229,7 +229,7 @@ Commands already queued when an account goes offline are failed with the same te
 - **New page `docs/src/daemon.md`, "Background sync":**
   - what the daemon does and how it starts and stops;
   - idle exit;
-  - `postbode service install`;
+  - `postvak service install`;
   - `daemon status` and `stop`;
   - the log location;
   - troubleshooting: stale versions, a socket path that is too long.

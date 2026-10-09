@@ -1,8 +1,8 @@
 #!/bin/sh
 # Started from a launcher or file manager (no arguments, no terminal) the AppImage opens the window; otherwise it is
-# the postbode command.
+# the postvak command.
 here=$(dirname "$(readlink -f "$0")")
 if [ $# -eq 0 ] && [ ! -t 0 ]; then
     set -- gui
 fi
-exec "$here/usr/bin/postbode" "$@"
+exec "$here/usr/bin/postvak" "$@"

@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Do not paste passwords, tokens or real message contents. Replace addresses and subjects with made-up ones.
-        Security problems go through [private vulnerability reporting](https://github.com/pataar/postbode/security/advisories/new) instead.
+        Security problems go through [private vulnerability reporting](https://github.com/postvak-app/postvak/security/advisories/new) instead.
   - type: textarea
     id: what
     attributes:
@@ -19,7 +19,7 @@ body:
     attributes:
       label: Steps to reproduce
       placeholder: |
-        1. postbode sync
+        1. postvak sync
         2. …
     validations:
       required: true
@@ -37,8 +37,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: Postbode version
-      description: Output of `postbode --version`
+      label: Postvak version
+      description: Output of `postvak --version`
     validations:
       required: true
   - type: input

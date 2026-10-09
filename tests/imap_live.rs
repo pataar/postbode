@@ -1,4 +1,4 @@
-//! Live IMAP tests against tests/dovecot/compose.yml, skipped unless POSTBODE_TEST_IMAP_HOST is set.
+//! Live IMAP tests against tests/dovecot/compose.yml, skipped unless POSTVAK_TEST_IMAP_HOST is set.
 
 // Test code: unwrap, expect and panic are how a test fails.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -7,27 +7,27 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use postbode::config::{AccountConfig, Config, PasswordSource};
-use postbode::credentials::Secret;
-use postbode::engine::{Engine, imap_connector};
-use postbode::mail_ops::imap::ImapOps;
-use postbode::mail_ops::{Envelope, IdleOutcome, MailOps};
-use postbode::paths::Paths;
-use postbode::rules::Action;
-use postbode::store::Store;
-use postbode::sync::{self, Activity, Command, Event};
+use postvak::config::{AccountConfig, Config, PasswordSource};
+use postvak::credentials::Secret;
+use postvak::engine::{Engine, imap_connector};
+use postvak::mail_ops::imap::ImapOps;
+use postvak::mail_ops::{Envelope, IdleOutcome, MailOps};
+use postvak::paths::Paths;
+use postvak::rules::Action;
+use postvak::store::Store;
+use postvak::sync::{self, Activity, Command, Event};
 
-const PASSWORD: &str = "postbode-test";
+const PASSWORD: &str = "postvak-test";
 const PORT: u16 = 10993;
 const PORT_WITHOUT_MOVE: u16 = 11993;
 
 /// CI sets the variable to an empty string where no server runs; that counts as unset.
 fn host() -> Option<String> {
-    let host = std::env::var("POSTBODE_TEST_IMAP_HOST")
+    let host = std::env::var("POSTVAK_TEST_IMAP_HOST")
         .ok()
         .filter(|h| !h.is_empty());
     if host.is_none() {
-        eprintln!("POSTBODE_TEST_IMAP_HOST unset; live IMAP test skipped");
+        eprintln!("POSTVAK_TEST_IMAP_HOST unset; live IMAP test skipped");
     }
     host
 }
@@ -106,13 +106,13 @@ fn lists_the_hierarchy_delimiter() {
 fn append_fetch_and_flags_round_trip() {
     let Some(host) = host() else { return };
     let mut ops = connect(&account(&host, PORT, "flags"));
-    ops.append("INBOX", &mail("hello"), &["$PostbodeRestored"])
+    ops.append("INBOX", &mail("hello"), &["$PostvakRestored"])
         .unwrap();
     ops.select("INBOX").unwrap();
     let new = all_envelopes(&mut ops);
     assert_eq!(new.len(), 1);
     assert!(
-        new[0].flags.iter().any(|f| f == "$PostbodeRestored"),
+        new[0].flags.iter().any(|f| f == "$PostvakRestored"),
         "{:?}",
         new[0].flags
     );
@@ -237,11 +237,11 @@ fn wait_past_the_rule_clock() {
     std::thread::sleep(Duration::from_millis(1100));
 }
 
-fn postbode(home: &Path, args: &[&str]) -> std::process::Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
+fn postvak(home: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(args)
-        .env("POSTBODE_HOME", home)
-        .env("POSTBODE_IDLE_EXIT_SECS", "1")
+        .env("POSTVAK_HOME", home)
+        .env("POSTVAK_IDLE_EXIT_SECS", "1")
         .env("RUST_LOG", "error")
         .output()
         .unwrap()
@@ -335,7 +335,7 @@ fn cli_delete_moves_to_the_trash_folder() {
         .append("INBOX", &mail("old newsletter"), &[])
         .unwrap();
     for args in [&["sync"][..], &["delete", "1"][..]] {
-        let out = postbode(home.path(), args);
+        let out = postvak(home.path(), args);
         assert!(
             out.status.success(),
             "{args:?}: {}",
@@ -358,7 +358,7 @@ fn cli_actions_are_logged_as_cli_through_the_daemon() {
         .append("INBOX", &mail("file me"), &[])
         .unwrap();
     for args in [&["sync"][..], &["archive", "1"][..]] {
-        let out = postbode(home.path(), args);
+        let out = postvak(home.path(), args);
         assert!(
             out.status.success(),
             "{args:?}: {}",
@@ -401,7 +401,7 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
         .unwrap();
     wait_past_the_rule_clock();
     let success = |args: &[&str]| {
-        let out = postbode(home.path(), args);
+        let out = postvak(home.path(), args);
         assert!(
             out.status.success(),
             "{args:?}: {}",
@@ -420,12 +420,12 @@ fn cli_applies_a_rule_to_existing_mail_and_restores_it_through_the_daemon() {
         .next()
         .unwrap()
         .unwrap();
-    let restored = std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
+    let restored = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(["trash", "restore"])
         .arg(backup.file_name())
         .current_dir(&trash_dir)
-        .env("POSTBODE_HOME", home.path())
-        .env("POSTBODE_IDLE_EXIT_SECS", "1")
+        .env("POSTVAK_HOME", home.path())
+        .env("POSTVAK_IDLE_EXIT_SECS", "1")
         .output()
         .unwrap();
     assert!(
@@ -451,7 +451,7 @@ fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
             "[[rules]]\nname = \"impossible\"\nmatch.subject = {{ contains = \"move me\" }}\nactions = [{{ move = \"{target}\" }}]\n"
         ),
     );
-    let first = postbode(home.path(), &["sync"]);
+    let first = postvak(home.path(), &["sync"]);
     assert!(
         first.status.success(),
         "{}",
@@ -461,7 +461,7 @@ fn sync_exits_nonzero_when_a_rule_fails_on_a_message() {
     connect(&account)
         .append("INBOX", &mail("please move me"), &[])
         .unwrap();
-    let out = postbode(home.path(), &["sync"]);
+    let out = postvak(home.path(), &["sync"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");
     assert!(
@@ -483,9 +483,9 @@ fn account_add_accepts_a_private_ca_file() {
         "live\n{host}\n{PORT}\n{ca_file}\n{}\n\nc\nprintf {PASSWORD}\n",
         template.username
     );
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postbode"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(["account", "add"])
-        .env("POSTBODE_HOME", home.path())
+        .env("POSTVAK_HOME", home.path())
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -607,10 +607,10 @@ fn idling_exe() -> &'static Path {
         .get_or_init(|| {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
-            let script = dir.path().join("postbode");
+            let script = dir.path().join("postvak");
             let text = format!(
-                "#!/bin/sh\nPOSTBODE_IDLE_EXIT_SECS=1 exec '{}' \"$@\"\n",
-                env!("CARGO_BIN_EXE_postbode")
+                "#!/bin/sh\nPOSTVAK_IDLE_EXIT_SECS=1 exec '{}' \"$@\"\n",
+                env!("CARGO_BIN_EXE_postvak")
             );
             std::fs::write(&script, text).unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -621,16 +621,16 @@ fn idling_exe() -> &'static Path {
 
 /// A backend on a daemon this test starts, which exits a second after the backend is dropped.
 #[cfg(feature = "mcp")]
-fn backend(home: &Path) -> postbode::mcp::Backend {
+fn backend(home: &Path) -> postvak::mcp::Backend {
     let paths = Paths::under(home);
     let config = Config::load(&paths.config_file()).unwrap();
-    let client = postbode::daemon::Client::connect_or_start_with(
+    let client = postvak::daemon::Client::connect_or_start_with(
         &paths,
         idling_exe(),
-        postbode::daemon::wire::VERSION,
+        postvak::daemon::wire::VERSION,
     )
     .unwrap();
-    postbode::mcp::Backend::with_client(&config, &paths, &[], client).unwrap()
+    postvak::mcp::Backend::with_client(&config, &paths, &[], client).unwrap()
 }
 
 #[cfg(feature = "mcp")]

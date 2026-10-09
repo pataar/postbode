@@ -4,7 +4,7 @@
 //! coverage, so one set of reference images can only match one renderer. The references are drawn by Mesa's lavapipe
 //! (a software Vulkan driver) with `TZ=UTC`, which is deterministic and what the Linux CI job installs. Everywhere
 //! else, and in a plain `cargo test`, these tests build the views and stop before rendering, so a machine without a
-//! GPU or a Vulkan driver still passes. Set `POSTBODE_SNAPSHOTS=1` to compare, or `UPDATE_SNAPSHOTS=1` to rewrite
+//! GPU or a Vulkan driver still passes. Set `POSTVAK_SNAPSHOTS=1` to compare, or `UPDATE_SNAPSHOTS=1` to rewrite
 //! the PNGs, then look at what changed.
 use eframe::egui;
 use egui_kittest::Harness;
@@ -24,7 +24,7 @@ const RULES: &str = "[[rules]]\nname = \"newsletters\"\nmatch.from = { contains 
 
 fn enabled() -> bool {
     std::env::var_os("UPDATE_SNAPSHOTS").is_some()
-        || std::env::var("POSTBODE_SNAPSHOTS").is_ok_and(|v| v == "1")
+        || std::env::var("POSTVAK_SNAPSHOTS").is_ok_and(|v| v == "1")
 }
 
 /// Compares the frame with `tests/snapshots/{name}.png` when snapshots are enabled.
@@ -78,7 +78,7 @@ fn mailbox(theme: &str) -> Fixture {
         fx.folder("work", name, special);
     }
     fx.folder("home", "Archive", Some("Archive"));
-    for name in ["Projects/Postbode", "Projects/Website"] {
+    for name in ["Projects/Postvak", "Projects/Website"] {
         let nested = Folder {
             name: name.into(),
             uidvalidity: 1,
@@ -307,7 +307,7 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Harness<'static, App>, Wires
     let fx = mailbox(theme);
     let news = mail(
         99,
-        "Postbode Weekly <news@example.org>",
+        "Postvak Weekly <news@example.org>",
         "Your October roundup",
         "\\Seen",
         "Your October roundup",

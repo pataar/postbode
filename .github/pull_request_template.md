@@ -11,5 +11,5 @@
 - [ ] The PR title follows Conventional Commits (`feat:`, `fix:`, `docs:` …)
 - [ ] `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, `cargo machete` and `cargo audit` pass
 - [ ] New logic has a test; a bug fix has a regression test
-- [ ] Docs in `docs/src/` are updated, regenerated with `POSTBODE_BLESS=1 cargo test` if CLI flags or rule types changed
+- [ ] Docs in `docs/src/` are updated, regenerated with `POSTVAK_BLESS=1 cargo test` if CLI flags or rule types changed
 - [ ] No real message contents, passwords or tokens in code, tests or logs

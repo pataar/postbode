@@ -1,6 +1,6 @@
-# Postbode HTML rendering design
+# Postvak HTML rendering design
 
-Date: 2026-10-07. Status: draft for review. Builds on `2026-10-06-postbode-gui-design.md` §6 (body panel) and replaces its §11 entry "HTML bodies through `wry`". Core §17's constraints (no bodies in logs, no `unwrap` outside tests) apply.
+Date: 2026-10-07. Status: draft for review. Builds on `2026-10-06-postvak-gui-design.md` §6 (body panel) and replaces its §11 entry "HTML bodies through `wry`". Core §17's constraints (no bodies in logs, no `unwrap` outside tests) apply.
 
 ## 1. Purpose and scope
 
@@ -63,7 +63,7 @@ src/message.rs   html_body(raw) -> Option<HtmlBody { html, inline: Vec<InlinePar
 - **Strips.** 512 physical pixels tall, the full width, each painted with Blitz's viewport scrolled to its top; Blitz's paint offsets only place the document on the canvas. The view asks for the strips intersecting the visible rect plus one screen above and below, and drops textures more than three screens away. A strip not yet painted draws as white.
 - **Page.** A white rectangle the width of the panel, a 1 px border from the egui theme, the document painted over it with `ColorScheme::Light`. The rest of the panel follows the app theme.
 - **User agent CSS.** Blitz's own, plus `img { max-width: 100%; height: auto }` and `body { overflow-wrap: anywhere }`, so images and long URLs fit a narrow panel.
-- **Base URL.** `postbode://mail/`. Blitz panics on a relative URL it cannot resolve against its default base; this one resolves them to URLs the net provider refuses.
+- **Base URL.** `postvak://mail/`. Blitz panics on a relative URL it cannot resolve against its default base; this one resolves them to URLs the net provider refuses.
 - **Fonts.** System fonts through Blitz's `FontContext`. Tests build the context from the font egui bundles (Ubuntu Light), so snapshots do not depend on the machine.
 - **Limits.** HTML over 2 MiB, or a document taller than 200,000 px, shows the text view with the note "Too large to render; showing text."
 

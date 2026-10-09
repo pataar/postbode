@@ -26,7 +26,7 @@ use crate::store::{Message, Store};
 use crate::sync::{Command, Event, EventResults, RequestId};
 
 pub const NO_REPLY: &str =
-    "no reply from the daemon within 120 s; the command may still run, see `postbode log`";
+    "no reply from the daemon within 120 s; the command may still run, see `postvak log`";
 const LOG_TAIL_LINES: usize = 20;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 const RETRY: Duration = Duration::from_millis(100);
@@ -45,7 +45,7 @@ impl fmt::Display for Stopped {
 
 impl std::error::Error for Stopped {}
 
-/// A daemon of a newer postbode than this one: this program has to restart, and the daemon keeps running.
+/// A daemon of a newer postvak than this one: this program has to restart, and the daemon keeps running.
 #[derive(Debug)]
 pub struct NewerDaemon {
     pub theirs: String,
@@ -56,7 +56,7 @@ impl fmt::Display for NewerDaemon {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the daemon is version {}, newer than this postbode ({}); restart this program",
+            "the daemon is version {}, newer than this postvak ({}); restart this program",
             self.theirs, self.ours
         )
     }
@@ -339,7 +339,7 @@ impl Client {
     /// Connects, starting this binary as the daemon when none answers, and replacing a daemon of an older version or
     /// another protocol; a newer daemon is an error, so an old window never kills its upgrade.
     pub fn connect_or_start(paths: &Paths) -> anyhow::Result<Client> {
-        let exe = crate::paths::stable_exe().context("finding this postbode")?;
+        let exe = crate::paths::stable_exe().context("finding this postvak")?;
         Client::connect_or_start_with(paths, &exe, VERSION)
     }
 
@@ -674,11 +674,11 @@ fn handshake(
             version: theirs,
             ..
         }) => (
-            format!("daemon is version {theirs} (protocol {protocol}); this postbode is {version}"),
+            format!("daemon is version {theirs} (protocol {protocol}); this postvak is {version}"),
             Some(theirs),
         ),
         _ => (
-            format!("the daemon's hello was not understood; this postbode is {version}"),
+            format!("the daemon's hello was not understood; this postvak is {version}"),
             None,
         ),
     };
@@ -768,7 +768,7 @@ fn spawn_daemon(paths: &Paths, exe: &Path) -> anyhow::Result<Child> {
         .stderr(log)
         .process_group(0);
     if let Some(home) = &paths.home {
-        command.env("POSTBODE_HOME", home);
+        command.env("POSTVAK_HOME", home);
     }
     command
         .spawn()

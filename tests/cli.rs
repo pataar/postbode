@@ -4,11 +4,11 @@
 use std::process::Command;
 use std::time::Duration;
 
-fn postbode(home: &std::path::Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_postbode"))
+fn postvak(home: &std::path::Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(args)
-        .env("POSTBODE_HOME", home)
-        .env("POSTBODE_IDLE_EXIT_SECS", "1")
+        .env("POSTVAK_HOME", home)
+        .env("POSTVAK_IDLE_EXIT_SECS", "1")
         .env("RUST_LOG", "error")
         .output()
         .unwrap()
@@ -23,7 +23,7 @@ fn rules_check_reports_bad_file_and_exits_nonzero() {
         "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
     )
     .unwrap();
-    let out = postbode(home.path(), &["rules", "check"]);
+    let out = postvak(home.path(), &["rules", "check"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("rule 'x'"), "{stderr}");
@@ -38,17 +38,17 @@ fn rules_check_passes_on_valid_file_and_lists() {
         "[[rules]]\nname = \"ok\"\nmatch.seen = true\nactions = [\"flag\"]\n",
     )
     .unwrap();
-    assert!(postbode(home.path(), &["rules", "check"]).status.success());
-    let out = postbode(home.path(), &["rules", "list"]);
+    assert!(postvak(home.path(), &["rules", "check"]).status.success());
+    let out = postvak(home.path(), &["rules", "list"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("ok"));
 }
 
 #[test]
 fn list_on_unknown_account_fails_and_empty_config_lists_nothing() {
     let home = tempfile::tempdir().unwrap();
-    let out = postbode(home.path(), &["list", "--account", "nope"]);
+    let out = postvak(home.path(), &["list", "--account", "nope"]);
     assert!(!out.status.success());
-    let out = postbode(home.path(), &["folders"]);
+    let out = postvak(home.path(), &["folders"]);
     assert!(out.status.success());
     assert!(out.stdout.is_empty());
 }
@@ -59,9 +59,9 @@ fn account_add_rejects_invalid_name() {
     use std::process::Stdio;
 
     let home = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(["account", "add"])
-        .env("POSTBODE_HOME", home.path())
+        .env("POSTVAK_HOME", home.path())
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -81,8 +81,8 @@ fn account_add_rejects_invalid_name() {
 
 #[test]
 fn rules_test_previews_fresh_rule() {
-    use postbode::paths::Paths;
-    use postbode::store::{Folder, Message, Store};
+    use postvak::paths::Paths;
+    use postvak::store::{Folder, Message, Store};
 
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::under(home.path());
@@ -121,7 +121,7 @@ fn rules_test_previews_fresh_rule() {
         })
         .unwrap();
 
-    let out = postbode(home.path(), &["rules", "test"]);
+    let out = postvak(home.path(), &["rules", "test"]);
     assert!(
         out.status.success(),
         "{}",
@@ -140,8 +140,8 @@ fn rules_test_previews_fresh_rule() {
 
 const ONE_ACCOUNT: &str = "[[accounts]]\nname = \"work\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n";
 
-use postbode::paths::Paths;
-use postbode::store::{Folder, LogEntry, Message, Store};
+use postvak::paths::Paths;
+use postvak::store::{Folder, LogEntry, Message, Store};
 
 fn message(uid: u32, from: &str, subject: &str) -> Message {
     Message {
@@ -158,7 +158,7 @@ fn message(uid: u32, from: &str, subject: &str) -> Message {
     }
 }
 
-/// A POSTBODE_HOME with account "work" whose INBOX holds `messages`; its server is unreachable, so connecting fails.
+/// A POSTVAK_HOME with account "work" whose INBOX holds `messages`; its server is unreachable, so connecting fails.
 fn seeded_home(messages: &[Message]) -> (tempfile::TempDir, Store) {
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::under(home.path());
@@ -185,9 +185,9 @@ fn list_shows_local_time() {
     let mut m = message(42, "billing@example.com", "Your invoice");
     m.internaldate = 0;
     let (home, _store) = seeded_home(&[m]);
-    let out = Command::new(env!("CARGO_BIN_EXE_postbode"))
+    let out = Command::new(env!("CARGO_BIN_EXE_postvak"))
         .arg("list")
-        .env("POSTBODE_HOME", home.path())
+        .env("POSTVAK_HOME", home.path())
         .env("TZ", "Etc/GMT-3")
         .output()
         .unwrap();
@@ -211,17 +211,17 @@ fn list_and_log_show_the_account() {
             trash_file: None,
         })
         .unwrap();
-    let stdout = String::from_utf8_lossy(&postbode(home.path(), &["list"]).stdout).to_string();
+    let stdout = String::from_utf8_lossy(&postvak(home.path(), &["list"]).stdout).to_string();
     assert!(
         stdout.starts_with("work  ")
             && stdout.contains("INBOX/42")
             && stdout.contains("Your invoice"),
         "{stdout}"
     );
-    let stdout = String::from_utf8_lossy(&postbode(home.path(), &["log"]).stdout).to_string();
+    let stdout = String::from_utf8_lossy(&postvak(home.path(), &["log"]).stdout).to_string();
     assert!(stdout.starts_with("work  "), "{stdout}");
     for args in [&["list", "--json"][..], &["log", "--json"][..]] {
-        let out = postbode(home.path(), args);
+        let out = postvak(home.path(), args);
         let first = out.stdout.split(|b| *b == b'\n').next().unwrap();
         let line: serde_json::Value = serde_json::from_slice(first).unwrap();
         assert_eq!(line["account"], "work", "{args:?}");
@@ -231,7 +231,7 @@ fn list_and_log_show_the_account() {
 #[test]
 fn trash_list_shows_subjects() {
     let (home, _store) = seeded_home(&[]);
-    postbode::trash::Trash::new(Paths::under(home.path()).trash_dir("work"))
+    postvak::trash::Trash::new(Paths::under(home.path()).trash_dir("work"))
         .save(
             "INBOX",
             7,
@@ -240,7 +240,7 @@ fn trash_list_shows_subjects() {
         )
         .unwrap();
     let stdout =
-        String::from_utf8_lossy(&postbode(home.path(), &["trash", "list"]).stdout).to_string();
+        String::from_utf8_lossy(&postvak(home.path(), &["trash", "list"]).stdout).to_string();
     assert!(
         stdout.contains("INBOX/7") && stdout.contains("Your code is 123456"),
         "{stdout}"
@@ -250,7 +250,7 @@ fn trash_list_shows_subjects() {
 #[test]
 fn error_lines_strip_control_characters() {
     let home = tempfile::tempdir().unwrap();
-    let out = postbode(home.path(), &["list", "--account", "x\u{1b}[2Jy"]);
+    let out = postvak(home.path(), &["list", "--account", "x\u{1b}[2Jy"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no account named 'x[2Jy'"), "{stderr}");
 }
@@ -265,7 +265,7 @@ fn rules_test_with_unknown_name_fails() {
         "[[rules]]\nname = \"ok\"\nmatch.seen = true\nactions = [\"flag\"]\n",
     )
     .unwrap();
-    let out = postbode(home.path(), &["rules", "test", "nope"]);
+    let out = postvak(home.path(), &["rules", "test", "nope"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("no rule named 'nope'"), "{stderr}");
@@ -279,16 +279,16 @@ fn an_invalid_rules_file_still_lets_actions_reach_the_daemon() {
         "[[rules]]\nname = \"x\"\nmatch.from = { regex = \"(\" }\nactions = [\"delete\"]\n",
     )
     .unwrap();
-    let out = postbode(home.path(), &["archive", "1"]);
+    let out = postvak(home.path(), &["archive", "1"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("work is offline ("), "{stderr}");
-    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+    assert!(postvak(home.path(), &["daemon", "stop"]).status.success());
 }
 
 #[test]
 fn delete_dry_run_reads_only_the_local_store() {
     let (home, _store) = seeded_home(&[message(42, "a@example.com", "Old newsletter")]);
-    let out = postbode(home.path(), &["delete", "42", "--dry-run"]);
+    let out = postvak(home.path(), &["delete", "42", "--dry-run"]);
     assert!(
         out.status.success(),
         "{}",
@@ -298,7 +298,7 @@ fn delete_dry_run_reads_only_the_local_store() {
         String::from_utf8_lossy(&out.stdout),
         "would delete (expunge, .eml backup kept)  INBOX/42  Old newsletter\n"
     );
-    let out = postbode(home.path(), &["mark", "read", "42", "43", "--dry-run"]);
+    let out = postvak(home.path(), &["mark", "read", "42", "43", "--dry-run"]);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -319,7 +319,7 @@ fn delete_dry_run_names_the_trash_folder() {
             delimiter: None,
         })
         .unwrap();
-    let out = postbode(home.path(), &["delete", "42", "--dry-run"]);
+    let out = postvak(home.path(), &["delete", "42", "--dry-run"]);
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         "would move to Trash  INBOX/42  Old newsletter\n"
@@ -338,7 +338,7 @@ fn apply_existing_refuses_a_disabled_rule() {
         &["rules", "apply-existing", "codes", "--dry-run"][..],
         &["rules", "apply-existing", "codes"][..],
     ] {
-        let out = postbode(home.path(), args);
+        let out = postvak(home.path(), args);
         assert!(!out.status.success(), "{args:?}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -351,7 +351,7 @@ fn apply_existing_refuses_a_disabled_rule() {
 #[test]
 fn direct_actions_need_at_least_one_uid() {
     let (home, _store) = seeded_home(&[]);
-    assert_eq!(postbode(home.path(), &["archive"]).status.code(), Some(2));
+    assert_eq!(postvak(home.path(), &["archive"]).status.code(), Some(2));
 }
 
 #[test]
@@ -360,7 +360,7 @@ fn show_json_carries_the_account() {
     store
         .set_raw("INBOX", 42, b"Subject: Hello\r\n\r\nhi", "hi")
         .unwrap();
-    let out = postbode(home.path(), &["show", "42", "--json"]);
+    let out = postvak(home.path(), &["show", "42", "--json"]);
     let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(line["account"], "work");
 }
@@ -372,7 +372,7 @@ fn search_finds_by_word_and_by_address() {
         message(43, "friend@example.com", "Lunch?"),
     ]);
     for query in ["invoice", "billing@example.com"] {
-        let out = postbode(home.path(), &["search", query]);
+        let out = postvak(home.path(), &["search", query]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success() && stdout.lines().count() == 1 && stdout.contains("INBOX/42"),
@@ -388,7 +388,7 @@ fn list_threads_indents_replies_under_their_thread() {
     reply.thread_id = root.thread_id.clone();
     reply.in_reply_to = root.message_id.clone();
     let (home, _store) = seeded_home(&[root, reply]);
-    let out = postbode(home.path(), &["list", "--threads"]);
+    let out = postvak(home.path(), &["list", "--threads"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2, "{stdout}");
@@ -426,7 +426,7 @@ fn attachments_list_and_save_from_the_cached_message() {
     store
         .set_raw("INBOX", 42, WITH_ATTACHMENTS, "see attached")
         .unwrap();
-    let out = postbode(home.path(), &["attachment", "list", "42"]);
+    let out = postvak(home.path(), &["attachment", "list", "42"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(
@@ -436,7 +436,7 @@ fn attachments_list_and_save_from_the_cached_message() {
     assert_eq!(lines[1], "2  application/pdf  5  -");
     let target = tempfile::tempdir().unwrap();
     let dir = target.path().to_str().unwrap();
-    let out = postbode(
+    let out = postvak(
         home.path(),
         &["attachment", "save", "42", "1", "--dir", dir],
     );
@@ -447,7 +447,7 @@ fn attachments_list_and_save_from_the_cached_message() {
     );
     assert!(target.path().join("evil.txt").exists());
     assert!(
-        !postbode(
+        !postvak(
             home.path(),
             &["attachment", "save", "42", "1", "--dir", dir]
         )
@@ -456,13 +456,13 @@ fn attachments_list_and_save_from_the_cached_message() {
     );
 }
 
-fn postbode_stdin(home: &std::path::Path, args: &[&str], stdin: &str) -> std::process::Output {
+fn postvak_stdin(home: &std::path::Path, args: &[&str], stdin: &str) -> std::process::Output {
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(args)
-        .env("POSTBODE_HOME", home)
+        .env("POSTVAK_HOME", home)
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -484,10 +484,10 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
     let rule =
         r#"{"name": "codes", "match": {"subject": {"contains": "code"}}, "actions": ["delete"]}"#;
     let list = |home: &std::path::Path| {
-        String::from_utf8_lossy(&postbode(home, &["rules", "list"]).stdout).to_string()
+        String::from_utf8_lossy(&postvak(home, &["rules", "list"]).stdout).to_string()
     };
 
-    let out = postbode_stdin(home.path(), &["rules", "test", "--stdin"], rule);
+    let out = postvak_stdin(home.path(), &["rules", "test", "--stdin"], rule);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("codes\tINBOX/42\tdelete"), "{stdout}");
     assert!(
@@ -495,23 +495,22 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
         "a preview writes nothing"
     );
 
-    let out = postbode_stdin(home.path(), &["rules", "propose", "--by", "test"], rule);
+    let out = postvak_stdin(home.path(), &["rules", "propose", "--by", "test"], rule);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(list(home.path()).contains("off\tcodes\tcli:test"));
-    let stdout =
-        String::from_utf8_lossy(&postbode(home.path(), &["rules", "test", "codes"]).stdout)
-            .to_string();
+    let stdout = String::from_utf8_lossy(&postvak(home.path(), &["rules", "test", "codes"]).stdout)
+        .to_string();
     assert!(
         stdout.contains("INBOX/42"),
         "naming a proposal previews it: {stdout}"
     );
 
     assert!(
-        postbode(home.path(), &["rules", "approve", "codes"])
+        postvak(home.path(), &["rules", "approve", "codes"])
             .status
             .success()
     );
@@ -521,12 +520,12 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
         "approval stamps the rule's clock with the current time"
     );
     assert!(
-        !postbode(home.path(), &["rules", "reject", "codes"])
+        !postvak(home.path(), &["rules", "reject", "codes"])
             .status
             .success()
     );
 
-    let out = postbode_stdin(
+    let out = postvak_stdin(
         home.path(),
         &["rules", "propose"],
         &rule.replace("codes", "codes-2"),
@@ -537,7 +536,7 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        postbode(home.path(), &["rules", "reject", "codes-2"])
+        postvak(home.path(), &["rules", "reject", "codes-2"])
             .status
             .success()
     );
@@ -546,11 +545,11 @@ fn agent_proposes_and_a_human_approves_or_rejects() {
     let bad = rule
         .replace("codes", "bad")
         .replace(r#""contains": "code""#, r#""regex": "(""#);
-    let out = postbode_stdin(home.path(), &["rules", "propose"], &bad);
+    let out = postvak_stdin(home.path(), &["rules", "propose"], &bad);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("rule 'bad'"));
 
-    let out = postbode(home.path(), &["rules", "schema"]);
+    let out = postvak(home.path(), &["rules", "schema"]);
     serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap();
 }
 
@@ -559,7 +558,7 @@ fn search_bodies_works_offline() {
     let mut stored = message(42, "billing@example.com", "Your invoice");
     stored.body_text = Some("the total is due".into());
     let (home, _store) = seeded_home(&[stored]);
-    let out = postbode(home.path(), &["search", "--bodies", "invoice"]);
+    let out = postvak(home.path(), &["search", "--bodies", "invoice"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(
@@ -572,7 +571,7 @@ fn search_bodies_works_offline() {
     );
 
     let (home, _store) = seeded_home(&[message(43, "friend@example.com", "Lunch?")]);
-    let out = postbode(home.path(), &["search", "--bodies", "Lunch"]);
+    let out = postvak(home.path(), &["search", "--bodies", "Lunch"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(
@@ -597,9 +596,9 @@ fn mcp_speaks_only_json_rpc_on_stdout() {
         "[[accounts]]\nname = \"work\"\nhost = \"127.0.0.1\"\nport = 1\nusername = \"me@example.com\"\npassword = { command = \"printf x\" }\n",
     )
     .unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_postvak"))
         .args(["mcp", "--scopes", "read"])
-        .env("POSTBODE_HOME", home.path())
+        .env("POSTVAK_HOME", home.path())
         .env("RUST_LOG", "info")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -651,13 +650,13 @@ fn mcp_speaks_only_json_rpc_on_stdout() {
 #[test]
 fn mcp_install_rejects_an_unknown_account_and_accepts_none() {
     let home = tempfile::tempdir().unwrap();
-    let out = postbode(
+    let out = postvak(
         home.path(),
         &["mcp", "install", "json", "--account", "nope"],
     );
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no account named 'nope'"));
-    let out = postbode(home.path(), &["mcp", "install", "json"]);
+    let out = postvak(home.path(), &["mcp", "install", "json"]);
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("mcpServers"));
 }
@@ -666,15 +665,15 @@ fn mcp_install_rejects_an_unknown_account_and_accepts_none() {
 #[test]
 fn mcp_install_json_keeps_stdout_machine_readable() {
     let home = tempfile::tempdir().unwrap();
-    let out = postbode(home.path(), &["mcp", "install", "json"]);
+    let out = postvak(home.path(), &["mcp", "install", "json"]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
-    assert_eq!(parsed["mcpServers"]["postbode"]["args"][0], "mcp");
+    assert_eq!(parsed["mcpServers"]["postvak"]["args"][0], "mcp");
     assert!(String::from_utf8_lossy(&out.stderr).contains("Scopes: read, rules:propose"));
 }
 
-/// A foreground `postbode run`, killed if a test fails before it is stopped.
+/// A foreground `postvak run`, killed if a test fails before it is stopped.
 struct Daemon(std::process::Child);
 
 impl Drop for Daemon {
@@ -685,9 +684,9 @@ impl Drop for Daemon {
 }
 
 fn start_daemon(home: &std::path::Path) -> Daemon {
-    let child = Command::new(env!("CARGO_BIN_EXE_postbode"))
+    let child = Command::new(env!("CARGO_BIN_EXE_postvak"))
         .arg("run")
-        .env("POSTBODE_HOME", home)
+        .env("POSTVAK_HOME", home)
         .env("RUST_LOG", "error")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -697,11 +696,11 @@ fn start_daemon(home: &std::path::Path) -> Daemon {
     Daemon(child)
 }
 
-/// Polls `postbode daemon status` for up to 10 s until its output contains `needle`.
+/// Polls `postvak daemon status` for up to 10 s until its output contains `needle`.
 fn wait_for_status(home: &std::path::Path, needle: &str) -> String {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let out = postbode(home, &["daemon", "status"]);
+        let out = postvak(home, &["daemon", "status"]);
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         if stdout.contains(needle) {
             return stdout;
@@ -724,12 +723,12 @@ fn archive_through_an_offline_account_reports_the_offline_reason() {
         &["delete", "1"],
         &["mark", "unread", "1"],
     ] {
-        let out = postbode(home.path(), args);
+        let out = postvak(home.path(), args);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success(), "{args:?}: {stderr}");
         assert!(stderr.contains("work is offline ("), "{args:?}: {stderr}");
     }
-    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+    assert!(postvak(home.path(), &["daemon", "stop"]).status.success());
 }
 
 #[test]
@@ -753,18 +752,18 @@ fn daemon_status_shows_pid_version_and_accounts() {
             .any(|line| line.starts_with("work  ") && !line.contains("running")),
         "{stdout}"
     );
-    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+    assert!(postvak(home.path(), &["daemon", "stop"]).status.success());
 }
 
 #[test]
 fn daemon_stop_ends_the_daemon() {
     let (home, _store) = seeded_home(&[]);
     let mut daemon = start_daemon(home.path());
-    let out = postbode(home.path(), &["daemon", "stop"]);
+    let out = postvak(home.path(), &["daemon", "stop"]);
     assert!(out.status.success());
     assert!(daemon.0.wait().unwrap().success());
     assert!(!Paths::under(home.path()).daemon_socket().exists());
-    let out = postbode(home.path(), &["daemon", "status"]);
+    let out = postvak(home.path(), &["daemon", "status"]);
     assert!(out.status.success());
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
@@ -775,7 +774,7 @@ fn daemon_stop_ends_the_daemon() {
 #[test]
 fn daemon_stop_without_a_daemon_says_so() {
     let (home, _store) = seeded_home(&[]);
-    let out = postbode(home.path(), &["daemon", "stop"]);
+    let out = postvak(home.path(), &["daemon", "stop"]);
     assert!(out.status.success());
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).trim(),
@@ -787,7 +786,7 @@ fn daemon_stop_without_a_daemon_says_so() {
 #[test]
 fn run_serves_without_accounts() {
     let home = tempfile::tempdir().unwrap();
-    let out = postbode(home.path(), &["run", "--idle-exit", "1"]);
+    let out = postvak(home.path(), &["run", "--idle-exit", "1"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
 }
@@ -796,20 +795,20 @@ fn run_serves_without_accounts() {
 fn run_refuses_a_second_daemon() {
     let (home, _store) = seeded_home(&[]);
     let daemon = start_daemon(home.path());
-    let out = postbode(home.path(), &["run"]);
+    let out = postvak(home.path(), &["run"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");
     assert!(
         stderr.contains(&format!("already running (pid {})", daemon.0.id())),
         "{stderr}"
     );
-    assert!(postbode(home.path(), &["daemon", "stop"]).status.success());
+    assert!(postvak(home.path(), &["daemon", "stop"]).status.success());
 }
 
 #[test]
 fn sync_through_an_offline_account_fails_with_the_offline_reason() {
     let (home, _store) = seeded_home(&[]);
-    let out = postbode(home.path(), &["sync"]);
+    let out = postvak(home.path(), &["sync"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");
     assert!(
@@ -823,10 +822,10 @@ const FAILED_PASS: &str = "rule 'x': invalid regex; running no rules until it is
 /// Answers like a daemon of `version`: hello, subscribe, status, shutdown (which removes its socket), and a sync whose
 /// pass failed with FAILED_PASS. Subscribers also get an error from an unrelated pass.
 fn serve_fake_daemon(paths: &Paths, version: &'static str) -> std::thread::JoinHandle<()> {
-    use postbode::daemon::wire::{
+    use postvak::daemon::wire::{
         self, ClientMessage, DaemonMessage, Outcome, PROTOCOL, Payload, Status,
     };
-    use postbode::sync::Event;
+    use postvak::sync::Event;
     use std::io::{BufRead, BufReader};
 
     std::fs::create_dir_all(&paths.state_dir).unwrap();
@@ -894,13 +893,13 @@ fn daemon_status_and_stop_reach_a_daemon_of_another_version() {
     let (home, _store) = seeded_home(&[]);
     let paths = Paths::under(home.path());
     let stale = serve_fake_daemon(&paths, "0.0.0-old");
-    let out = postbode(home.path(), &["daemon", "status"]);
+    let out = postvak(home.path(), &["daemon", "status"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.starts_with("pid 4242, version 0.0.0-old, up "),
         "{stdout}"
     );
-    let out = postbode(home.path(), &["daemon", "stop"]);
+    let out = postvak(home.path(), &["daemon", "stop"]);
     assert!(
         out.status.success(),
         "{}",
@@ -913,8 +912,8 @@ fn daemon_status_and_stop_reach_a_daemon_of_another_version() {
 #[test]
 fn sync_prints_the_errors_of_its_own_pass_and_fails() {
     let (home, _store) = seeded_home(&[]);
-    serve_fake_daemon(&Paths::under(home.path()), postbode::daemon::wire::VERSION);
-    let out = postbode(home.path(), &["sync"]);
+    serve_fake_daemon(&Paths::under(home.path()), postvak::daemon::wire::VERSION);
+    let out = postvak(home.path(), &["sync"]);
     let (stdout, stderr) = (
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
@@ -936,13 +935,13 @@ fn account_list_shows_configured_accounts_without_secrets() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join("config")).unwrap();
     std::fs::write(home.path().join("config/config.toml"), ONE_ACCOUNT).unwrap();
-    let out = postbode(home.path(), &["account", "list"]);
+    let out = postvak(home.path(), &["account", "list"]);
     assert!(out.status.success());
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         "work\tme@example.com\t127.0.0.1:1\n"
     );
-    let out = postbode(home.path(), &["account", "list", "--json"]);
+    let out = postvak(home.path(), &["account", "list", "--json"]);
     let row: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(row["account"], "work");
     assert_eq!(row["port"], 1);

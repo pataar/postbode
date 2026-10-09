@@ -4,7 +4,7 @@ use crate::rules::{Action, CompiledRule, Conditions};
 use crate::store::Message;
 
 /// Set by `trash restore`; rules never act on, or notify about, mail carrying it.
-pub const RESTORED_KEYWORD: &str = "$PostbodeRestored";
+pub const RESTORED_KEYWORD: &str = "$PostvakRestored";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

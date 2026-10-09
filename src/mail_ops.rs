@@ -526,10 +526,10 @@ mod tests {
     fn fake_append_keeps_bytes_and_rejects_unknown_folder() {
         let mut ops = RecordingOps::new().with_folder("Backup", None);
         let raw = b"Subject: a\r\n\r\n\xFFbody";
-        ops.append("Backup", raw, &["$PostbodeRestored"]).unwrap();
+        ops.append("Backup", raw, &["$PostvakRestored"]).unwrap();
         assert_eq!(ops.raw[&("Backup".into(), 1)], raw);
         assert_eq!(ops.mail["Backup"][0].headers, b"Subject: a\r\n\r\n");
-        assert_eq!(ops.mail["Backup"][0].flags, ["$PostbodeRestored"]);
+        assert_eq!(ops.mail["Backup"][0].flags, ["$PostvakRestored"]);
         assert!(matches!(
             ops.append("Nope", raw, &[]),
             Err(MailError::Protocol(_))

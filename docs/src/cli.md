@@ -1,56 +1,56 @@
-# Command-Line Help for `postbode`
+# Command-Line Help for `postvak`
 
-This document contains the help content for the `postbode` command-line program.
+This document contains the help content for the `postvak` command-line program.
 
 **Command Overview:**
 
-* [`postbode`↴](#postbode)
-* [`postbode run`↴](#postbode-run)
-* [`postbode daemon`↴](#postbode-daemon)
-* [`postbode daemon status`↴](#postbode-daemon-status)
-* [`postbode daemon stop`↴](#postbode-daemon-stop)
-* [`postbode gui`↴](#postbode-gui)
-* [`postbode service`↴](#postbode-service)
-* [`postbode service install`↴](#postbode-service-install)
-* [`postbode service remove`↴](#postbode-service-remove)
-* [`postbode sync`↴](#postbode-sync)
-* [`postbode attachment`↴](#postbode-attachment)
-* [`postbode attachment list`↴](#postbode-attachment-list)
-* [`postbode attachment save`↴](#postbode-attachment-save)
-* [`postbode rules`↴](#postbode-rules)
-* [`postbode rules check`↴](#postbode-rules-check)
-* [`postbode rules test`↴](#postbode-rules-test)
-* [`postbode rules schema`↴](#postbode-rules-schema)
-* [`postbode rules propose`↴](#postbode-rules-propose)
-* [`postbode rules approve`↴](#postbode-rules-approve)
-* [`postbode rules reject`↴](#postbode-rules-reject)
-* [`postbode rules list`↴](#postbode-rules-list)
-* [`postbode rules apply-existing`↴](#postbode-rules-apply-existing)
-* [`postbode folders`↴](#postbode-folders)
-* [`postbode list`↴](#postbode-list)
-* [`postbode search`↴](#postbode-search)
-* [`postbode show`↴](#postbode-show)
-* [`postbode mark`↴](#postbode-mark)
-* [`postbode move`↴](#postbode-move)
-* [`postbode archive`↴](#postbode-archive)
-* [`postbode delete`↴](#postbode-delete)
-* [`postbode log`↴](#postbode-log)
-* [`postbode trash`↴](#postbode-trash)
-* [`postbode trash list`↴](#postbode-trash-list)
-* [`postbode trash restore`↴](#postbode-trash-restore)
-* [`postbode trash purge`↴](#postbode-trash-purge)
-* [`postbode account`↴](#postbode-account)
-* [`postbode account add`↴](#postbode-account-add)
-* [`postbode account list`↴](#postbode-account-list)
-* [`postbode guide`↴](#postbode-guide)
-* [`postbode mcp`↴](#postbode-mcp)
-* [`postbode mcp install`↴](#postbode-mcp-install)
+* [`postvak`↴](#postvak)
+* [`postvak run`↴](#postvak-run)
+* [`postvak daemon`↴](#postvak-daemon)
+* [`postvak daemon status`↴](#postvak-daemon-status)
+* [`postvak daemon stop`↴](#postvak-daemon-stop)
+* [`postvak gui`↴](#postvak-gui)
+* [`postvak service`↴](#postvak-service)
+* [`postvak service install`↴](#postvak-service-install)
+* [`postvak service remove`↴](#postvak-service-remove)
+* [`postvak sync`↴](#postvak-sync)
+* [`postvak attachment`↴](#postvak-attachment)
+* [`postvak attachment list`↴](#postvak-attachment-list)
+* [`postvak attachment save`↴](#postvak-attachment-save)
+* [`postvak rules`↴](#postvak-rules)
+* [`postvak rules check`↴](#postvak-rules-check)
+* [`postvak rules test`↴](#postvak-rules-test)
+* [`postvak rules schema`↴](#postvak-rules-schema)
+* [`postvak rules propose`↴](#postvak-rules-propose)
+* [`postvak rules approve`↴](#postvak-rules-approve)
+* [`postvak rules reject`↴](#postvak-rules-reject)
+* [`postvak rules list`↴](#postvak-rules-list)
+* [`postvak rules apply-existing`↴](#postvak-rules-apply-existing)
+* [`postvak folders`↴](#postvak-folders)
+* [`postvak list`↴](#postvak-list)
+* [`postvak search`↴](#postvak-search)
+* [`postvak show`↴](#postvak-show)
+* [`postvak mark`↴](#postvak-mark)
+* [`postvak move`↴](#postvak-move)
+* [`postvak archive`↴](#postvak-archive)
+* [`postvak delete`↴](#postvak-delete)
+* [`postvak log`↴](#postvak-log)
+* [`postvak trash`↴](#postvak-trash)
+* [`postvak trash list`↴](#postvak-trash-list)
+* [`postvak trash restore`↴](#postvak-trash-restore)
+* [`postvak trash purge`↴](#postvak-trash-purge)
+* [`postvak account`↴](#postvak-account)
+* [`postvak account add`↴](#postvak-account-add)
+* [`postvak account list`↴](#postvak-account-list)
+* [`postvak guide`↴](#postvak-guide)
+* [`postvak mcp`↴](#postvak-mcp)
+* [`postvak mcp install`↴](#postvak-mcp-install)
 
-## `postbode`
+## `postvak`
 
 A fast, simple mail client with automatic mailbox rules
 
-**Usage:** `postbode <COMMAND>`
+**Usage:** `postvak <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -72,24 +72,24 @@ A fast, simple mail client with automatic mailbox rules
 * `log` — Show what rules did, newest first
 * `trash` — Deleted mail kept for the retention period
 * `account` — Manage accounts
-* `guide` — Print the agent guide: how an LLM should drive Postbode
-* `mcp` — Serve Postbode to an agent host over MCP on stdio; hosts start this, see `postbode mcp install`
+* `guide` — Print the agent guide: how an LLM should drive Postvak
+* `mcp` — Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
 
 
 
-## `postbode run`
+## `postvak run`
 
 Run the daemon in the foreground: sync all accounts continuously and apply rules; fails when a daemon already runs; Ctrl-C stops
 
-**Usage:** `postbode run`
+**Usage:** `postvak run`
 
 
 
-## `postbode daemon`
+## `postvak daemon`
 
 Inspect or stop the daemon that syncs your accounts; other commands start it when needed
 
-**Usage:** `postbode daemon <COMMAND>`
+**Usage:** `postvak daemon <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -98,35 +98,35 @@ Inspect or stop the daemon that syncs your accounts; other commands start it whe
 
 
 
-## `postbode daemon status`
+## `postvak daemon status`
 
 Print the daemon's pid, version, uptime and what each account is doing
 
-**Usage:** `postbode daemon status`
+**Usage:** `postvak daemon status`
 
 
 
-## `postbode daemon stop`
+## `postvak daemon stop`
 
 Stop the daemon; it starts again when a command needs it
 
-**Usage:** `postbode daemon stop`
+**Usage:** `postvak daemon stop`
 
 
 
-## `postbode gui`
+## `postvak gui`
 
 Open the mail window; starts the daemon when needed
 
-**Usage:** `postbode gui`
+**Usage:** `postvak gui`
 
 
 
-## `postbode service`
+## `postvak service`
 
 Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linux
 
-**Usage:** `postbode service <COMMAND>`
+**Usage:** `postvak service <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -135,11 +135,11 @@ Start the daemon at login: a launchd agent on macOS, a systemd user unit on Linu
 
 
 
-## `postbode service install`
+## `postvak service install`
 
 Install and start the service; stops a daemon that is already running so the service's takes over
 
-**Usage:** `postbode service install [OPTIONS]`
+**Usage:** `postvak service install [OPTIONS]`
 
 ###### **Options:**
 
@@ -147,11 +147,11 @@ Install and start the service; stops a daemon that is already running so the ser
 
 
 
-## `postbode service remove`
+## `postvak service remove`
 
 Stop and remove the service
 
-**Usage:** `postbode service remove [OPTIONS]`
+**Usage:** `postvak service remove [OPTIONS]`
 
 ###### **Options:**
 
@@ -159,11 +159,11 @@ Stop and remove the service
 
 
 
-## `postbode sync`
+## `postvak sync`
 
 Ask the daemon to sync now and apply rules; waits for the result
 
-**Usage:** `postbode sync [OPTIONS]`
+**Usage:** `postvak sync [OPTIONS]`
 
 ###### **Options:**
 
@@ -171,11 +171,11 @@ Ask the daemon to sync now and apply rules; waits for the result
 
 
 
-## `postbode attachment`
+## `postvak attachment`
 
 List or save a message's attachments
 
-**Usage:** `postbode attachment <COMMAND>`
+**Usage:** `postvak attachment <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -184,11 +184,11 @@ List or save a message's attachments
 
 
 
-## `postbode attachment list`
+## `postvak attachment list`
 
 Index, type, size and name of each attachment
 
-**Usage:** `postbode attachment list [OPTIONS] <UID>`
+**Usage:** `postvak attachment list [OPTIONS] <UID>`
 
 ###### **Arguments:**
 
@@ -204,11 +204,11 @@ Index, type, size and name of each attachment
 
 
 
-## `postbode attachment save`
+## `postvak attachment save`
 
 Save attachment N, as numbered by `attachment list`, into --dir
 
-**Usage:** `postbode attachment save [OPTIONS] <UID> <N>`
+**Usage:** `postvak attachment save [OPTIONS] <UID> <N>`
 
 ###### **Arguments:**
 
@@ -227,11 +227,11 @@ Save attachment N, as numbered by `attachment list`, into --dir
 
 
 
-## `postbode rules`
+## `postvak rules`
 
 Inspect and test rules.toml
 
-**Usage:** `postbode rules <COMMAND>`
+**Usage:** `postvak rules <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -246,19 +246,19 @@ Inspect and test rules.toml
 
 
 
-## `postbode rules check`
+## `postvak rules check`
 
 Validate rules.toml
 
-**Usage:** `postbode rules check`
+**Usage:** `postvak rules check`
 
 
 
-## `postbode rules test`
+## `postvak rules test`
 
 Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
 
-**Usage:** `postbode rules test [OPTIONS] [NAME]`
+**Usage:** `postvak rules test [OPTIONS] [NAME]`
 
 ###### **Arguments:**
 
@@ -271,19 +271,19 @@ Dry run: print what each rule would do to the cached messages; naming a rule pre
 
 
 
-## `postbode rules schema`
+## `postvak rules schema`
 
 JSON Schema for rules.toml; a proposal is one entry of `rules`
 
-**Usage:** `postbode rules schema`
+**Usage:** `postvak rules schema`
 
 
 
-## `postbode rules propose`
+## `postvak rules propose`
 
 Read one rule as JSON on stdin and add it disabled, for a human to approve
 
-**Usage:** `postbode rules propose [OPTIONS]`
+**Usage:** `postvak rules propose [OPTIONS]`
 
 ###### **Options:**
 
@@ -291,11 +291,11 @@ Read one rule as JSON on stdin and add it disabled, for a human to approve
 
 
 
-## `postbode rules approve`
+## `postvak rules approve`
 
 Enable a disabled rule, such as a proposal
 
-**Usage:** `postbode rules approve <NAME>`
+**Usage:** `postvak rules approve <NAME>`
 
 ###### **Arguments:**
 
@@ -303,11 +303,11 @@ Enable a disabled rule, such as a proposal
 
 
 
-## `postbode rules reject`
+## `postvak rules reject`
 
 Remove a pending proposal
 
-**Usage:** `postbode rules reject <NAME>`
+**Usage:** `postvak rules reject <NAME>`
 
 ###### **Arguments:**
 
@@ -315,11 +315,11 @@ Remove a pending proposal
 
 
 
-## `postbode rules list`
+## `postvak rules list`
 
 Names, enabled state and who proposed them
 
-**Usage:** `postbode rules list [OPTIONS]`
+**Usage:** `postvak rules list [OPTIONS]`
 
 ###### **Options:**
 
@@ -327,11 +327,11 @@ Names, enabled state and who proposed them
 
 
 
-## `postbode rules apply-existing`
+## `postvak rules apply-existing`
 
 Run one rule against mail that predates it
 
-**Usage:** `postbode rules apply-existing [OPTIONS] <NAME>`
+**Usage:** `postvak rules apply-existing [OPTIONS] <NAME>`
 
 ###### **Arguments:**
 
@@ -344,11 +344,11 @@ Run one rule against mail that predates it
 
 
 
-## `postbode folders`
+## `postvak folders`
 
 List folders with message and unread counts
 
-**Usage:** `postbode folders [OPTIONS]`
+**Usage:** `postvak folders [OPTIONS]`
 
 ###### **Options:**
 
@@ -357,11 +357,11 @@ List folders with message and unread counts
 
 
 
-## `postbode list`
+## `postvak list`
 
 List recent messages, newest first
 
-**Usage:** `postbode list [OPTIONS]`
+**Usage:** `postvak list [OPTIONS]`
 
 ###### **Options:**
 
@@ -377,11 +377,11 @@ List recent messages, newest first
 
 
 
-## `postbode search`
+## `postvak search`
 
 Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newest first
 
-**Usage:** `postbode search [OPTIONS] <QUERY>`
+**Usage:** `postvak search [OPTIONS] <QUERY>`
 
 ###### **Arguments:**
 
@@ -399,11 +399,11 @@ Full-text search (FTS5 syntax) over subject, addresses and fetched bodies, newes
 
 
 
-## `postbode show`
+## `postvak show`
 
 Show one message
 
-**Usage:** `postbode show [OPTIONS] <UID>`
+**Usage:** `postvak show [OPTIONS] <UID>`
 
 ###### **Arguments:**
 
@@ -420,11 +420,11 @@ Show one message
 
 
 
-## `postbode mark`
+## `postvak mark`
 
 Mark messages read or unread, flagged or unflagged
 
-**Usage:** `postbode mark [OPTIONS] <HOW> <UIDS>...`
+**Usage:** `postvak mark [OPTIONS] <HOW> <UIDS>...`
 
 ###### **Arguments:**
 
@@ -444,11 +444,11 @@ Mark messages read or unread, flagged or unflagged
 
 
 
-## `postbode move`
+## `postvak move`
 
 Move messages to another folder, creating it if needed
 
-**Usage:** `postbode move [OPTIONS] --to <TO> <UIDS>...`
+**Usage:** `postvak move [OPTIONS] --to <TO> <UIDS>...`
 
 ###### **Arguments:**
 
@@ -465,11 +465,11 @@ Move messages to another folder, creating it if needed
 
 
 
-## `postbode archive`
+## `postvak archive`
 
 Move messages to the Archive folder
 
-**Usage:** `postbode archive [OPTIONS] <UIDS>...`
+**Usage:** `postvak archive [OPTIONS] <UIDS>...`
 
 ###### **Arguments:**
 
@@ -485,11 +485,11 @@ Move messages to the Archive folder
 
 
 
-## `postbode delete`
+## `postvak delete`
 
 Move messages to Trash; inside Trash, or without one, delete them keeping a local .eml backup
 
-**Usage:** `postbode delete [OPTIONS] <UIDS>...`
+**Usage:** `postvak delete [OPTIONS] <UIDS>...`
 
 ###### **Arguments:**
 
@@ -505,11 +505,11 @@ Move messages to Trash; inside Trash, or without one, delete them keeping a loca
 
 
 
-## `postbode log`
+## `postvak log`
 
 Show what rules did, newest first
 
-**Usage:** `postbode log [OPTIONS]`
+**Usage:** `postvak log [OPTIONS]`
 
 ###### **Options:**
 
@@ -521,11 +521,11 @@ Show what rules did, newest first
 
 
 
-## `postbode trash`
+## `postvak trash`
 
 Deleted mail kept for the retention period
 
-**Usage:** `postbode trash <COMMAND>`
+**Usage:** `postvak trash <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -535,9 +535,9 @@ Deleted mail kept for the retention period
 
 
 
-## `postbode trash list`
+## `postvak trash list`
 
-**Usage:** `postbode trash list [OPTIONS]`
+**Usage:** `postvak trash list [OPTIONS]`
 
 ###### **Options:**
 
@@ -545,11 +545,11 @@ Deleted mail kept for the retention period
 
 
 
-## `postbode trash restore`
+## `postvak trash restore`
 
 Append a trashed .eml back into its original folder
 
-**Usage:** `postbode trash restore [OPTIONS] <FILE>`
+**Usage:** `postvak trash restore [OPTIONS] <FILE>`
 
 ###### **Arguments:**
 
@@ -561,11 +561,11 @@ Append a trashed .eml back into its original folder
 
 
 
-## `postbode trash purge`
+## `postvak trash purge`
 
 Remove trash files older than the retention period
 
-**Usage:** `postbode trash purge [OPTIONS]`
+**Usage:** `postvak trash purge [OPTIONS]`
 
 ###### **Options:**
 
@@ -573,11 +573,11 @@ Remove trash files older than the retention period
 
 
 
-## `postbode account`
+## `postvak account`
 
 Manage accounts
 
-**Usage:** `postbode account <COMMAND>`
+**Usage:** `postvak account <COMMAND>`
 
 ###### **Subcommands:**
 
@@ -586,19 +586,19 @@ Manage accounts
 
 
 
-## `postbode account add`
+## `postvak account add`
 
 Interactively add an IMAP account and test the login
 
-**Usage:** `postbode account add`
+**Usage:** `postvak account add`
 
 
 
-## `postbode account list`
+## `postvak account list`
 
 Print each configured account: name, username and server
 
-**Usage:** `postbode account list [OPTIONS]`
+**Usage:** `postvak account list [OPTIONS]`
 
 ###### **Options:**
 
@@ -606,24 +606,24 @@ Print each configured account: name, username and server
 
 
 
-## `postbode guide`
+## `postvak guide`
 
-Print the agent guide: how an LLM should drive Postbode
+Print the agent guide: how an LLM should drive Postvak
 
-**Usage:** `postbode guide`
+**Usage:** `postvak guide`
 
 
 
-## `postbode mcp`
+## `postvak mcp`
 
-Serve Postbode to an agent host over MCP on stdio; hosts start this, see `postbode mcp install`
+Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
 
-**Usage:** `postbode mcp [OPTIONS]
+**Usage:** `postvak mcp [OPTIONS]
        mcp <COMMAND>`
 
 ###### **Subcommands:**
 
-* `install` — Register `postbode mcp` with an agent host; re-run it to change the scopes
+* `install` — Register `postvak mcp` with an agent host; re-run it to change the scopes
 
 ###### **Options:**
 
@@ -634,11 +634,11 @@ Serve Postbode to an agent host over MCP on stdio; hosts start this, see `postbo
 
 
 
-## `postbode mcp install`
+## `postvak mcp install`
 
-Register `postbode mcp` with an agent host; re-run it to change the scopes
+Register `postvak mcp` with an agent host; re-run it to change the scopes
 
-**Usage:** `postbode mcp install [OPTIONS] <TARGET>`
+**Usage:** `postvak mcp install [OPTIONS] <TARGET>`
 
 ###### **Arguments:**
 

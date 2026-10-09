@@ -2222,7 +2222,7 @@ mod tests {
         drop(wires);
         harness.run();
         let newer =
-            "the daemon is version 9.0.0, newer than this postbode (0.1.0); restart this program";
+            "the daemon is version 9.0.0, newer than this postvak (0.1.0); restart this program";
         let deadline = Instant::now() + Duration::from_secs(5);
         harness.input_mut().time = Some(10.0);
         while harness.query_by_label(newer).is_none() && Instant::now() < deadline {

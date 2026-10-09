@@ -1,13 +1,13 @@
 [Desktop Entry]
 Type=Application
-Name=Postbode
+Name=Postvak
 GenericName=Mail Client
 Comment=Read and sort your mail
-Exec=postbode gui
-TryExec=postbode
-Icon=io.github.pataar.postbode
+Exec=postvak gui
+TryExec=postvak
+Icon=io.github.postvak_app.postvak
 Terminal=false
 StartupNotify=true
-StartupWMClass=io.github.pataar.postbode
+StartupWMClass=io.github.postvak_app.postvak
 Categories=Network;Email;
 Keywords=mail;email;IMAP;inbox;rules;

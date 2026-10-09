@@ -7,7 +7,7 @@
 //! assertions, as `cargo test` and `cargo run` do. A release build skips the check and carries on, so the shipped
 //! binary does not panic. `tests/fuzz.rs` tolerates exactly these two panic sites so the property tests stay stable.
 
-use postbode::message::{attachments, body_text};
+use postvak::message::{attachments, body_text};
 
 #[test]
 #[ignore = "BUG: mail-parser 0.11.9 subtracts with overflow (decoders/quoted_printable.rs:138) on a quoted-printable part holding only a soft line break; debug builds only"]

@@ -181,7 +181,7 @@ pub enum Activity {
 }
 
 impl fmt::Display for Activity {
-    /// The status line text the window and `postbode daemon status` show.
+    /// The status line text the window and `postvak daemon status` show.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let text = match self {
             Activity::Connecting => "connecting…".into(),

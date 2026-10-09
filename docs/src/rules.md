@@ -1,6 +1,6 @@
 # Rules
 
-Rules live in `rules.toml` next to `config.toml`. Postbode reads the file on every sync, and the daemon syncs every account within seconds of the file changing, whoever changed it. A file that fails to validate is rejected as a whole, and the previous rules stay active until the daemon stops or that account's settings change. When there are none, no rules run and new mail notifies as the account's `notify` setting says; once the file is fixed, rules that were already enabled also run on the mail that arrived meanwhile. Each account reports the error once, and syncing and actions carry on. `postbode rules check` validates the file; `postbode rules test` shows what each rule would do to the mail Postbode has cached.
+Rules live in `rules.toml` next to `config.toml`. Postvak reads the file on every sync, and the daemon syncs every account within seconds of the file changing, whoever changed it. A file that fails to validate is rejected as a whole, and the previous rules stay active until the daemon stops or that account's settings change. When there are none, no rules run and new mail notifies as the account's `notify` setting says; once the file is fixed, rules that were already enabled also run on the mail that arrived meanwhile. Each account reports the error once, and syncing and actions carry on. `postvak rules check` validates the file; `postvak rules test` shows what each rule would do to the mail Postvak has cached.
 
 ```toml
 [[rules]]
@@ -17,11 +17,11 @@ actions = [{ move = "Lists/GitHub" }, "mark_read"]
 | `account` | every account | Only for this account. |
 | `folder` | `INBOX` | The folder the rule watches. |
 | `enabled` | `true` | `false` skips the rule. Proposals start disabled. |
-| `proposed_by` | none | Set by `postbode rules propose`. |
+| `proposed_by` | none | Set by `postvak rules propose`. |
 | `match` | required | Conditions that must all hold. At least one. |
 | `actions` | required | What to do. At least one. |
 
-A tag is printable ASCII without spaces, backslashes or `( ) { } % * " ]`, and `$PostbodeRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
+A tag is printable ASCII without spaces, backslashes or `( ) { } % * " ]`, and `$PostvakRestored` is reserved. `name`, `account`, `folder` and `move` folders must not be blank, may not contain control characters, and are at most 255 characters.
 
 ## Conditions
 
@@ -36,7 +36,7 @@ Text conditions take exactly one of:
 | Key | Takes | Matches |
 |---|---|---|
 | `from`, `to`, `cc`, `subject` | text condition | That header. |
-| `body` | text condition | The plain-text body; HTML mail is converted. Postbode downloads the body of new mail in the rule's folder for this. |
+| `body` | text condition | The plain-text body; HTML mail is converted. Postvak downloads the body of new mail in the rule's folder for this. |
 | `header` | text condition plus `name`, or a list of them | Any header, such as `List-Id`. Every header in a list must match. |
 | `older_than` | duration: `30m`, `1h`, `2days` | Mail that arrived at least this long ago. |
 | `seen` | `true` or `false` | Read or unread mail. |
@@ -66,10 +66,10 @@ A `delete` wins: when any matching rule deletes a message, no other rule's actio
 ## When rules act
 
 - On every sync, in file order. Because rules run again on each sync, `older_than` and `seen` can fire later, for example an hour after you read a sign-in code.
-- A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postbode rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first.
-- A rule approved with `postbode rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
+- A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postvak rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first.
+- A rule approved with `postvak rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
 - Renaming a rule, editing its account, folder, match or actions, or disabling and enabling it again, restarts that clock.
-- Mail restored with `postbode trash restore` carries the `$PostbodeRestored` keyword. Rules never act on it again. This needs a server that accepts custom keywords; without one, the same rule can delete restored mail again.
+- Mail restored with `postvak trash restore` carries the `$PostvakRestored` keyword. Rules never act on it again. This needs a server that accepts custom keywords; without one, the same rule can delete restored mail again.
 
 ## Notifications
 
@@ -142,11 +142,11 @@ actions = ["archive"]
 
 ## Proposals
 
-Agents never edit `rules.toml`. They run `postbode rules propose`, which appends the rule with `enabled = false` and `proposed_by` set. To review a proposal:
+Agents never edit `rules.toml`. They run `postvak rules propose`, which appends the rule with `enabled = false` and `proposed_by` set. To review a proposal:
 
-- `postbode rules list` shows every rule with its state and proposer; a pending proposal is `off` with a proposer.
-- `postbode rules test NAME` previews what a proposal would do.
-- `postbode rules approve NAME` enables it.
-- `postbode rules reject NAME` removes it.
+- `postvak rules list` shows every rule with its state and proposer; a pending proposal is `off` with a proposer.
+- `postvak rules test NAME` previews what a proposal would do.
+- `postvak rules approve NAME` enables it.
+- `postvak rules reject NAME` removes it.
 
-`postbode rules schema` prints the JSON Schema of this file, and `rules.schema.json` in these docs holds the same schema.
+`postvak rules schema` prints the JSON Schema of this file, and `rules.schema.json` in these docs holds the same schema.

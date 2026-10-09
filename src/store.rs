@@ -652,7 +652,7 @@ mod tests {
     fn a_folder_keeps_its_delimiter_through_an_upsert_without_one() {
         let store = Store::open_in_memory().unwrap();
         let mut folder = Folder {
-            name: "Projects/Postbode".into(),
+            name: "Projects/Postvak".into(),
             uidvalidity: 1,
             last_uid: 0,
             special_use: None,
@@ -662,7 +662,7 @@ mod tests {
         folder.delimiter = None;
         folder.last_uid = 5;
         store.upsert_folder(&folder).unwrap();
-        let stored = store.folder("Projects/Postbode").unwrap().unwrap();
+        let stored = store.folder("Projects/Postvak").unwrap().unwrap();
         assert_eq!(stored.delimiter.as_deref(), Some("/"));
         assert_eq!(stored.last_uid, 5);
         assert_eq!(store.folders().unwrap()[0].delimiter.as_deref(), Some("/"));

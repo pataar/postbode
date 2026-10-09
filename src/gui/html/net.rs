@@ -126,7 +126,7 @@ mod tests {
         let (inline, refused) = provider();
         assert!(fetch(&inline, "cid:unknown").is_empty());
         assert!(fetch(&inline, "file:///etc/passwd").is_empty());
-        assert!(fetch(&inline, "postbode://mail/relative.png").is_empty());
+        assert!(fetch(&inline, "postvak://mail/relative.png").is_empty());
         assert!(!refused.load(Ordering::Relaxed));
         assert!(fetch(&inline, "https://tracker.example.com/p.gif").is_empty());
         assert!(refused.load(Ordering::Relaxed));

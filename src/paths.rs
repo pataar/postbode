@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Paths {
-    /// The root given to `under` (`POSTBODE_HOME`); None for the platform directories.
+    /// The root given to `under` (`POSTVAK_HOME`); None for the platform directories.
     pub home: Option<PathBuf>,
     pub config_dir: PathBuf,
     pub state_dir: PathBuf,
@@ -14,7 +14,7 @@ pub struct Paths {
 
 impl Paths {
     pub fn discover() -> anyhow::Result<Paths> {
-        let dirs = directories::ProjectDirs::from("", "", "postbode")
+        let dirs = directories::ProjectDirs::from("", "", "postvak")
             .ok_or_else(|| anyhow::anyhow!("no home directory found"))?;
         let state_dir = dirs
             .state_dir()
@@ -172,7 +172,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// Whether this process is the macOS app opened from Finder, the Dock or `open`: the binary sits in a bundle's
 /// `Contents/MacOS`, got no arguments (very old macOS passes a `-psn_…` process serial number, which counts as none)
 /// and stdin is not a terminal. Then the app opens the mail window instead of printing help; a terminal run of the
-/// same binary (the cask links it as the `postbode` command) still prints help. `args` excludes argv\[0\].
+/// same binary (the cask links it as the `postvak` command) still prints help. `args` excludes argv\[0\].
 pub fn launched_as_app(exe: &Path, args: &[OsString], stdin_is_terminal: bool) -> bool {
     let in_bundle = exe
         .parent()
@@ -222,13 +222,13 @@ mod tests {
         list.iter().map(OsString::from).collect()
     }
 
-    const APP_EXE: &str = "/Applications/Postbode.app/Contents/MacOS/postbode";
+    const APP_EXE: &str = "/Applications/Postvak.app/Contents/MacOS/postvak";
 
     #[test]
     fn finder_launch_of_the_bundle_opens_the_app() {
         assert!(launched_as_app(Path::new(APP_EXE), &[], false));
         assert!(launched_as_app(
-            Path::new("/Users/me/Downloads/Postbode.APP/Contents/MacOS/postbode"),
+            Path::new("/Users/me/Downloads/Postvak.APP/Contents/MacOS/postvak"),
             &[],
             false
         ));
@@ -265,11 +265,11 @@ mod tests {
     #[test]
     fn a_binary_outside_a_bundle_runs_the_cli() {
         for exe in [
-            "/opt/homebrew/bin/postbode",
-            "/usr/local/Cellar/postbode/0.1.0/bin/postbode",
-            "/tmp/Contents/MacOS/postbode",
-            "/x/Postbode.app/Contents/Resources/postbode",
-            "postbode",
+            "/opt/homebrew/bin/postvak",
+            "/usr/local/Cellar/postvak/0.1.0/bin/postvak",
+            "/tmp/Contents/MacOS/postvak",
+            "/x/Postvak.app/Contents/Resources/postvak",
+            "postvak",
         ] {
             assert!(!launched_as_app(Path::new(exe), &[], false), "{exe}");
         }
@@ -361,15 +361,15 @@ mod tests {
 
     #[test]
     fn an_appimage_reports_its_own_file_not_its_mount() {
-        let exe = Path::new("/tmp/.mount_PostbXy12/usr/bin/postbode");
-        let image = Path::new("/home/me/Apps/Postbode-x86_64.AppImage");
+        let exe = Path::new("/tmp/.mount_PostbXy12/usr/bin/postvak");
+        let image = Path::new("/home/me/Apps/Postvak-x86_64.AppImage");
         let mount = Path::new("/tmp/.mount_PostbXy12");
         assert_eq!(
             appimage_path(exe, Some(image), Some(mount)),
             Some(image.to_path_buf())
         );
-        // A postbode started from a shell that inherited another AppImage's environment is not that AppImage.
-        let other = Path::new("/home/me/.cargo/bin/postbode");
+        // A postvak started from a shell that inherited another AppImage's environment is not that AppImage.
+        let other = Path::new("/home/me/.cargo/bin/postvak");
         assert_eq!(appimage_path(other, Some(image), Some(mount)), None);
         assert_eq!(appimage_path(exe, None, Some(mount)), None);
         assert_eq!(appimage_path(exe, Some(image), None), None);
@@ -379,40 +379,37 @@ mod tests {
     fn homebrew_keg_path_maps_to_opt() {
         let opt = |p: &str| homebrew_opt_path(Path::new(p));
         assert_eq!(
-            opt("/home/linuxbrew/.linuxbrew/Cellar/postbode/0.3.0/bin/postbode"),
+            opt("/home/linuxbrew/.linuxbrew/Cellar/postvak/0.3.0/bin/postvak"),
             Some(PathBuf::from(
-                "/home/linuxbrew/.linuxbrew/opt/postbode/bin/postbode"
+                "/home/linuxbrew/.linuxbrew/opt/postvak/bin/postvak"
             ))
         );
         assert_eq!(
-            opt("/opt/homebrew/Cellar/postbode/0.3.0_1/bin/postbode"),
-            Some(PathBuf::from("/opt/homebrew/opt/postbode/bin/postbode"))
+            opt("/opt/homebrew/Cellar/postvak/0.3.0_1/bin/postvak"),
+            Some(PathBuf::from("/opt/homebrew/opt/postvak/bin/postvak"))
         );
-        assert_eq!(opt("/home/me/.cargo/bin/postbode"), None);
-        assert_eq!(opt("/opt/homebrew/Cellar/postbode/0.3.0"), None);
-        assert_eq!(opt("/opt/homebrew/Cellar/postbode"), None);
+        assert_eq!(opt("/home/me/.cargo/bin/postvak"), None);
+        assert_eq!(opt("/opt/homebrew/Cellar/postvak/0.3.0"), None);
+        assert_eq!(opt("/opt/homebrew/Cellar/postvak"), None);
     }
 
     #[cfg(unix)]
     #[test]
     fn opt_link_is_used_only_when_it_is_the_same_binary() {
         let root = tempfile::tempdir().unwrap();
-        let keg = |v: &str| {
-            root.path()
-                .join(format!("Cellar/postbode/{v}/bin/postbode"))
-        };
+        let keg = |v: &str| root.path().join(format!("Cellar/postvak/{v}/bin/postvak"));
         for v in ["0.3.0", "0.4.0"] {
             fs::create_dir_all(keg(v).parent().unwrap()).unwrap();
             fs::write(keg(v), v).unwrap();
         }
         fs::create_dir_all(root.path().join("opt")).unwrap();
         std::os::unix::fs::symlink(
-            root.path().join("Cellar/postbode/0.4.0"),
-            root.path().join("opt/postbode"),
+            root.path().join("Cellar/postvak/0.4.0"),
+            root.path().join("opt/postvak"),
         )
         .unwrap();
         let opt = homebrew_opt_path(&keg("0.4.0")).unwrap();
-        assert_eq!(opt, root.path().join("opt/postbode/bin/postbode"));
+        assert_eq!(opt, root.path().join("opt/postvak/bin/postvak"));
         assert!(same_file(&opt, &keg("0.4.0")));
         // An older keg still running after an upgrade keeps its own path rather than pointing at another version.
         assert!(!same_file(

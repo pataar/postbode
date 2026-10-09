@@ -1,4 +1,4 @@
-//! `postbode mcp install`: registers the server with Claude Desktop or Claude Code, or prints a snippet for other hosts.
+//! `postvak mcp install`: registers the server with Claude Desktop or Claude Code, or prints a snippet for other hosts.
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
@@ -69,7 +69,7 @@ fn shell_words(words: &[String]) -> String {
 }
 
 pub fn json_snippet(entry: &Entry) -> String {
-    let snippet = json!({ "mcpServers": { "postbode": entry.server() } });
+    let snippet = json!({ "mcpServers": { "postvak": entry.server() } });
     // `{:#}` pretty-prints a JSON value like `to_string_pretty`, without a serializer that could fail.
     format!("{snippet:#}\n")
 }
@@ -83,9 +83,9 @@ pub fn claude_desktop_path() -> Result<PathBuf> {
         .join("claude_desktop_config.json"))
 }
 
-/// Sets `mcpServers.postbode`, or removes it when `entry` is None, keeping every other key.
+/// Sets `mcpServers.postvak`, or removes it when `entry` is None, keeping every other key.
 /// Returns the new file text, or None when there is nothing to change. The old file is copied to `.bak`
-/// unless it already is Postbode's own output, so the user's original survives re-runs. A file that is
+/// unless it already is Postvak's own output, so the user's original survives re-runs. A file that is
 /// not a JSON object is refused untouched; `dry_run` writes nothing.
 pub fn edit_claude_desktop(
     path: &Path,
@@ -122,14 +122,14 @@ pub fn edit_claude_desktop(
             else {
                 bail!("mcpServers in {} is not a JSON object", path.display());
             };
-            servers.insert("postbode".into(), entry.server());
+            servers.insert("postvak".into(), entry.server());
         }
         None => match root.get_mut("mcpServers") {
             Some(servers) => {
                 let Some(servers) = servers.as_object_mut() else {
                     bail!("mcpServers in {} is not a JSON object", path.display());
                 };
-                if servers.remove("postbode").is_none() {
+                if servers.remove("postvak").is_none() {
                     return Ok(None);
                 }
             }
@@ -149,7 +149,7 @@ pub fn edit_claude_desktop(
 /// `claude` invocations at user scope; an add follows a remove so a re-run replaces the old entry.
 pub fn claude_code_commands(entry: Option<&Entry>) -> Vec<Vec<String>> {
     let base = |verb: &str| {
-        ["claude", "mcp", verb, "--scope", "user", "postbode"]
+        ["claude", "mcp", verb, "--scope", "user", "postvak"]
             .map(String::from)
             .to_vec()
     };
@@ -181,7 +181,7 @@ pub fn install(
         .into_iter()
         .map(|s| s.as_str())
         .collect();
-    let exe = stable_exe().context("finding the postbode binary")?;
+    let exe = stable_exe().context("finding the postvak binary")?;
     let entry = Entry::new(&exe, &granted.join(","), accounts);
     let wanted = (!remove).then_some(&entry);
     let out = match target {
@@ -205,13 +205,13 @@ fn install_claude_desktop(wanted: Option<&Entry>, entry: &Entry, dry_run: bool) 
     let path = path.display();
     Ok(match (wanted.is_some(), changed, dry_run) {
         (false, false, _) => format!("nothing to remove in {path}\n"),
-        (false, true, true) => format!("would remove mcpServers.postbode from {path}\n"),
+        (false, true, true) => format!("would remove mcpServers.postvak from {path}\n"),
         (false, true, false) => {
-            format!("removed Postbode from {path}\nRestart Claude Desktop to apply.\n")
+            format!("removed Postvak from {path}\nRestart Claude Desktop to apply.\n")
         }
         (true, _, true) => format!("would write to {path}:\n{}", json_snippet(entry)),
         (true, _, false) => {
-            format!("updated {path}\nRestart Claude Desktop to load Postbode.\n")
+            format!("updated {path}\nRestart Claude Desktop to load Postvak.\n")
         }
     })
 }
@@ -252,7 +252,7 @@ mod tests {
 
     fn entry() -> Entry {
         Entry::new(
-            Path::new("/opt/homebrew/bin/postbode"),
+            Path::new("/opt/homebrew/bin/postvak"),
             "read,rules:propose",
             &["work".into()],
         )
@@ -262,11 +262,11 @@ mod tests {
     fn snippet_names_the_binary_and_its_arguments() {
         let snippet: serde_json::Value = serde_json::from_str(&json_snippet(&entry())).unwrap();
         assert_eq!(
-            snippet["mcpServers"]["postbode"]["command"],
-            "/opt/homebrew/bin/postbode"
+            snippet["mcpServers"]["postvak"]["command"],
+            "/opt/homebrew/bin/postvak"
         );
         assert_eq!(
-            snippet["mcpServers"]["postbode"]["args"],
+            snippet["mcpServers"]["postvak"]["args"],
             serde_json::json!(["mcp", "--scopes", "read,rules:propose", "--account", "work"])
         );
     }
@@ -278,7 +278,7 @@ mod tests {
         edit_claude_desktop(&path, Some(&entry()), false).unwrap();
         let config: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(config["mcpServers"]["postbode"]["args"][0], "mcp");
+        assert_eq!(config["mcpServers"]["postvak"]["args"][0], "mcp");
     }
 
     #[test]
@@ -292,7 +292,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(config["theme"], "dark");
         assert_eq!(config["mcpServers"]["other"]["command"], "x");
-        assert!(config["mcpServers"]["postbode"].is_object());
+        assert!(config["mcpServers"]["postvak"].is_object());
         assert_eq!(
             std::fs::read_to_string(dir.path().join("claude_desktop_config.json.bak")).unwrap(),
             old
@@ -319,12 +319,12 @@ mod tests {
         let path = dir.path().join("claude_desktop_config.json");
         std::fs::write(
             &path,
-            r#"{"mcpServers":{"other":{"command":"x"},"postbode":{"command":"p"}}}"#,
+            r#"{"mcpServers":{"other":{"command":"x"},"postvak":{"command":"p"}}}"#,
         )
         .unwrap();
         assert!(edit_claude_desktop(&path, None, false).unwrap().is_some());
         let config = read_json(&path);
-        assert!(config["mcpServers"].get("postbode").is_none());
+        assert!(config["mcpServers"].get("postvak").is_none());
         assert_eq!(config["mcpServers"]["other"]["command"], "x");
 
         let bare = dir.path().join("bare.json");
@@ -351,7 +351,7 @@ mod tests {
         let preview = edit_claude_desktop(&missing, Some(&entry()), true)
             .unwrap()
             .unwrap();
-        assert!(preview.contains("postbode") && !missing.exists());
+        assert!(preview.contains("postvak") && !missing.exists());
 
         let path = dir.path().join("claude_desktop_config.json");
         let old = r#"{"theme":"dark"}"#;
@@ -370,14 +370,14 @@ mod tests {
         std::fs::write(&path, original).unwrap();
         edit_claude_desktop(&path, Some(&entry()), false).unwrap();
         let wider = Entry::new(
-            Path::new("/opt/homebrew/bin/postbode"),
+            Path::new("/opt/homebrew/bin/postvak"),
             "read,read:bodies",
             &[],
         );
         edit_claude_desktop(&path, Some(&wider), false).unwrap();
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), original);
         assert_eq!(
-            read_json(&path)["mcpServers"]["postbode"]["args"][2],
+            read_json(&path)["mcpServers"]["postvak"]["args"][2],
             "read,read:bodies"
         );
     }
@@ -423,20 +423,20 @@ mod tests {
         let commands = claude_code_commands(Some(&entry()));
         assert_eq!(
             commands[0],
-            ["claude", "mcp", "remove", "--scope", "user", "postbode"]
+            ["claude", "mcp", "remove", "--scope", "user", "postvak"]
         );
         assert_eq!(
             &commands[1][..7],
-            ["claude", "mcp", "add", "--scope", "user", "postbode", "--"]
+            ["claude", "mcp", "add", "--scope", "user", "postvak", "--"]
         );
-        assert_eq!(commands[1][7], "/opt/homebrew/bin/postbode");
+        assert_eq!(commands[1][7], "/opt/homebrew/bin/postvak");
         assert_eq!(claude_code_commands(None).len(), 1);
     }
 
     #[test]
     fn shell_quoting_survives_spaces() {
-        let e = Entry::new(Path::new("/Users/me/My Tools/postbode"), "read", &[]);
-        assert!(e.shell().starts_with("'/Users/me/My Tools/postbode' mcp"));
+        let e = Entry::new(Path::new("/Users/me/My Tools/postvak"), "read", &[]);
+        assert!(e.shell().starts_with("'/Users/me/My Tools/postvak' mcp"));
     }
 
     #[test]
@@ -467,7 +467,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&target)
                 .unwrap()
-                .contains("postbode")
+                .contains("postvak")
         );
     }
 }

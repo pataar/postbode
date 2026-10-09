@@ -48,7 +48,7 @@ impl Backend {
         daemon: LazyClient,
     ) -> Result<Backend> {
         if config.accounts.is_empty() {
-            bail!("no accounts configured; run `postbode account add`");
+            bail!("no accounts configured; run `postvak account add`");
         }
         if let Some(name) = only.iter().find(|n| config.account(n).is_none()) {
             bail!("no account named '{name}'");

@@ -20,7 +20,7 @@ const THREAD: &str = "html-render";
 
 /// A hierarchical base, so relative URLs resolve (Blitz panics on one it cannot resolve) to something the net
 /// provider refuses.
-const BASE: &str = "postbode://mail/";
+const BASE: &str = "postvak://mail/";
 
 /// Mail is written for a 600 px column and assumes nothing about the window: keep images and long words inside it.
 const MAIL_CSS: &str = "img { max-width: 100%; height: auto; } body { overflow-wrap: anywhere; }";

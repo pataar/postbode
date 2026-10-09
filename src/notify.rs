@@ -5,7 +5,7 @@ pub fn new_mail(from: &str, subject: &str) {
     let _ = notify_rust::Notification::new()
         .summary(&notification_text(from))
         .body(&notification_text(subject))
-        .appname("Postbode")
+        .appname("Postvak")
         .show();
 }
 
