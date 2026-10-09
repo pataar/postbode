@@ -177,14 +177,7 @@ pub fn save_attachment(raw: &[u8], index: usize, dir: &Path) -> io::Result<PathB
         .and_then(|i| msg.attachment(u32::try_from(i).ok()?))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no attachment {index}")))?;
     let path = dir.join(safe_file_name(part.attachment_name(), index));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)?;
-    if let Err(e) = file.write_all(part.contents()) {
-        let _ = std::fs::remove_file(&path);
-        return Err(e);
-    }
+    write_new(&path, part.contents())?;
     Ok(path)
 }
 
@@ -206,6 +199,69 @@ fn safe_file_name(name: Option<&str>, index: usize) -> String {
         "" => format!("attachment-{index}"),
         name => name.to_string(),
     }
+}
+
+/// Bytes kept of a subject in a file name; well under the 255-byte limit of APFS and ext4, with room for " (100).eml".
+const MAX_STEM: usize = 120;
+
+/// Numbered names tried after the plain one before Save .eml gives up.
+const MAX_COPIES: u32 = 100;
+
+/// Writes `raw` unchanged to `dir` as `<subject>.eml`, or `<subject> (2).eml` and on when that name is taken; never
+/// overwrites a file.
+pub fn save_eml(raw: &[u8], subject: Option<&str>, dir: &Path) -> io::Result<PathBuf> {
+    let stem = eml_stem(subject);
+    for copy in 1..=MAX_COPIES {
+        let name = match copy {
+            1 => format!("{stem}.eml"),
+            n => format!("{stem} ({n}).eml"),
+        };
+        let path = dir.join(name);
+        match write_new(&path, raw) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("{stem}.eml and {MAX_COPIES} numbered copies exist"),
+    ))
+}
+
+/// The sender picks the subject: no path separators or `:` (Finder shows it as `/`), no control characters, no leading
+/// dots, so it is one visible file name.
+fn eml_stem(subject: Option<&str>) -> String {
+    let plain: String = subject
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let trimmed = plain.trim_start_matches(|c: char| c == '.' || c.is_whitespace());
+    match trimmed[..trimmed.floor_char_boundary(MAX_STEM)].trim_end() {
+        "" => "message".into(),
+        stem => stem.into(),
+    }
+}
+
+/// Creates `path`, failing when it exists, and writes `bytes`; a failed write leaves no partial file.
+fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    if let Err(e) = file.write_all(bytes) {
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Server-supplied text with control characters removed, so a header cannot drive the terminal. `keep_layout` keeps
@@ -419,5 +475,36 @@ JVBERi0=\r\n\
         assert_eq!(safe_file_name(Some("../.ssh/.config"), 1), "config");
         assert_eq!(safe_file_name(Some(" ..."), 4), "attachment-4");
         assert_eq!(safe_file_name(Some("report.v2.pdf"), 1), "report.v2.pdf");
+    }
+
+    #[test]
+    fn eml_names_come_from_the_subject_and_stay_plain_file_names() {
+        assert_eq!(eml_stem(Some("Re: lunch")), "Re- lunch");
+        assert_eq!(
+            eml_stem(Some("../../.ssh/authorized_keys")),
+            "-..-.ssh-authorized_keys"
+        );
+        assert_eq!(eml_stem(Some("\u{1b}]0;pwned\u{7}hi")), "]0;pwnedhi");
+        assert_eq!(eml_stem(Some(" ... ")), "message");
+        assert_eq!(eml_stem(None), "message");
+        assert_eq!(eml_stem(Some(&"é".repeat(100))), "é".repeat(60));
+    }
+
+    #[test]
+    fn save_eml_never_overwrites_and_numbers_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = save_eml(b"one", Some("Re: lunch"), dir.path()).unwrap();
+        let second = save_eml(b"two", Some("Re: lunch"), dir.path()).unwrap();
+        assert_eq!(first, dir.path().join("Re- lunch.eml"));
+        assert_eq!(second, dir.path().join("Re- lunch (2).eml"));
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+    }
+
+    #[test]
+    fn save_eml_reports_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = save_eml(b"x", None, &dir.path().join("gone")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 }
