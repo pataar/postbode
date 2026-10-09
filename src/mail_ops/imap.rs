@@ -333,6 +333,15 @@ impl MailOps for ImapOps {
                     .await
                     .map_err(proto)?;
             } else {
+                // ponytail: another client can still flag a message between this search and the EXPUNGE.
+                let deleted = session.uid_search("DELETED").await.map_err(proto)?;
+                if deleted.iter().any(|&other| other != uid) {
+                    return Err(MailError::Protocol(format!(
+                        "refusing to expunge uid {uid}: the server lacks UIDPLUS, so EXPUNGE would also \
+                         remove {} other message(s) marked deleted in this folder",
+                        deleted.len() - usize::from(deleted.contains(&uid))
+                    )));
+                }
                 let _: Vec<_> = session
                     .expunge()
                     .await
