@@ -193,6 +193,11 @@ pub(crate) enum UiAction {
     Expand,
     /// The pointer over the HTML page, in page points, or `None` once it left.
     HtmlHover(Option<egui::Pos2>),
+    /// Select the HTML page's text between two points, in page points.
+    HtmlSelect {
+        from: egui::Pos2,
+        to: egui::Pos2,
+    },
     /// The part of the HTML page on screen, in page points.
     HtmlVisible {
         top: f32,
@@ -751,6 +756,7 @@ impl App {
             }
             UiAction::Collapse => self.collapse(),
             UiAction::HtmlHover(at) => self.html_hover(at),
+            UiAction::HtmlSelect { from, to } => self.html_select(from, to),
             UiAction::HtmlVisible { top, bottom } => self.html_visible(top, bottom),
             UiAction::HtmlWidth { scale, width } => {
                 let now = ctx.input(|input| input.time);
@@ -1303,8 +1309,15 @@ impl App {
                     view.requested.clear();
                     view.hover = None;
                     view.hovered_at = None;
+                    view.selected_at = None;
+                    view.selection = None;
                 }
                 Reply::Link { href, .. } => view.hover = href,
+                Reply::Selected { text, .. } => {
+                    view.selection = text;
+                    // Paint the strips again with the highlight; the old ones stay on screen until then.
+                    view.requested.clear();
+                }
                 Reply::Strip {
                     generation,
                     image,
@@ -1410,6 +1423,22 @@ impl App {
             }),
             None => view.hover = None,
         }
+    }
+
+    /// Selects the page's text between two points; the answer arrives as `Reply::Selected`.
+    fn html_select(&mut self, from: egui::Pos2, to: egui::Pos2) {
+        let (Some(view), Some(renderer)) = (
+            self.body.as_mut().and_then(|b| b.html_view.as_mut()),
+            self.renderer.as_mut(),
+        ) else {
+            return;
+        };
+        view.selected_at = Some((from, to));
+        renderer.send(html::Request::Select {
+            generation: view.generation,
+            from,
+            to,
+        });
     }
 
     /// Rows from the cached threads, without a store query. The cursor stays on its message; when that row is gone it

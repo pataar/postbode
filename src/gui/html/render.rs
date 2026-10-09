@@ -1,5 +1,6 @@
 //! The render thread: owns the Blitz document of the shown message, lays it out, paints strips and answers hit tests.
 //! Blitz documents are not `Send`, so every one is made, used and dropped here.
+use std::collections::HashSet;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{DEFAULT_CSS, DocumentConfig, FontContext, local_name};
+use blitz_dom::{DEFAULT_CSS, DocumentConfig, FontContext, QualName, local_name, ns};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use eframe::egui;
@@ -91,6 +92,11 @@ fn run(
         if let Some(last) = batch.iter().rposition(|r| matches!(r, Request::Load(_))) {
             batch.drain(..last);
         }
+        // A drag or a moving pointer asks every frame; of each kind of question only the newest is worth answering.
+        let mut seen = HashSet::new();
+        batch.reverse();
+        batch.retain(|request| seen.insert(kind(request)));
+        batch.reverse();
         for request in batch {
             let generation = request.generation();
             let reply =
@@ -108,6 +114,16 @@ fn run(
                 ctx.request_repaint();
             }
         }
+    }
+}
+
+/// Requests of the same kind ask the same question; a later one makes an earlier one stale.
+fn kind(request: &Request) -> (u8, u32) {
+    match request {
+        Request::Load(_) => (0, 0),
+        Request::Paint { strip, .. } => (1, *strip),
+        Request::Hit { .. } => (2, 0),
+        Request::Select { .. } => (3, 0),
     }
 }
 
@@ -133,6 +149,17 @@ fn handle(current: &mut Option<Current>, request: Request) -> Option<Reply> {
                 href: link_at(&current.doc, x, y),
             })
         }
+        Request::Select {
+            generation,
+            from,
+            to,
+        } => {
+            let current = current.as_mut().filter(|c| c.generation == generation)?;
+            Some(Reply::Selected {
+                generation,
+                text: select(&mut current.doc, from, to),
+            })
+        }
     }
 }
 
@@ -154,6 +181,7 @@ fn layout(load: Load) -> (Current, Reply) {
         ..Default::default()
     };
     let mut doc = HtmlDocument::from_html(&load.html, config);
+    font_colours(&mut doc);
     // The provider answered every request synchronously; take its answers before the layout.
     doc.handle_messages();
     doc.resolve(0.0);
@@ -201,6 +229,46 @@ fn paint(current: &mut Current, strip: u32) -> Option<egui::ColorImage> {
     let size = [usize::try_from(width).ok()?, usize::try_from(height).ok()?];
     (rgba.len() == size[0] * size[1] * 4)
         .then(|| egui::ColorImage::from_rgba_premultiplied(size, &rgba))
+}
+
+/// Selects the text from `from` to `to` (CSS pixels) and returns it. A `to` off any text keeps the selection as it
+/// was, so a drag past the end of a paragraph does not drop it.
+fn select(doc: &mut HtmlDocument, from: egui::Pos2, to: egui::Pos2) -> Option<String> {
+    if from == to {
+        doc.clear_text_selection();
+        return None;
+    }
+    if let Some((anchor, anchor_offset)) = doc.find_text_position(from.x, from.y)
+        && let Some((focus, focus_offset)) = doc.find_text_position(to.x, to.y)
+    {
+        doc.set_text_selection(anchor, anchor_offset, focus, focus_offset);
+    }
+    doc.get_selected_text()
+}
+
+/// Blitz maps `bgcolor` but not `<font color>`, which mail still uses for coloured text: copy it into the style.
+fn font_colours(doc: &mut HtmlDocument) {
+    let Ok(fonts) = doc.query_selector_all("font[color]") else {
+        return;
+    };
+    let styles: Vec<_> = fonts
+        .into_iter()
+        .filter_map(|id| {
+            let node = doc.get_node(id)?;
+            let colour = node.attr(local_name!("color"))?.trim();
+            // Only a colour name or hex value, so the attribute cannot add other declarations.
+            let plain = !colour.is_empty()
+                && colour
+                    .chars()
+                    .all(|c| c == '#' || c.is_ascii_alphanumeric());
+            let style = node.attr(local_name!("style")).unwrap_or_default();
+            plain.then(|| (id, format!("color: {colour}; {style}")))
+        })
+        .collect();
+    let mut mutator = doc.mutate();
+    for (id, style) in styles {
+        mutator.set_attribute(id, QualName::new(None, ns!(), local_name!("style")), &style);
+    }
 }
 
 /// The `href` of the link under a point in CSS pixels, from the innermost `<a>` around the hit node.
@@ -361,6 +429,105 @@ mod tests {
             .step_by(4)
             .find_map(|y| link(350.0, y as f32));
         assert_eq!(button.as_deref(), Some("https://example.com/cta"));
+    }
+
+    /// Counts the strongly red pixels in the first strip of `html`.
+    fn reds(html: &str) -> usize {
+        let mut current = None;
+        handle(&mut current, load(1, html, 400.0));
+        let paint = Request::Paint {
+            generation: 1,
+            strip: 0,
+        };
+        let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
+            panic!("no strip");
+        };
+        let red = |p: &&egui::Color32| p.r() > 150 && p.g() < 80 && p.b() < 80;
+        image.pixels.iter().filter(red).count()
+    }
+
+    #[test]
+    fn font_colour_attributes_colour_the_text() {
+        assert!(reds("<font color=\"#ff0000\">HELLO</font>") > 50);
+        assert!(reds("<font color=red style=\"font-weight:bold\">HELLO</font>") > 50);
+        // The attribute is a colour, not a place to inject other declarations.
+        assert_eq!(reds("<font color=\"x;background:red\">HELLO</font>"), 0);
+    }
+
+    #[test]
+    fn a_drag_selects_text_and_paints_the_highlight() {
+        let html = "<p style=\"font-size:40px;margin:0\">HELLO WORLD</p>";
+        let mut current = None;
+        handle(&mut current, load(1, html, 600.0));
+        let select = |current: &mut Option<Current>, from: (f32, f32), to: (f32, f32)| match handle(
+            current,
+            Request::Select {
+                generation: 1,
+                from: egui::pos2(from.0, from.1),
+                to: egui::pos2(to.0, to.1),
+            },
+        ) {
+            Some(Reply::Selected { text, .. }) => text,
+            _ => panic!("no selection answer"),
+        };
+        assert_eq!(
+            select(&mut current, (10.0, 20.0), (590.0, 20.0)).as_deref(),
+            Some("HELLO WORLD")
+        );
+        // A drag out past the text keeps what it had; a click clears it.
+        assert_eq!(
+            select(&mut current, (10.0, 20.0), (590.0, 700.0)).as_deref(),
+            Some("HELLO WORLD")
+        );
+        assert_eq!(select(&mut current, (10.0, 20.0), (10.0, 20.0)), None);
+        let paint = Request::Paint {
+            generation: 1,
+            strip: 0,
+        };
+        let plain = match handle(&mut current, paint) {
+            Some(Reply::Strip { image, .. }) => image,
+            _ => panic!("no strip"),
+        };
+        let _ = select(&mut current, (10.0, 20.0), (590.0, 20.0));
+        let paint = Request::Paint {
+            generation: 1,
+            strip: 0,
+        };
+        let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
+            panic!("no strip");
+        };
+        assert_ne!(image.pixels, plain.pixels, "the selection is not painted");
+    }
+
+    #[test]
+    fn a_batch_keeps_only_the_newest_selection_paint_and_hit() {
+        let select = |x| Request::Select {
+            generation: 1,
+            from: egui::pos2(0.0, 0.0),
+            to: egui::pos2(x, 0.0),
+        };
+        let paint = |strip| Request::Paint {
+            generation: 1,
+            strip,
+        };
+        let requests = vec![
+            load(1, "<p>x</p>", 400.0),
+            select(1.0),
+            paint(0),
+            select(2.0),
+            paint(0),
+        ];
+        let mut seen = Vec::new();
+        replies(requests, |_, request| {
+            seen.push(match request {
+                Request::Load(_) => "load".to_string(),
+                Request::Select { to, .. } => format!("select {}", to.x),
+                Request::Paint { strip, .. } => format!("paint {strip}"),
+                Request::Hit { .. } => "hit".to_string(),
+            });
+            None
+        });
+        assert_eq!(seen, ["load", "select 2", "paint 0"]);
     }
 
     #[test]
