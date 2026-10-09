@@ -959,29 +959,17 @@ fn a_config_change_never_stalls_the_daemon_while_an_old_account_thread_finishes(
     });
 }
 
+/// Waits until work's first thread is inside its connect: a thread not yet running when the config changes sees the
+/// stop flag and ends at once, and work then restarts before the command arrives.
 #[test]
 fn a_command_for_an_account_between_threads_says_it_is_restarting() {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     let home = tempfile::tempdir().unwrap();
     let paths = Paths::under(home.path());
     write_config(&paths);
-    let released = Arc::new(AtomicBool::new(false));
-    let connector: crate::engine::Connector = Arc::new({
-        let released = released.clone();
-        move |_| {
-            while !released.load(Ordering::Acquire) {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(
-                Box::new(crate::mail_ops::RecordingOps::new().with_folder("INBOX", None))
-                    as Box<dyn crate::mail_ops::MailOps>,
-            )
-        }
-    });
+    let (connector, connecting, gate) = gated_connector();
     let config = crate::config::Config::parse(super::test_support::CONFIG).unwrap();
     let (mut engine, _events) = crate::engine::Engine::start(&config, &paths, connector);
+    while connecting.recv_timeout(WAIT).unwrap() != "work" {}
     let mut changed = crate::config::Config::parse(super::test_support::CONFIG).unwrap();
     changed.accounts[0].sync_interval_secs = 300;
     engine.apply_config(&changed);
@@ -989,6 +977,8 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
         engine: std::sync::Mutex::new(Some(engine)),
         hub: std::sync::Mutex::new(super::Hub::new()),
     };
+    // Bound after the engine, so the gate opens before the engine's drop waits for its threads.
+    let gate = gate;
     let (out, lines) = std::sync::mpsc::channel();
     let conn = super::ClientConn {
         out,
@@ -997,7 +987,7 @@ fn a_command_for_an_account_between_threads_says_it_is_restarting() {
     };
     shared.hub.lock().unwrap().clients.insert(1, conn);
     super::submit(&shared, 1, 7, "work", Command::SyncNow);
-    released.store(true, Ordering::Release);
+    gate.open();
     let line = lines.recv_timeout(WAIT).unwrap();
     assert_eq!(
         serde_json::from_str::<DaemonMessage>(&line).unwrap(),

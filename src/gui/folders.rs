@@ -32,7 +32,12 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                     .color(theme::palette(ui).muted);
                 ui.label(name);
                 if account.busy() {
-                    ui.spinner();
+                    let size = ui.text_style_height(&egui::TextStyle::Small);
+                    ui.add(
+                        egui::Spinner::new()
+                            .size(size)
+                            .color(ui.visuals().weak_text_color()),
+                    );
                 }
             });
             if let Err(e) = &account.store {

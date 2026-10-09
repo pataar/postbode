@@ -41,6 +41,7 @@ This document contains the help content for the `postbode` command-line program.
 * [`postbode trash purge`↴](#postbode-trash-purge)
 * [`postbode account`↴](#postbode-account)
 * [`postbode account add`↴](#postbode-account-add)
+* [`postbode account list`↴](#postbode-account-list)
 * [`postbode guide`↴](#postbode-guide)
 * [`postbode mcp`↴](#postbode-mcp)
 * [`postbode mcp install`↴](#postbode-mcp-install)
@@ -581,6 +582,7 @@ Manage accounts
 ###### **Subcommands:**
 
 * `add` — Interactively add an IMAP account and test the login
+* `list` — Print each configured account: name, username and server
 
 
 
@@ -589,6 +591,18 @@ Manage accounts
 Interactively add an IMAP account and test the login
 
 **Usage:** `postbode account add`
+
+
+
+## `postbode account list`
+
+Print each configured account: name, username and server
+
+**Usage:** `postbode account list [OPTIONS]`
+
+###### **Options:**
+
+* `--json`
 
 
 

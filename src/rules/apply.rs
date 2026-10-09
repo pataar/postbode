@@ -187,6 +187,21 @@ fn special_folder(store: &Store, role: &str) -> Result<Option<String>, StoreErro
         .map(|folder| folder.name))
 }
 
+/// The folder `action` moves a message in `folder` to; `None` when it stays or is expunged.
+pub fn move_target(
+    store: &Store,
+    folder: &str,
+    action: &Action,
+) -> Result<Option<String>, StoreError> {
+    let target = match action {
+        Action::Archive => special_folder(store, "Archive")?,
+        Action::Move(target) => Some(target.clone()),
+        Action::Trash => special_folder(store, "Trash")?,
+        _ => None,
+    };
+    Ok(target.filter(|target| target != folder))
+}
+
 fn archive_folder(store: &Store) -> Result<String, ApplyError> {
     special_folder(store, "Archive")?.ok_or(ApplyError::NoArchiveFolder)
 }

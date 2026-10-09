@@ -337,6 +337,11 @@ enum TrashCommand {
 enum AccountCommand {
     /// Interactively add an IMAP account and test the login
     Add,
+    /// Print each configured account: name, username and server
+    List {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -524,6 +529,22 @@ pub fn run() -> Result<()> {
         Command::Trash { command } => cmd_trash(command, &config, &paths),
         Command::Account { command } => match command {
             AccountCommand::Add => cmd_account_add(config, &paths),
+            AccountCommand::List { json } => {
+                for acc in &config.accounts {
+                    if json {
+                        println!("{}", postbode::output::account(acc));
+                    } else {
+                        println!(
+                            "{}\t{}\t{}:{}",
+                            acc.name,
+                            clean(&acc.username, false),
+                            acc.host,
+                            acc.port
+                        );
+                    }
+                }
+                Ok(())
+            }
         },
         Command::Guide => {
             print!("{}", include_str!("../../docs/src/agent-guide.md"));
