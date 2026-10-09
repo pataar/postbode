@@ -22,6 +22,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - `sync` per-account loop: sync folders in chunks, run rules, run commands, IDLE
 - `time` the current Unix time, and timestamps shown in local time
 - `trash` `.eml` backups before any rule delete
+- `update` whether a newer release is out (GUI only): GitHub's latest release at most once a day, cached; never updates itself
 
 `tests/architecture.rs` checks the ownership rules above for `mcp`, `rules` (rules.toml writes), `gui` views and `cli`; allowed exceptions live there with a reason.
 

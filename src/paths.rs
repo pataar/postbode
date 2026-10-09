@@ -57,6 +57,10 @@ impl Paths {
         self.state_dir.join("daemon.log")
     }
 
+    pub fn update_check(&self) -> PathBuf {
+        self.cache_dir.join("update-check.json")
+    }
+
     pub fn account_dir(&self, name: &str) -> PathBuf {
         self.state_dir.join("accounts").join(name)
     }
@@ -284,6 +288,10 @@ mod tests {
         assert_eq!(
             p.trash_dir("work"),
             root.path().join("state/accounts/work/trash")
+        );
+        assert_eq!(
+            p.update_check(),
+            root.path().join("cache/update-check.json")
         );
     }
 
