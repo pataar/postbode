@@ -786,6 +786,12 @@ fn run_command(
                     connection_lost(&e).then_some(e),
                 ),
             };
+            // Only the source folder is updated locally; the target shows the message once it is synced.
+            let moved = matches!(
+                action,
+                Action::Archive | Action::Delete | Action::Move(_) | Action::Trash
+            );
+            run.wants_full_pass = moved && results.iter().any(|(_, result)| result.is_ok());
             let _ = events.send(Event::ActionDone {
                 account: name(),
                 folder,

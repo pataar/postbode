@@ -2110,6 +2110,48 @@ fn apply_reports_a_result_per_uid_and_keeps_going() {
 }
 
 #[test]
+fn a_move_asks_for_a_full_pass_so_the_target_folder_shows_the_message() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let apply = Command::Apply {
+        folder: "INBOX".into(),
+        uids: vec![1],
+        action: Action::Move("Done".into()),
+        by: "test".into(),
+    };
+    let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
+    assert!(run.unwrap().wants_full_pass);
+}
+
+#[test]
+fn a_trash_asks_for_a_full_pass_so_the_trash_folder_shows_the_message() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let apply = Command::Apply {
+        folder: "INBOX".into(),
+        uids: vec![1],
+        action: Action::Trash,
+        by: "test".into(),
+    };
+    let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
+    assert!(run.unwrap().wants_full_pass);
+}
+
+#[test]
+fn a_failed_move_does_not_ask_for_a_full_pass() {
+    let (mut ops, store, dir) = synced();
+    let trash = Trash::new(dir.path().to_path_buf());
+    let apply = Command::Apply {
+        folder: "INBOX".into(),
+        uids: vec![99],
+        action: Action::Move("Done".into()),
+        by: "test".into(),
+    };
+    let (run, _) = drain(&mut ops, &store, &trash, vec![apply]);
+    assert!(!run.unwrap().wants_full_pass);
+}
+
+#[test]
 fn fetch_body_stores_the_body_and_reports_it() {
     let (mut ops, store, dir) = synced();
     let trash = Trash::new(dir.path().to_path_buf());
