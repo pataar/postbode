@@ -5,8 +5,10 @@ use crate::message::clean;
 use crate::sync::Activity;
 use crate::time::local_time;
 
-use super::app::{Account, App, UiAction};
+use super::app::{Account, App, BodyState, UiAction};
 use super::html;
+use super::icons;
+use super::toolbar::icon_button;
 
 /// The reader's Date: weekday, day, month, year, time with seconds, and the UTC offset. chrono has no portable zone
 /// abbreviation ("CEST"), so the offset stands in for it.
@@ -93,6 +95,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         ui.weak("This message is no longer in the local store.");
         return actions;
     };
+    actions.extend(toolbar(body, &app.accounts[body.account], ui));
     let date = local_time(message.date.unwrap_or(message.internaldate), HEADER_DATE);
     egui::Grid::new("headers").num_columns(2).show(ui, |ui| {
         for (name, value) in [
@@ -147,6 +150,25 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     actions
 }
 
+/// Actions on the shown message, on the right; disabled until its raw message is downloaded.
+fn toolbar(body: &BodyState, account: &Account, ui: &mut egui::Ui) -> Vec<UiAction> {
+    let mut actions = Vec::new();
+    let downloaded = body.message.as_ref().is_some_and(|m| m.body_text.is_some());
+    // The horizontal wrapper keeps right_to_left(Center) from centring in the pane's whole height.
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut save = icon_button(ui, downloaded, icons::SAVE, "Save .eml", "Save .eml");
+            if !downloaded {
+                save = save.on_disabled_hover_text(missing_text(account));
+            }
+            if save.clicked() {
+                actions.push(UiAction::SaveEml);
+            }
+        });
+    });
+    actions
+}
+
 fn missing_text(account: &Account) -> String {
     if matches!(account.activity, Some(Activity::Offline { .. })) {
         format!("Not downloaded; loads when {} reconnects.", account.name)
@@ -183,7 +205,7 @@ fn show_text(ui: &mut egui::Ui, text: &str) {
 #[cfg(test)]
 mod tests {
     use eframe::egui;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
     use crate::gui::app::View;
@@ -774,5 +796,37 @@ mod tests {
         assert!(wires.sent().is_empty());
         at(&mut harness, 21.1);
         assert_eq!(wires.sent(), [read(1)]);
+    }
+
+    #[test]
+    fn save_eml_writes_the_raw_message_to_downloads() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "Re: lunch"));
+        fx.store("work")
+            .set_raw("INBOX", 1, WITH_ATTACHMENT.as_bytes(), "See attached")
+            .unwrap();
+        let (mut harness, _wires) = fx.harness();
+        harness.get_by_label("Save .eml").click();
+        harness.run();
+        let saved = fx.paths.cache_dir.join("downloads").join("Re- lunch.eml");
+        assert_eq!(std::fs::read(&saved).unwrap(), WITH_ATTACHMENT.as_bytes());
+        assert!(harness.query_by_label_contains("Saved to").is_some());
+    }
+
+    #[test]
+    fn reader_actions_wait_for_the_download_and_never_fetch_on_their_own() {
+        let fx = Fixture::new(&["work"]);
+        let mut m = message("INBOX", 1, "later");
+        m.body_text = None;
+        fx.add("work", m);
+        let (mut harness, wires) = fx.harness();
+        assert_eq!(wires.sent(), [fetch(1)]);
+        let button = harness.get_by_label("Save .eml");
+        assert!(button.accesskit_node().is_disabled());
+        button.click();
+        harness.run();
+        assert!(wires.sent().is_empty());
+        let downloads = fx.paths.cache_dir.join("downloads");
+        assert_eq!(std::fs::read_dir(downloads).unwrap().count(), 0);
     }
 }

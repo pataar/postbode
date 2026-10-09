@@ -193,6 +193,7 @@ pub(crate) enum UiAction {
     RejectRule(String),
     Restore(usize, PathBuf),
     SaveAttachment(usize),
+    SaveEml,
     SearchFocused,
     SearchFor(String),
     SelectRow(usize),
@@ -713,6 +714,7 @@ impl App {
                 }
             }
             UiAction::SaveAttachment(index) => self.save_attachment(index),
+            UiAction::SaveEml => self.save_eml(),
             UiAction::SearchFocused => self.focus_search = false,
             UiAction::SearchFor(query) => {
                 self.search = Some(query);
@@ -1101,20 +1103,30 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// The shown message's raw bytes from the store, or `None` while it is not downloaded.
+    fn shown_raw(&self) -> Option<Vec<u8>> {
+        let body = self.body.as_ref()?;
+        let store = self.accounts[body.account].store.as_ref().ok()?;
+        store.raw(&body.key.0, body.key.1).ok().flatten()
+    }
+
     fn save_attachment(&mut self, index: usize) {
-        let Some(body) = &self.body else { return };
-        let raw = match &self.accounts[body.account].store {
-            Ok(store) => store.raw(&body.key.0, body.key.1).ok().flatten(),
-            Err(_) => None,
-        };
-        let saved = match raw.map(|raw| message::save_attachment(&raw, index, &self.downloads)) {
-            Some(Ok(path)) => format!("Saved to {}", path.display()),
-            Some(Err(e)) => format!("Could not save: {e}"),
-            None => "Could not save: the message is not downloaded".into(),
-        };
+        let raw = self.shown_raw();
+        let note =
+            saved_note(raw.map(|raw| message::save_attachment(&raw, index, &self.downloads)));
         if let Some(body) = &mut self.body {
-            body.saved = Some(saved);
+            body.saved = Some(note);
         }
+    }
+
+    fn save_eml(&mut self) {
+        let raw = self.shown_raw();
+        let Some(body) = &mut self.body else { return };
+        let subject = body.message.as_ref().and_then(|m| m.subject.as_deref());
+        body.saved =
+            Some(saved_note(raw.map(|raw| {
+                message::save_eml(&raw, subject, &self.downloads)
+            })));
     }
 
     /// Takes the render thread's replies for the shown layout; replies for an older one are dropped.
@@ -1527,6 +1539,15 @@ type Stored = (Option<Message>, Vec<Attachment>, Option<HtmlBody>);
 fn too_large(html: Option<&HtmlBody>) -> Option<&'static str> {
     html.filter(|h| h.html.len() > html::MAX_HTML)
         .map(|_| html::TOO_LARGE)
+}
+
+/// The line under the attachments after a save: where the file went, or why not.
+fn saved_note(result: Option<std::io::Result<PathBuf>>) -> String {
+    match result {
+        Some(Ok(path)) => format!("Saved to {}", path.display()),
+        Some(Err(e)) => format!("Could not save: {e}"),
+        None => "Could not save: the message is not downloaded".into(),
+    }
 }
 
 fn body_text(message: Option<&Message>) -> Option<String> {
