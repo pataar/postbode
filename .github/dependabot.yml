@@ -10,6 +10,9 @@ updates:
       prefix: chore
       include: scope
     groups:
+      # Blitz paints into anyrender without re-exporting it, so both must move as one
+      html-render:
+        patterns: ["anyrender*", "blitz-*"]
       cargo:
         update-types: [minor, patch]
 
