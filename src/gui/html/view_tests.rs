@@ -36,7 +36,8 @@ pub(crate) fn add_html(fx: &Fixture, uid: u32, html: &str, text: &str) {
         .unwrap();
 }
 
-/// Steps the app until `done` holds; the render thread answers in real time.
+/// Steps the app until `done` holds; the render thread answers in real time, so `run` before this could exceed its
+/// step limit while replies arrive frame after frame.
 pub(crate) fn wait_for(harness: &mut Harness<'static, App>, done: impl Fn(&App) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !done(harness.state()) {
@@ -62,9 +63,10 @@ pub(crate) fn painted(app: &App) -> bool {
         })
 }
 
+/// One frame applies the key, the next draws it; `run` instead would race the render thread's repaints.
 fn press(harness: &mut Harness<'static, App>, text: &str) {
     harness.event(egui::Event::Text(text.into()));
-    harness.run();
+    harness.run_steps(2);
 }
 
 fn opened(harness: &Harness<'static, App>) -> Vec<String> {
@@ -121,7 +123,6 @@ fn html_mail_shows_as_html_and_v_switches_that_message_to_text() {
     add_html(&fx, 1, "<p>older</p>", "older as text");
     add_html(&fx, 2, NEWSLETTER, "newer as text");
     let (mut harness, _wires) = fx.harness();
-    harness.run();
     wait_for(&mut harness, painted);
     assert!(harness.query_by_label("newer as text").is_none());
     assert!(
@@ -161,7 +162,6 @@ fn an_https_link_opens_and_shows_its_target() {
     let fx = Fixture::new(&["work"]);
     add_html(&fx, 1, &page_link("https://example.com/x"), "link");
     let (mut harness, _wires) = fx.harness();
-    harness.run();
     wait_for(&mut harness, painted);
     let hover = click_page(&mut harness);
     assert_eq!(hover.as_deref(), Some("https://example.com/x"));
@@ -173,7 +173,6 @@ fn a_javascript_link_does_nothing() {
     let fx = Fixture::new(&["work"]);
     add_html(&fx, 1, &page_link("javascript:alert(1)"), "link");
     let (mut harness, _wires) = fx.harness();
-    harness.run();
     wait_for(&mut harness, painted);
     assert_eq!(
         click_page(&mut harness).as_deref(),
