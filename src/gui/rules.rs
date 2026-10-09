@@ -472,6 +472,7 @@ mod tests {
             wires.sent(),
             [("work".to_string(), Command::Restore { file: file.clone() })]
         );
+        assert!(harness.query_by_label("your receipt").is_none());
         std::fs::remove_file(&file).unwrap();
         wires
             .events
