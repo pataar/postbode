@@ -2108,7 +2108,7 @@ mod tests {
         assert!(harness.query_by_label_contains(DAEMON_LOST).is_none());
         let line = format!("work: up to date · {}", crate::time::clock(1_790_000_000));
         assert!(harness.query_by_label(&line).is_some());
-        assert!(harness.query_by_label("INBOX (1)").is_some());
+        assert!(harness.query_by_label("Inbox (1)").is_some());
         press(&mut harness, "e");
         let sent: Vec<_> = RECONNECTED
             .lock()

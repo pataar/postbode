@@ -43,6 +43,8 @@ pub(crate) const ROW: f32 = 24.0;
 pub(crate) const PAD: f32 = 8.0;
 /// Space between a pane's edge and content that is not in a row.
 pub(crate) const INSET: f32 = 2.0 * PAD;
+/// Size of the icons on icon buttons.
+pub(crate) const ICON: f32 = 16.0;
 /// Corner radius of the panes where they meet the frame.
 pub(crate) const RADIUS: u8 = 10;
 
@@ -180,6 +182,9 @@ impl Palette {
 const TEXT_FONT: &str = "HankenGrotesk-Medium";
 const MONO_FONT: &str = "SplineSansMono-Medium";
 const SERIF_FONT: &str = "Newsreader-Medium";
+const BOLD_FONT: &str = "HankenGrotesk-SemiBold";
+/// The font family of unread senders, account names and the reader's sender.
+pub(crate) const BOLD: &str = "bold";
 /// The font family of headings and the wordmark.
 pub(crate) const SERIF: &str = "serif";
 
@@ -200,6 +205,10 @@ pub(crate) fn fonts() -> egui::FontDefinitions {
             TEXT_FONT,
             &include_bytes!("../../assets/fonts/HankenGrotesk-Medium.ttf")[..],
         ),
+        (
+            BOLD_FONT,
+            &include_bytes!("../../assets/fonts/HankenGrotesk-SemiBold.ttf")[..],
+        ),
     ] {
         let data = egui::FontData::from_static(bytes);
         fonts
@@ -215,19 +224,23 @@ pub(crate) fn fonts() -> egui::FontDefinitions {
     if let Some(monospace) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
         monospace.insert(0, MONO_FONT.into());
     }
-    let mut serif = vec![SERIF_FONT.to_string()];
-    serif.extend(
-        fonts
-            .families
-            .get(&egui::FontFamily::Proportional)
-            .cloned()
-            .unwrap_or_default(),
-    );
-    fonts
+    let proportional = fonts
         .families
-        .insert(egui::FontFamily::Name(SERIF.into()), serif);
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    for (family, font) in [(BOLD, BOLD_FONT), (SERIF, SERIF_FONT)] {
+        let mut names = vec![font.to_string()];
+        names.extend(proportional.iter().cloned());
+        fonts.families.insert(named(family), names);
+    }
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     fonts
+}
+
+/// `BOLD` or `SERIF` as an egui font family.
+pub(crate) fn named(family: &str) -> egui::FontFamily {
+    egui::FontFamily::Name(family.into())
 }
 
 /// Gives egui both pane palettes; the theme preference picks one, following the OS when it is System.
@@ -349,13 +362,15 @@ mod tests {
     }
 
     #[test]
-    fn headings_are_newsreader_falling_back_to_the_text_font() {
+    fn headings_and_bold_text_fall_back_to_the_text_font() {
         let fonts = fonts();
-        let serif = &fonts.families[&egui::FontFamily::Name(SERIF.into())];
-        assert_eq!(
-            serif.get(..2),
-            Some(&[SERIF_FONT.to_string(), TEXT_FONT.to_string()][..])
-        );
+        for (family, font) in [(SERIF, SERIF_FONT), (BOLD, BOLD_FONT)] {
+            assert_eq!(
+                fonts.families[&named(family)].get(..2),
+                Some(&[font.to_string(), TEXT_FONT.to_string()][..]),
+                "{family}"
+            );
+        }
         let fx = Fixture::new(&["work"]);
         let (harness, _wires) = fx.harness();
         let heading = egui::TextStyle::Heading.resolve(&harness.ctx.style_of(egui::Theme::Light));

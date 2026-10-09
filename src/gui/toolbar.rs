@@ -6,7 +6,7 @@ use crate::rules::Action;
 
 use super::app::{App, FOLDERS, FOLDERS_WIDTH, UiAction, View};
 use super::icons;
-use super::theme::{CONTROL, INSET};
+use super::theme::{CONTROL, ICON, INSET};
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
@@ -91,7 +91,7 @@ pub(crate) fn icon_button(
     let response = ui
         .add_enabled(
             enabled,
-            egui::Button::new(icon)
+            egui::Button::new(egui::RichText::new(icon).size(ICON))
                 .frame(false)
                 .min_size(egui::vec2(CONTROL, CONTROL)),
         )
@@ -121,6 +121,28 @@ mod tests {
 
     fn disabled(harness: &egui_kittest::Harness<'_, crate::gui::App>, label: &str) -> bool {
         harness.get_by_label(label).accesskit_node().is_disabled()
+    }
+
+    #[test]
+    fn action_icons_are_drawn_at_the_icon_size() {
+        let fx = Fixture::new(&["work"]);
+        let (harness, _wires) = fx.harness();
+        let button = harness.get_by_label(ACTIONS[0]).rect();
+        let sizes: Vec<f32> = harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if button.contains(text.pos) => text
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map(|s| s.format.font_id.size),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sizes, [crate::gui::theme::ICON]);
     }
 
     #[test]

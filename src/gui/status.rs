@@ -141,7 +141,11 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             if let Some(version) = app.newer_release() {
                 update_link(ui, version);
             }
-            ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
+            ui.label(
+                egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    .monospace()
+                    .weak(),
+            );
             for (preference, label) in [
                 (egui::ThemePreference::Dark, "Dark"),
                 (egui::ThemePreference::Light, "Light"),
@@ -398,7 +402,7 @@ mod tests {
             .unwrap();
         harness.run();
         assert_eq!(harness.state().list.rows.len(), 1);
-        assert!(harness.query_by_label("INBOX (1)").is_some());
+        assert!(harness.query_by_label("Inbox (1)").is_some());
     }
 
     #[test]

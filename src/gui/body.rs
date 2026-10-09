@@ -94,6 +94,8 @@ pub(crate) fn size(bytes: usize) -> String {
 
 /// The subject heading's size; the serif reads smaller than the text font at the same size.
 const SUBJECT: f32 = 26.0;
+/// The message text's size, larger than the interface's for reading.
+const BODY_TEXT: f32 = 15.0;
 /// The sender avatar's diameter.
 const AVATAR: f32 = 2.0 * theme::INSET;
 
@@ -154,9 +156,8 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
 fn header(message: &Message, (short_date, full_date): &(String, String), ui: &mut egui::Ui) {
     let palette = theme::palette(ui);
     if let Some(subject) = &message.subject {
-        let serif = egui::FontFamily::Name(theme::SERIF.into());
         let text = egui::RichText::new(clean(subject, false))
-            .family(serif)
+            .family(theme::named(theme::SERIF))
             .size(SUBJECT)
             .color(palette.heading);
         ui.add(egui::Label::new(text).wrap());
@@ -167,12 +168,24 @@ fn header(message: &Message, (short_date, full_date): &(String, String), ui: &mu
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(short_date).on_hover_text(full_date);
+                    let date = egui::RichText::new(short_date)
+                        .monospace()
+                        .color(palette.muted);
+                    ui.label(date).on_hover_text(full_date);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(clean(from, false)).strong())
+                        let (name, address) = name_and_address(from);
+                        let name = egui::RichText::new(clean(&name, false))
+                            .family(theme::named(theme::BOLD))
+                            .color(palette.strong);
+                        ui.add(egui::Label::new(name).truncate());
+                        if let Some(address) = address {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(clean(&address, false)).weak(),
+                                )
                                 .truncate(),
-                        );
+                            );
+                        }
                     });
                 });
             });
@@ -201,6 +214,17 @@ fn avatar(ui: &mut egui::Ui, initials: &str, palette: &theme::Palette) {
         font,
         palette.heading,
     );
+}
+
+/// The sender's name, and the address beside it when there is a name; the address alone otherwise.
+fn name_and_address(from: &str) -> (String, Option<String>) {
+    let name = display_name(from);
+    let address = from
+        .split_once('<')
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .map(|(address, _)| address.trim().to_string())
+        .filter(|address| !address.is_empty() && *address != name);
+    (name, address)
 }
 
 /// The first letters of the sender's first and last name, or of the address when there is no name.
@@ -281,6 +305,11 @@ fn missing_text(account: &Account) -> String {
 fn show_text(ui: &mut egui::Ui, text: &str) {
     // Text lines, not rows of controls: a link must not make its line taller.
     ui.spacing_mut().interact_size.y = 0.0;
+    ui.spacing_mut().item_spacing.y = theme::PAD / 2.0;
+    let body = egui::FontId::proportional(BODY_TEXT);
+    ui.style_mut()
+        .text_styles
+        .insert(egui::TextStyle::Body, body);
     for line in text.lines() {
         if line.trim().is_empty() {
             ui.label(" ");
@@ -467,14 +496,54 @@ mod tests {
     }
 
     #[test]
+    fn the_message_text_is_larger_than_the_interface() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello there"));
+        let (harness, _wires) = fx.harness();
+        let size = harness
+            .output()
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Body of 1" => text
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map(|s| s.format.font_id.size),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(size, BODY_TEXT);
+    }
+
+    #[test]
+    fn the_sender_splits_into_name_and_address() {
+        assert_eq!(
+            name_and_address("Linus Example <linus@example.com>"),
+            ("Linus Example".into(), Some("linus@example.com".into()))
+        );
+        assert_eq!(
+            name_and_address("\"Lovelace, Ada\" <ada@example.com>"),
+            ("Lovelace, Ada".into(), Some("ada@example.com".into()))
+        );
+        assert_eq!(
+            name_and_address("<bare@example.com>"),
+            ("bare@example.com".into(), None)
+        );
+        assert_eq!(
+            name_and_address("plain@example.com"),
+            ("plain@example.com".into(), None)
+        );
+    }
+
+    #[test]
     fn the_subject_is_a_heading_above_the_sender() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "hello there"));
         let (harness, _wires) = fx.harness();
         let subject = harness.get_by_label("hello there").rect();
-        let sender = harness
-            .get_by_label("Sender 1 <sender1@example.com>")
-            .rect();
+        let sender = harness.get_by_label("Sender 1").rect();
         assert!(
             subject.bottom() <= sender.top(),
             "{subject:?} vs {sender:?}"
@@ -488,11 +557,8 @@ mod tests {
         fx.add("work", message("INBOX", 1, "hello there"));
         let (harness, _wires) = fx.harness();
         assert!(harness.query_by_label("Body of 1").is_some());
-        assert!(
-            harness
-                .query_by_label("Sender 1 <sender1@example.com>")
-                .is_some()
-        );
+        assert!(harness.query_by_label("Sender 1").is_some());
+        assert!(harness.query_by_label("sender1@example.com").is_some());
         assert!(harness.query_by_label("hello there").is_some());
     }
 
