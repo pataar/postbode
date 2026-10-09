@@ -182,6 +182,19 @@ egui ships light and dark themes, and eframe follows the OS setting when the pre
 - The status bar has a three-way switch (system, light, dark). Choosing one applies at once through `ctx.set_theme(ThemePreference)` and writes `[ui] theme` with `toml_edit`, keeping comments. The app records the file's new modification time, so its own write does not raise the "config.toml changed" banner.
 - `postbode` without the `gui` feature parses and ignores `[ui]`.
 
+### Visual identity: Ossenbloed
+
+Chosen 2026-10-09 over the first look (Catppuccin Mocha and Latte, peach and mint), which read as a stock terminal theme. Mock-ups: https://claude.ai/artifact/6T24ycUywqkcN5ghd8DhQP (boards `Ossenbloed` and `OssenbloedDark`).
+- An oxblood frame (toolbar, folder pane, status bar) around the panes, which are rounded (`theme::RADIUS`) where they meet it, like mail in a letterbox. The frame keeps cream text in both modes; the panes are warm paper in light mode and near-black brown in dark mode.
+- `theme.rs` has four palettes: `PAPER` and `NIGHT` for the panes, `FRAME` and `FRAME_NIGHT` for the frame. `theme::chrome(ui)` switches a ui to its mode's frame palette, and `theme::palette(ui)` finds a ui's palette by its panel colour, so views stay unaware of which surface they are on.
+- The selected row and folder take the frame colour (`selected`, a lighter oxblood in dark mode). Brass (`highlight`) marks unread mail, flags and the frame's focus ring. Every palette passes WCAG AA for text, checked by tests.
+- The list has the folder's name as a serif title with its thread and unread counts. Rows are two lines, ruled apart: sender and date, then the subject; unread senders are SemiBold.
+- The reader opens with the subject as a serif heading, then the sender's initials in a circle beside the sender's name (SemiBold), address, recipients and a short date (the full date on hover). Message text is 15 px, larger than the interface.
+- Dates and the version are monospace. The status bar marks each account with a brass dot when up to date, a brass ring while offline and a ring in the error colour on an error. Account names are muted SemiBold; the selected folder's icon is brass and its unread count a brass pill.
+- The window names the INBOX "Inbox" (`folders::label`); commands and the status line keep the server's name.
+- The app icon, `assets/logo.svg`, the social preview and the docs theme use the same colours: a cream envelope with a brass flap on oxblood.
+- Fonts, bundled and under the OFL: Hanken Grotesk Medium for text and SemiBold for emphasis, Spline Sans Mono Medium for monospace with egui's Hack behind it for the arrows it lacks, and Newsreader Medium for headings and the wordmark. All are static instances of Google Fonts' variable fonts, since egui cannot pick a weight.
+
 ## 6. Reading
 
 **Keys.** `?` shows this table in the app.

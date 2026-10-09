@@ -387,6 +387,9 @@ impl App {
             theme::install(&ctx);
             ctx.set_theme(self.theme);
             self.theme_applied = true;
+            // Fonts load at the start of the next pass, and drawing in the serif family before then panics.
+            ctx.request_repaint();
+            return;
         }
         let now = ui.input(|input| input.time);
         self.receive(now);
@@ -420,13 +423,16 @@ impl App {
             let image = egui::ColorImage::from_rgba_unmultiplied(size, &icon.rgba);
             self.logo = Some(ctx.load_texture("logo", image, egui::TextureOptions::LINEAR));
         }
-        let bar = egui::Frame::side_top_panel(ui.style());
+        let bar = theme::chrome_frame(ui);
         // The toolbar's and status bar's first and last items are icon buttons on one side, whose glyphs sit a
         // padding inside them, so that side gets one padding less to line the glyphs up with the panes' content.
         egui::Panel::top("toolbar")
             .frame(bar.inner_margin(margin(theme::INSET, theme::PAD, 2.0)))
             .exact_size(theme::TOP_BAR)
-            .show(ui, |ui| actions.extend(toolbar::show(self, ui)));
+            .show(ui, |ui| {
+                theme::chrome(ui);
+                actions.extend(toolbar::show(self, ui));
+            });
         if self.config_changed {
             egui::Panel::top("banner").show(ui, |ui| {
                 ui.colored_label(
@@ -437,36 +443,31 @@ impl App {
         }
         egui::Panel::bottom("status")
             .frame(bar.inner_margin(margin(theme::PAD, theme::INSET, theme::PAD)))
-            .show(ui, |ui| actions.extend(status::show(self, ui)));
-        let side = egui::Frame::side_top_panel(ui.style()).inner_margin(theme::PAD);
+            .show(ui, |ui| {
+                theme::chrome(ui);
+                actions.extend(status::show(self, ui));
+            });
+        let chrome = theme::chrome_frame(ui);
         egui::Panel::left(FOLDERS)
-            .frame(theme::pane(side, ui, self.focus == Focus::Folders))
+            .frame(theme::pane(
+                chrome.inner_margin(theme::PAD),
+                ui,
+                self.focus == Focus::Folders,
+            ))
             .resizable(true)
             .default_size(FOLDERS_WIDTH)
-            .show(ui, |ui| actions.extend(folders::show(self, ui)));
-        // Rules, Activity and Trash have no list pane, so the central panel stands for both list and body there.
-        let central = central_panel(ui, self.focus != Focus::Folders);
-        match &self.view {
-            View::Folder { .. } => {
-                egui::Panel::left("list")
-                    .frame(theme::pane(side, ui, self.focus == Focus::List))
-                    .resizable(true)
-                    .default_size(480.0)
-                    .min_size(list::MIN_WIDTH)
-                    .show(ui, |ui| actions.extend(list::show(self, ui)));
-                central_panel(ui, self.focus == Focus::Body)
-                    .show(ui, |ui| actions.extend(body::show(self, ui)));
-            }
-            View::Rules => {
-                central.show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
-            }
-            View::Activity => {
-                central.show(ui, |ui| actions.extend(rules::show_activity(self, ui)));
-            }
-            View::Trash => {
-                central.show(ui, |ui| actions.extend(rules::show_trash(self, ui)));
-            }
-        }
+            .show(ui, |ui| {
+                theme::chrome(ui);
+                actions.extend(folders::show(self, ui));
+            });
+        // The panes sit in the frame like mail in a letterbox: rounded where they meet it.
+        let frame_around_panes = chrome.inner_margin(egui::Margin {
+            right: theme::PAD as i8,
+            ..egui::Margin::ZERO
+        });
+        egui::CentralPanel::default()
+            .frame(frame_around_panes)
+            .show(ui, |ui| self.show_panes(ui, &mut actions));
         actions.extend(list::show_move_picker(self, &ctx));
         actions.extend(body::show_source(self, &ctx));
         actions.extend(status::show_help(self, &ctx));
@@ -1660,14 +1661,65 @@ impl App {
         entries.extend([View::Rules, View::Activity, View::Trash]);
         entries
     }
+
+    /// The list and body, or the one pane of Rules, Activity and Trash, which stands for both.
+    fn show_panes(&self, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
+        let radius = theme::RADIUS;
+        let left = egui::CornerRadius {
+            nw: radius,
+            sw: radius,
+            ..egui::CornerRadius::ZERO
+        };
+        let right = egui::CornerRadius {
+            ne: radius,
+            se: radius,
+            ..egui::CornerRadius::ZERO
+        };
+        let only = egui::CornerRadius::same(radius);
+        let pane = |ui: &egui::Ui, corners, focused| {
+            let frame = body_frame(ui).corner_radius(corners);
+            egui::CentralPanel::default().frame(theme::pane(frame, ui, focused))
+        };
+        let others_focused = self.focus != Focus::Folders;
+        match &self.view {
+            View::Folder { .. } => {
+                let side = egui::Frame::side_top_panel(ui.style())
+                    .inner_margin(theme::PAD)
+                    .corner_radius(left);
+                egui::Panel::left("list")
+                    .frame(theme::pane(side, ui, self.focus == Focus::List))
+                    .resizable(true)
+                    .default_size(480.0)
+                    .min_size(list::MIN_WIDTH)
+                    .show(ui, |ui| actions.extend(list::show(self, ui)));
+                pane(ui, right, self.focus == Focus::Body)
+                    .show(ui, |ui| actions.extend(body::show(self, ui)));
+            }
+            View::Rules => {
+                pane(ui, only, others_focused)
+                    .show(ui, |ui| actions.extend(rules::show_rules(self, ui)));
+            }
+            View::Activity => {
+                pane(ui, only, others_focused)
+                    .show(ui, |ui| actions.extend(rules::show_activity(self, ui)));
+            }
+            View::Trash => {
+                pane(ui, only, others_focused)
+                    .show(ui, |ui| actions.extend(rules::show_trash(self, ui)));
+            }
+        }
+    }
 }
 
 /// The central panel on the base colour; side panels and the status bar keep the darker panel colour.
 pub(crate) fn central_panel(ui: &egui::Ui, focused: bool) -> egui::CentralPanel {
-    let frame = egui::Frame::central_panel(ui.style())
+    egui::CentralPanel::default().frame(theme::pane(body_frame(ui), ui, focused))
+}
+
+fn body_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::central_panel(ui.style())
         .fill(ui.visuals().window_fill)
-        .inner_margin(margin(theme::INSET, theme::INSET, theme::PAD));
-    egui::CentralPanel::default().frame(theme::pane(frame, ui, focused))
+        .inner_margin(margin(theme::INSET, theme::INSET, theme::PAD))
 }
 
 /// The folder pane's id, which the toolbar reads its width from.
@@ -2144,7 +2196,7 @@ mod tests {
         assert!(harness.query_by_label_contains(DAEMON_LOST).is_none());
         let line = format!("work: up to date · {}", crate::time::clock(1_790_000_000));
         assert!(harness.query_by_label(&line).is_some());
-        assert!(harness.query_by_label("INBOX (1)").is_some());
+        assert!(harness.query_by_label("Inbox (1)").is_some());
         press(&mut harness, "e");
         let sent: Vec<_> = RECONNECTED
             .lock()

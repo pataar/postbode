@@ -1,11 +1,11 @@
 //! The left column: special folders, then custom folders as a tree, per account, then the Rules, Activity and Backups entries, pinned to the bottom.
-use eframe::egui;
+use eframe::egui::{self, AtomExt as _};
 
 use crate::message::clean;
 use crate::store::Folder;
 
 use super::app::{Account, App, FolderRow, UiAction, View};
-use super::{icons, numbers};
+use super::{icons, numbers, theme};
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
@@ -27,7 +27,10 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             // Indented like the rows' icons, which sit a button padding inside the row.
             ui.horizontal(|ui| {
                 ui.add_space(ui.spacing().button_padding.x);
-                ui.strong(&account.name);
+                let name = egui::RichText::new(&account.name)
+                    .family(theme::named(theme::BOLD))
+                    .color(theme::palette(ui).muted);
+                ui.label(name);
                 if account.busy() {
                     let size = ui.text_style_height(&egui::TextStyle::Small);
                     ui.add(
@@ -59,7 +62,7 @@ fn account_folders(app: &App, index: usize, account: &Account, ui: &mut egui::Ui
         .iter()
         .partition(|f| is_special(&f.name, f.special_use.as_deref()));
     for folder in &special {
-        let name = clean(&folder.name, false);
+        let name = clean(label(&folder.name), false);
         let (count, accessible) = count_and_name(&name, folder.unread);
         let icon = icons::for_special_use(folder.special_use.as_deref(), &folder.name);
         let view = open(&folder.name);
@@ -265,18 +268,38 @@ pub(crate) fn folder_row(
         if indent > 0.0 {
             ui.add_space(indent);
         }
-        let palette = super::theme::palette(ui);
-        let color = if selected {
-            palette.on_accent
-        } else {
-            palette.muted
-        };
+        let palette = theme::palette(ui);
+        let count = count.unwrap_or_default();
+        let badge = selected && !count.is_empty();
+        let mut icon = egui::RichText::new(icon);
+        if badge {
+            icon = icon.color(palette.highlight);
+        }
+        let label = egui::Atom::from(format!("  {label}")).atom_shrink(true);
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let galley = ui
+            .painter()
+            .layout_no_wrap(count.clone(), font, palette.background);
+        let pill = egui::vec2(galley.size().x + theme::PAD * 1.5, galley.size().y);
+        let badge_id = egui::Id::new("count badge");
         // Always a right text, even empty: its grow atom is what keeps the label on the left.
-        let button = egui::Button::selectable(selected, format!("{icon}  {label}"))
+        let right: egui::Atom = if badge {
+            egui::Atom::custom(badge_id, pill)
+        } else {
+            egui::RichText::new(count).color(palette.muted).into()
+        };
+        let drawn = egui::Button::selectable(selected, (icon, label))
             .truncate()
             .min_size(egui::vec2(ui.available_width(), 0.0))
-            .right_text(egui::RichText::new(count.unwrap_or_default()).color(color));
-        let response = ui.add(button);
+            .right_text(right)
+            .atom_ui(ui);
+        if let Some(rect) = drawn.rect(badge_id) {
+            ui.painter()
+                .rect_filled(rect, rect.height() / 2.0, palette.highlight);
+            let at = rect.center() - galley.size() / 2.0;
+            ui.painter().galley(at, galley, palette.background);
+        }
+        let response = drawn.response;
         let name = accessible.to_string();
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
@@ -284,6 +307,16 @@ pub(crate) fn folder_row(
         response
     })
     .inner
+}
+
+/// A folder's name as the window shows it: "Inbox" for the INBOX, which IMAP spells in capitals; commands keep the
+/// server's name.
+pub(crate) fn label(name: &str) -> &str {
+    if name.eq_ignore_ascii_case("INBOX") {
+        "Inbox"
+    } else {
+        name
+    }
 }
 
 /// INBOX and the special-use folders, which sort above the rest.
@@ -357,6 +390,14 @@ mod tests {
         rows.iter()
             .map(|r| (r.depth, r.label.as_str(), r.folder.is_some()))
             .collect()
+    }
+
+    #[test]
+    fn the_inbox_shows_as_inbox_and_other_names_stay() {
+        assert_eq!(label("INBOX"), "Inbox");
+        assert_eq!(label("inbox"), "Inbox");
+        assert_eq!(label("INBOX/Receipts"), "INBOX/Receipts");
+        assert_eq!(label("Archive"), "Archive");
     }
 
     #[test]
@@ -544,7 +585,7 @@ mod tests {
         fx.add("work", unread);
         fx.add("work", message("INBOX", 2, "read already"));
         let (mut harness, _wires) = fx.harness();
-        assert!(harness.query_by_label("INBOX (1)").is_some());
+        assert!(harness.query_by_label("Inbox (1)").is_some());
         harness.get_by_label("Archive").click();
         harness.run();
         assert_eq!(
@@ -566,7 +607,7 @@ mod tests {
         unread.flags = String::new();
         fx.add("work", unread);
         let (harness, _wires) = fx.harness();
-        let inbox = harness.get_by_label("INBOX (1)").rect();
+        let inbox = harness.get_by_label("Inbox (1)").rect();
         let rules = harness.get_by_label("Rules").rect();
         assert!(
             (inbox.width() - rules.width()).abs() < 1.0,
@@ -616,6 +657,65 @@ mod tests {
         let name = find(&|text| text.contains("Receipts")).unwrap();
         let count = find(&|text| text == "123").unwrap();
         assert!(name.right() <= count.left(), "{painted:?}");
+    }
+
+    #[test]
+    fn the_selected_folder_has_a_brass_icon_and_count_badge() {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(200.0, 40.0))
+            .build_ui(|ui| {
+                *ui.visuals_mut() = theme::FRAME.visuals(true);
+                folder_row(
+                    ui,
+                    true,
+                    icons::INBOX,
+                    "INBOX",
+                    0.0,
+                    Some("2".into()),
+                    "INBOX",
+                );
+            });
+        harness.run();
+        let format_of = |wanted: &str| {
+            harness
+                .output()
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.text().trim() == wanted => {
+                        text.galley.job.sections.first().map(|s| s.format.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(format_of(icons::INBOX).color, theme::FRAME.highlight);
+        assert_eq!(format_of("2").color, theme::FRAME.background);
+        let pill = harness.output().shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::Shape::Rect(rect)
+                if rect.fill == theme::FRAME.highlight && rect.corner_radius.nw as f32 >= rect.rect.height() / 2.0 - 1.0)
+        });
+        assert!(pill, "no brass pill behind the count");
+    }
+
+    #[test]
+    fn account_names_are_muted_and_semibold() {
+        let fx = Fixture::new(&["work"]);
+        let (harness, _wires) = fx.harness();
+        let format = harness
+            .output()
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == "work" => {
+                    text.galley.job.sections.first().map(|s| s.format.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let chrome = theme::FRAME_NIGHT;
+        assert_eq!(format.font_id.family, theme::named(theme::BOLD));
+        assert!(format.color == chrome.muted || format.color == theme::FRAME.muted);
     }
 
     #[test]
@@ -695,6 +795,7 @@ mod tests {
                 .query_by_label_contains("could not open the store")
                 .is_some()
         );
-        assert!(harness.query_by_label("INBOX").is_some());
+        // The other account's Inbox row, and the list's title above that Inbox.
+        assert_eq!(harness.query_all_by_label("Inbox").count(), 2);
     }
 }

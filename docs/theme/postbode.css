@@ -1,90 +1,97 @@
-/* Catppuccin Mocha (dark) and Latte (light), peach and mint, to match assets/logo.svg. Every built-in theme maps to one of the two. */
+/* Ossenbloed, as in the app (src/gui/theme.rs): dark brown panes and an oxblood sidebar for dark, warm paper for light. Every built-in theme maps to one of the two. */
+
+@font-face {
+    font-family: "Newsreader";
+    font-weight: 500;
+    src: url("../fonts/Newsreader-Medium.ttf") format("truetype");
+}
 
 .ayu, .coal, .navy {
-    --bg: #1e1e2e;
-    --fg: #cdd6f4;
-    --sidebar-bg: #181825;
-    --sidebar-fg: #a6adc8;
-    --sidebar-non-existant: #6c7086;
-    --sidebar-active: #fab387;
-    --sidebar-spacer: #313244;
-    --sidebar-header-border-color: #94e2d5;
-    --scrollbar: #45475a;
-    --icons: #7f849c;
-    --icons-hover: #94e2d5;
-    --links: #94e2d5;
-    --inline-code-color: #fab387;
-    --theme-popup-bg: #181825;
-    --theme-popup-border: #45475a;
-    --theme-hover: #313244;
-    --quote-bg: #181825;
-    --quote-border: #45475a;
-    --warning-border: #f9e2af;
-    --table-border-color: #45475a;
-    --table-header-bg: #313244;
-    --table-alternate-bg: #181825;
-    --searchbar-border-color: #45475a;
-    --searchbar-bg: #11111b;
-    --searchbar-fg: #cdd6f4;
-    --searchbar-shadow-color: #11111b;
-    --searchresults-header-fg: #a6adc8;
-    --searchresults-border-color: #45475a;
-    --searchresults-li-bg: #313244;
-    --search-mark-bg: #fab387;
-    --footnote-highlight: #fab387;
-    --overlay-bg: rgba(17, 17, 27, 0.6);
-    --blockquote-note-color: #94e2d5;
-    --blockquote-tip-color: #a6e3a1;
-    --blockquote-important-color: #fab387;
-    --blockquote-warning-color: #f9e2af;
-    --blockquote-caution-color: #f38ba8;
+    --bg: #231919;
+    --fg: #efe3d6;
+    --sidebar-bg: #2a0e11;
+    --sidebar-fg: #f1e4d8;
+    --sidebar-non-existant: #c29a92;
+    --sidebar-active: #d9b36a;
+    --sidebar-spacer: #4a2226;
+    --sidebar-header-border-color: #d9b36a;
+    --scrollbar: #3a2b2c;
+    --icons: #b09a93;
+    --icons-hover: #e9c9b0;
+    --links: #e9c9b0;
+    --inline-code-color: #e9c9b0;
+    --theme-popup-bg: #1a1213;
+    --theme-popup-border: #3a2b2c;
+    --theme-hover: #2e2223;
+    --quote-bg: #1a1213;
+    --quote-border: #3a2b2c;
+    --warning-border: #e6b85c;
+    --table-border-color: #3a2b2c;
+    --table-header-bg: #2e2223;
+    --table-alternate-bg: #1a1213;
+    --searchbar-border-color: #3a2b2c;
+    --searchbar-bg: #140e0f;
+    --searchbar-fg: #efe3d6;
+    --searchbar-shadow-color: #140e0f;
+    --searchresults-header-fg: #b09a93;
+    --searchresults-border-color: #3a2b2c;
+    --searchresults-li-bg: #2e2223;
+    --search-mark-bg: #c99a3e;
+    --footnote-highlight: #c99a3e;
+    --overlay-bg: rgba(20, 14, 15, 0.6);
+    --blockquote-note-color: #e9c9b0;
+    --blockquote-tip-color: #9ccb8f;
+    --blockquote-important-color: #c99a3e;
+    --blockquote-warning-color: #e6b85c;
+    --blockquote-caution-color: #f08a8a;
 }
 
 .light, .rust, html:not(.js) {
-    --bg: #eff1f5;
-    --fg: #4c4f69;
-    --sidebar-bg: #e6e9ef;
-    --sidebar-fg: #6c6f85;
-    --sidebar-non-existant: #9ca0b0;
-    --sidebar-active: #fe640b;
-    --sidebar-spacer: #ccd0da;
-    --sidebar-header-border-color: #179299;
-    --scrollbar: #bcc0cc;
-    --icons: #8c8fa1;
-    --icons-hover: #179299;
-    --links: #179299;
-    --inline-code-color: #fe640b;
-    --theme-popup-bg: #e6e9ef;
-    --theme-popup-border: #bcc0cc;
-    --theme-hover: #ccd0da;
-    --quote-bg: #e6e9ef;
-    --quote-border: #bcc0cc;
-    --warning-border: #df8e1d;
-    --table-border-color: #bcc0cc;
-    --table-header-bg: #ccd0da;
-    --table-alternate-bg: #e6e9ef;
-    --searchbar-border-color: #bcc0cc;
-    --searchbar-bg: #ffffff;
-    --searchbar-fg: #4c4f69;
-    --searchbar-shadow-color: #bcc0cc;
-    --searchresults-header-fg: #6c6f85;
-    --searchresults-border-color: #bcc0cc;
-    --searchresults-li-bg: #ccd0da;
-    --search-mark-bg: #fe640b;
-    --footnote-highlight: #fe640b;
-    --overlay-bg: rgba(76, 79, 105, 0.3);
-    --blockquote-note-color: #179299;
-    --blockquote-tip-color: #40a02b;
-    --blockquote-important-color: #fe640b;
-    --blockquote-warning-color: #df8e1d;
-    --blockquote-caution-color: #d20f39;
+    --bg: #fbf8f3;
+    --fg: #2b1a1c;
+    --sidebar-bg: #3b1418;
+    --sidebar-fg: #f1e4d8;
+    --sidebar-non-existant: #c29a92;
+    --sidebar-active: #d9b36a;
+    --sidebar-spacer: #5a2a2f;
+    --sidebar-header-border-color: #d9b36a;
+    --scrollbar: #e3d8cb;
+    --icons: #6e5958;
+    --icons-hover: #9a4a1c;
+    --links: #9a4a1c;
+    --inline-code-color: #9a4a1c;
+    --theme-popup-bg: #f3ece2;
+    --theme-popup-border: #e3d8cb;
+    --theme-hover: #eadfd0;
+    --quote-bg: #f3ece2;
+    --quote-border: #e3d8cb;
+    --warning-border: #8a5a00;
+    --table-border-color: #e3d8cb;
+    --table-header-bg: #eadfd0;
+    --table-alternate-bg: #f3ece2;
+    --searchbar-border-color: #e3d8cb;
+    --searchbar-bg: #fffdfa;
+    --searchbar-fg: #2b1a1c;
+    --searchbar-shadow-color: #e3d8cb;
+    --searchresults-header-fg: #6e5958;
+    --searchresults-border-color: #e3d8cb;
+    --searchresults-li-bg: #eadfd0;
+    --search-mark-bg: #d9b36a;
+    --footnote-highlight: #d9b36a;
+    --overlay-bg: rgba(43, 26, 28, 0.3);
+    --blockquote-note-color: #9a4a1c;
+    --blockquote-tip-color: #2e6b3a;
+    --blockquote-important-color: #8c6720;
+    --blockquote-warning-color: #8a5a00;
+    --blockquote-caution-color: #a8202e;
 }
 
-.ayu .hljs, .coal .hljs, .navy .hljs { background: #181825; }
-.light .hljs, .rust .hljs, html:not(.js) .hljs { background: #e6e9ef; }
+.ayu .hljs, .coal .hljs, .navy .hljs { background: #1a1213; }
+.light .hljs, .rust .hljs, html:not(.js) .hljs { background: #f3ece2; }
 
-.menu-title, h1, h2, h3, h4 {
-    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+h1, h2, h3, h4 {
+    font-family: "Newsreader", Georgia, serif;
+    font-weight: 500;
 }
 
 /* The logo replaces the title text; font-size 0 keeps "Postbode" for screen readers. */

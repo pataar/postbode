@@ -10,7 +10,7 @@ use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::app::{App, UiAction, View};
 use super::theme::{self, PAD, Palette, ROW};
-use super::{icons, numbers};
+use super::{folders, icons, numbers};
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
 pub(crate) const THREAD_LIMIT: u32 = 10_000;
@@ -215,7 +215,6 @@ pub(crate) struct Columns {
 const DOT: f32 = 12.0;
 const MARKER: f32 = 20.0;
 const MARKERS: f32 = DOT + MARKER;
-const SENDER: f32 = 130.0;
 const GAP: f32 = 12.0;
 /// Narrower than this, a column is left out: truncating would still draw its "…", over the date.
 const MIN_TEXT: f32 = 16.0;
@@ -223,12 +222,12 @@ const MIN_TEXT: f32 = 16.0;
 pub(crate) const MIN_WIDTH: f32 = 220.0;
 /// How much further a thread member's sender is indented than its thread row's.
 const MEMBER_INDENT: f32 = 12.0;
+/// A row's height: the sender and date, then the subject.
+pub(crate) const LIST_ROW: f32 = 2.0 * ROW;
 
-/// (sender width, subject width) for a row of `total` px whose date needs `date` px.
-pub(crate) fn column_widths(total: f32, date: f32) -> (f32, f32) {
-    let rest = (total - MARKERS - date - 2.0 * GAP).max(0.0);
-    let sender = SENDER.min(rest / 2.0);
-    (sender, (rest - sender).max(0.0))
+/// The sender's width in a row of `total` px whose date needs `date` px; the subject below has the full width.
+pub(crate) fn sender_width(total: f32, date: f32) -> f32 {
+    (total - MARKERS - date - GAP).max(0.0)
 }
 
 pub(crate) fn columns<Tz: TimeZone>(
@@ -244,7 +243,7 @@ where
     let who = display_name(if recipient { &row.to } else { &row.from });
     let mut subject = String::new();
     if in_search {
-        subject.push_str(&format!("[{}] ", row.folder));
+        subject.push_str(&format!("[{}] ", folders::label(&row.folder)));
     }
     subject.push_str(&row.subject);
     if row.count > 1 {
@@ -280,7 +279,7 @@ where
         text.push_str("      ");
     }
     if in_search {
-        text.push_str(&format!("[{}] ", row.folder));
+        text.push_str(&format!("[{}] ", folders::label(&row.folder)));
     }
     text.push_str(&format!("{who} — {}", row.subject));
     if row.count > 1 {
@@ -290,8 +289,8 @@ where
     clean(&text, false)
 }
 
-/// Unread dot, flag or mark, sender, subject truncated with "…", and the date right-aligned; everything on-accent when
-/// the row is selected.
+/// Unread dot, flag or mark, sender and the date right-aligned, then the subject below, both truncated with "…";
+/// everything on-accent when the row is selected.
 fn draw_row(
     ui: &egui::Ui,
     rect: egui::Rect,
@@ -303,15 +302,19 @@ fn draw_row(
 ) {
     let painter = ui.painter_at(rect);
     if selected {
-        painter.rect_filled(rect, 2.0, palette.accent);
+        painter.rect_filled(rect, theme::RADIUS, palette.selected);
     } else if hovered {
-        painter.rect_filled(rect, 2.0, palette.hover);
+        painter.rect_filled(rect, theme::RADIUS, palette.hover);
+    } else {
+        let rule = egui::Stroke::new(1.0, palette.border);
+        painter.hline(rect.x_range(), rect.bottom() - 0.5, rule);
     }
     let ink = |color| if selected { palette.on_accent } else { color };
-    let middle = rect.center().y;
+    let first = rect.top() + rect.height() / 3.0;
+    let second = rect.top() + 2.0 * rect.height() / 3.0;
     let mut x = rect.left() + PAD;
     if c.unread {
-        painter.circle_filled(egui::pos2(x + 3.0, middle), 3.0, ink(palette.accent));
+        painter.circle_filled(egui::pos2(x + 3.0, first), 3.0, ink(palette.highlight));
     }
     x += DOT;
     let marker = if c.marked {
@@ -322,45 +325,63 @@ fn draw_row(
         None
     };
     if let Some(marker) = marker {
-        let color = ink(palette.highlight);
         painter.text(
-            egui::pos2(x + MARKER / 2.0 - 2.0, middle),
+            egui::pos2(x + MARKER / 2.0 - 2.0, first),
             egui::Align2::CENTER_CENTER,
             marker,
             font.clone(),
-            color,
+            ink(palette.highlight),
         );
     }
     x += MARKER;
     let date_color = ink(palette.muted);
-    let date = painter.layout_no_wrap(c.date.clone(), font.clone(), date_color);
+    let mono = egui::FontId::monospace(font.size - 1.0);
+    let date = painter.layout_no_wrap(c.date.clone(), mono, date_color);
     let date_at = egui::pos2(
         rect.right() - PAD - date.size().x,
-        middle - date.size().y / 2.0,
+        first - date.size().y / 2.0,
     );
-    let (sender_width, subject_width) = column_widths(rect.width() - 2.0 * PAD, date.size().x);
+    let sender_width = sender_width(rect.width() - 2.0 * PAD, date.size().x);
     painter.galley(date_at, date, date_color);
-    let text_color = ink(if c.unread {
-        palette.text
+    let (sender_color, subject_color) = if c.unread {
+        (palette.text, palette.text)
     } else {
-        palette.secondary
-    });
-    let truncated = |text: &str, width: f32| {
+        (palette.secondary, palette.muted)
+    };
+    let sender_font = if c.unread {
+        egui::FontId::new(font.size, theme::named(theme::BOLD))
+    } else {
+        font.clone()
+    };
+    let truncated = |text: &str, font: &egui::FontId, width: f32, color| {
         let mut job =
-            egui::text::LayoutJob::simple_singleline(text.to_string(), font.clone(), text_color);
+            egui::text::LayoutJob::simple_singleline(text.to_string(), font.clone(), color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(0.0));
         painter.layout_job(job)
     };
     let indent = if c.member { MEMBER_INDENT } else { 0.0 };
+    let x = x + indent;
     if sender_width - indent >= MIN_TEXT {
-        let sender = truncated(&c.who, sender_width - indent);
-        let sender_at = egui::pos2(x + indent, middle - sender.size().y / 2.0);
-        painter.galley(sender_at, sender, text_color);
+        let sender = truncated(
+            &c.who,
+            &sender_font,
+            sender_width - indent,
+            ink(sender_color),
+        );
+        painter.galley(
+            egui::pos2(x, first - sender.size().y / 2.0),
+            sender,
+            ink(sender_color),
+        );
     }
+    let subject_width = rect.right() - PAD - x;
     if subject_width >= MIN_TEXT {
-        let subject = truncated(&c.subject, subject_width);
-        let subject_at = egui::pos2(x + sender_width + GAP, middle - subject.size().y / 2.0);
-        painter.galley(subject_at, subject, text_color);
+        let subject = truncated(&c.subject, font, subject_width, ink(subject_color));
+        painter.galley(
+            egui::pos2(x, second - subject.size().y / 2.0),
+            subject,
+            ink(subject_color),
+        );
     }
 }
 
@@ -382,6 +403,11 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let list = &app.list;
     let recipient = app.shows_recipient();
     let now = Local::now();
+    if app.search.is_none()
+        && let View::Folder { folder, .. } = &app.view
+    {
+        title(ui, folders::label(folder), &list.rows);
+    }
     if let Some(query) = &app.search {
         let mut text = query.clone();
         let response = theme::text_field(ui, |ui| {
@@ -409,19 +435,21 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     }
     let mut area = egui::ScrollArea::vertical().auto_shrink(false);
     if list.follow_cursor {
-        let row_height = ROW + ui.spacing().item_spacing.y;
+        let row_height = LIST_ROW + ui.spacing().item_spacing.y;
         let (offset, height) = list.viewport;
         area = area.vertical_scroll_offset(offset_showing(list.cursor, row_height, offset, height));
     }
     let palette = theme::palette(ui);
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let output = area.show_rows(ui, ROW, list.rows.len(), |ui, range| {
+    let output = area.show_rows(ui, LIST_ROW, list.rows.len(), |ui, range| {
         for index in range {
             let row = &list.rows[index];
             let marked = list.marked.contains(&row.key());
             let selected = index == list.cursor || marked;
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), egui::Sense::click());
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), LIST_ROW),
+                egui::Sense::click(),
+            );
             let c = columns(row, marked, recipient, app.search.is_some(), &now);
             draw_row(ui, rect, &c, selected, response.hovered(), palette, &font);
             let mut name = row_text(row, recipient, app.search.is_some(), &now);
@@ -441,6 +469,25 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         height: output.inner_rect.height(),
     });
     actions
+}
+
+/// The folder's name as a heading, then how many threads it shows and how many are unread.
+fn title(ui: &mut egui::Ui, name: &str, rows: &[Row]) {
+    let threads: Vec<&Row> = rows.iter().filter(|row| !row.member).collect();
+    let unread = threads.iter().filter(|row| row.unread).count();
+    let noun = if threads.len() == 1 {
+        "thread"
+    } else {
+        "threads"
+    };
+    ui.horizontal(|ui| {
+        ui.heading(clean(name, false));
+        ui.weak(format!(
+            "{} {noun}, {} unread",
+            numbers::count(threads.len() as u64),
+            numbers::count(unread as u64)
+        ));
+    });
 }
 
 /// The `m` popup: type to filter the account's folders, Enter or a click moves. It leaves out the folder the cursor
@@ -582,19 +629,14 @@ mod tests {
         let c = columns(&row, false, false, true, &now);
         assert!(c.unread && c.flagged && !c.marked);
         assert_eq!(c.who, "Linus Example");
-        assert_eq!(c.subject, "[INBOX] Lunch? (3)");
+        assert_eq!(c.subject, "[Inbox] Lunch? (3)");
         assert_eq!(c.date, "09:13");
     }
 
     #[test]
-    fn column_widths_keep_the_date_and_never_go_negative() {
-        assert_eq!(
-            column_widths(600.0, 80.0),
-            (130.0, 600.0 - 32.0 - 130.0 - 12.0 - 80.0 - 12.0)
-        );
-        let (sender, subject) = column_widths(150.0, 80.0);
-        assert!(sender >= 0.0 && subject >= 0.0);
-        assert!(sender + subject <= 150.0 - 24.0 - 80.0 - 24.0);
+    fn the_sender_keeps_clear_of_the_date_and_never_goes_negative() {
+        assert_eq!(sender_width(600.0, 80.0), 600.0 - 32.0 - 80.0 - 12.0);
+        assert_eq!(sender_width(100.0, 80.0), 0.0);
     }
 
     #[test]
@@ -720,13 +762,13 @@ mod tests {
     }
 
     #[test]
-    fn in_a_narrow_row_nothing_is_drawn_over_the_date() {
+    fn in_a_narrow_row_nothing_is_drawn_over_the_date_or_past_the_edge() {
         for width in [150.0, 130.0] {
             let mut harness = egui_kittest::Harness::builder()
-                .with_size(egui::vec2(width + 16.0, 40.0))
+                .with_size(egui::vec2(width + 16.0, LIST_ROW + 16.0))
                 .build_ui(move |ui| {
                     let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(width, ROW), egui::Sense::hover());
+                        ui.allocate_exact_size(egui::vec2(width, LIST_ROW), egui::Sense::hover());
                     let c = Columns {
                         unread: true,
                         flagged: true,
@@ -737,7 +779,7 @@ mod tests {
                         member: true,
                     };
                     let font = egui::TextStyle::Button.resolve(ui.style());
-                    draw_row(ui, rect, &c, false, false, &crate::gui::theme::MOCHA, &font);
+                    draw_row(ui, rect, &c, false, false, &crate::gui::theme::NIGHT, &font);
                 });
             harness.run();
             let texts: Vec<(String, egui::Rect)> = harness
@@ -753,13 +795,89 @@ mod tests {
                 })
                 .collect();
             let date = texts.iter().find(|(t, _)| t == "10 Dec 2025").unwrap().1;
+            let subject = texts
+                .iter()
+                .find(|(t, _)| t.starts_with("A subject"))
+                .unwrap()
+                .1;
+            assert!(
+                subject.top() >= date.bottom(),
+                "{width}: subject {subject:?} not below the date"
+            );
             for (text, rect) in texts.iter().filter(|(t, _)| t != "10 Dec 2025") {
+                let beside_the_date = rect.y_range().intersects(date.y_range());
                 assert!(
-                    rect.right() <= date.left(),
+                    !beside_the_date || rect.right() <= date.left(),
                     "{width}: {text:?} {rect:?} vs date {date:?}"
+                );
+                assert!(
+                    rect.right() <= width + 8.0,
+                    "{width}: {text:?} {rect:?} past the row"
                 );
             }
         }
+    }
+
+    #[test]
+    fn unread_senders_are_semibold_dates_monospace_and_rows_ruled() {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(416.0, LIST_ROW + 16.0))
+            .build_ui(|ui| {
+                // Fonts load a pass after they are set, and the bold family does not exist before.
+                if ui.ctx().cumulative_pass_nr() == 0 {
+                    ui.ctx().set_fonts(theme::fonts());
+                    return;
+                }
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(400.0, LIST_ROW), egui::Sense::hover());
+                let c = Columns {
+                    unread: true,
+                    flagged: false,
+                    marked: false,
+                    who: "Ada".into(),
+                    subject: "Notes".into(),
+                    date: "21 Sep".into(),
+                    member: false,
+                };
+                let font = egui::TextStyle::Button.resolve(ui.style());
+                draw_row(ui, rect, &c, false, false, &crate::gui::theme::PAPER, &font);
+            });
+        harness.run();
+        let shapes = &harness.output().shapes;
+        let family = |wanted: &str| {
+            shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.text() == wanted => text
+                        .galley
+                        .job
+                        .sections
+                        .first()
+                        .map(|s| s.format.font_id.family.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(family("Ada"), theme::named(theme::BOLD));
+        assert_eq!(family("Notes"), egui::FontFamily::Proportional);
+        assert_eq!(family("21 Sep"), egui::FontFamily::Monospace);
+        let ruled = shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::Shape::LineSegment { stroke, .. }
+                if stroke.color == theme::PAPER.border)
+        });
+        assert!(ruled, "no rule under the row");
+    }
+
+    #[test]
+    fn the_list_is_titled_with_the_folder_and_its_counts() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "read"));
+        let mut unread = message("INBOX", 2, "new");
+        unread.flags = String::new();
+        fx.add("work", unread);
+        let (harness, _wires) = fx.harness();
+        assert!(harness.query_by_label("Inbox").is_some());
+        assert!(harness.query_by_label("2 threads, 1 unread").is_some());
     }
 
     #[test]

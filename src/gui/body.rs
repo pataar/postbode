@@ -4,17 +4,22 @@ use std::ops::Range;
 use eframe::egui;
 
 use crate::message::clean;
+use crate::store::Message;
 use crate::sync::Activity;
 use crate::time::local_time;
 
 use super::app::{Account, App, BodyState, UiAction};
 use super::html;
 use super::icons;
+use super::list::display_name;
+use super::theme;
 use super::toolbar::icon_button;
 
 /// The reader's Date: weekday, day, month, year, time with seconds, and the UTC offset. chrono has no portable zone
 /// abbreviation ("CEST"), so the offset stands in for it.
 pub(crate) const HEADER_DATE: &str = "%A %-d %B %Y, %H:%M:%S (UTC%:z)";
+/// The date beside the sender; `HEADER_DATE` shows on hover.
+const SHORT_DATE: &str = "%a %-d %b %Y, %H:%M";
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Segment<'a> {
@@ -87,8 +92,12 @@ pub(crate) fn size(bytes: usize) -> String {
     }
 }
 
-/// The header names' column, wide enough for "Subject".
-const HEADER_NAME: f32 = 56.0;
+/// The subject heading's size; the serif reads smaller than the text font at the same size.
+const SUBJECT: f32 = 26.0;
+/// The message text's size, larger than the interface's for reading.
+const BODY_TEXT: f32 = 15.0;
+/// The sender avatar's diameter.
+const AVATAR: f32 = 2.0 * theme::INSET;
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
@@ -101,25 +110,9 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         return actions;
     };
     actions.extend(toolbar(body, &app.accounts[body.account], ui));
-    let date = local_time(message.date.unwrap_or(message.internaldate), HEADER_DATE);
-    // Not a grid: grid cells do not truncate, so a long header would widen the pane past the window.
-    for (name, value) in [
-        ("From", message.from_addr.as_deref()),
-        ("To", message.to_addr.as_deref()),
-        ("Cc", message.cc_addr.as_deref()),
-        ("Date", Some(date.as_str())),
-        ("Subject", message.subject.as_deref()),
-    ] {
-        if let Some(value) = value {
-            ui.horizontal(|ui| {
-                ui.allocate_ui(egui::vec2(HEADER_NAME, ui.available_height()), |ui| {
-                    ui.set_min_width(HEADER_NAME);
-                    ui.strong(name);
-                });
-                ui.add(egui::Label::new(clean(value, false)).truncate());
-            });
-        }
-    }
+    let at = message.date.unwrap_or(message.internaldate);
+    let date = (local_time(at, SHORT_DATE), local_time(at, HEADER_DATE));
+    header(message, &date, ui);
     for attachment in &body.attachments {
         ui.horizontal(|ui| {
             let name = attachment
@@ -156,6 +149,99 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             }
         });
     actions
+}
+
+/// The subject as a heading, then the sender's initials beside sender, recipients and date. Not a grid: grid cells do
+/// not truncate, so a long header would widen the pane past the window.
+fn header(message: &Message, (short_date, full_date): &(String, String), ui: &mut egui::Ui) {
+    let palette = theme::palette(ui);
+    if let Some(subject) = &message.subject {
+        let text = egui::RichText::new(clean(subject, false))
+            .family(theme::named(theme::SERIF))
+            .size(SUBJECT)
+            .color(palette.heading);
+        ui.add(egui::Label::new(text).wrap());
+    }
+    let from = message.from_addr.as_deref().unwrap_or_default();
+    ui.horizontal(|ui| {
+        avatar(ui, &initials(from), palette);
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let date = egui::RichText::new(short_date)
+                        .monospace()
+                        .color(palette.muted);
+                    ui.label(date).on_hover_text(full_date);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let (name, address) = name_and_address(from);
+                        let name = egui::RichText::new(clean(&name, false))
+                            .family(theme::named(theme::BOLD))
+                            .color(palette.strong);
+                        ui.add(egui::Label::new(name).truncate());
+                        if let Some(address) = address {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(clean(&address, false)).weak(),
+                                )
+                                .truncate(),
+                            );
+                        }
+                    });
+                });
+            });
+            for (name, value) in [("to", &message.to_addr), ("cc", &message.cc_addr)] {
+                if let Some(value) = value {
+                    ui.horizontal(|ui| {
+                        ui.weak(name);
+                        ui.add(egui::Label::new(clean(value, false)).truncate());
+                    });
+                }
+            }
+        });
+    });
+}
+
+/// A circle with the sender's initials.
+fn avatar(ui: &mut egui::Ui, initials: &str, palette: &theme::Palette) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(AVATAR, AVATAR), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.circle_filled(rect.center(), AVATAR / 2.0, palette.hover);
+    let font = egui::FontId::proportional(AVATAR * 0.4);
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        initials,
+        font,
+        palette.heading,
+    );
+}
+
+/// The sender's name, and the address beside it when there is a name; the address alone otherwise.
+fn name_and_address(from: &str) -> (String, Option<String>) {
+    let name = display_name(from);
+    let address = from
+        .split_once('<')
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .map(|(address, _)| address.trim().to_string())
+        .filter(|address| !address.is_empty() && *address != name);
+    (name, address)
+}
+
+/// The first letters of the sender's first and last name, or of the address when there is no name.
+fn initials(from: &str) -> String {
+    let name = display_name(from);
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let first_letter = |word: &&str| word.chars().find(|c| c.is_alphanumeric());
+    let letters: String = match words.as_slice() {
+        [] => String::new(),
+        [only] => first_letter(only).into_iter().collect(),
+        [first, .., last] => [first, last].into_iter().filter_map(first_letter).collect(),
+    };
+    if letters.is_empty() {
+        "?".into()
+    } else {
+        letters.to_uppercase()
+    }
 }
 
 /// Actions on the shown message, on the right; disabled until its raw message is downloaded.
@@ -219,6 +305,11 @@ fn missing_text(account: &Account) -> String {
 fn show_text(ui: &mut egui::Ui, text: &str) {
     // Text lines, not rows of controls: a link must not make its line taller.
     ui.spacing_mut().interact_size.y = 0.0;
+    ui.spacing_mut().item_spacing.y = theme::PAD / 2.0;
+    let body = egui::FontId::proportional(BODY_TEXT);
+    ui.style_mut()
+        .text_styles
+        .insert(egui::TextStyle::Body, body);
     for line in text.lines() {
         if line.trim().is_empty() {
             ui.label(" ");
@@ -338,6 +429,13 @@ mod tests {
     }
 
     #[test]
+    fn the_short_date_beside_the_sender_keeps_day_and_minute() {
+        use chrono::TimeZone;
+        let at = chrono::Utc.timestamp_opt(1_790_000_000, 0).unwrap();
+        assert_eq!(at.format(SHORT_DATE).to_string(), "Mon 21 Sep 2026, 14:13");
+    }
+
+    #[test]
     fn segments_link_only_http_https_and_mailto_at_word_starts() {
         assert_eq!(
             segments("see https://example.com/a?b=1. or mailto:me@example.com, thanks"),
@@ -388,16 +486,79 @@ mod tests {
     }
 
     #[test]
+    fn initials_come_from_the_name_else_the_address() {
+        assert_eq!(initials("Linus Example <linus@example.com>"), "LE");
+        assert_eq!(initials("\"Lovelace, Ada\" <ada@example.com>"), "LA");
+        assert_eq!(initials("Ada Augusta King <ada@example.com>"), "AK");
+        assert_eq!(initials("<bare@example.com>"), "B");
+        assert_eq!(initials("élodie@example.com"), "É");
+        assert_eq!(initials(""), "?");
+    }
+
+    #[test]
+    fn the_message_text_is_larger_than_the_interface() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello there"));
+        let (harness, _wires) = fx.harness();
+        let size = harness
+            .output()
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Body of 1" => text
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map(|s| s.format.font_id.size),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(size, BODY_TEXT);
+    }
+
+    #[test]
+    fn the_sender_splits_into_name_and_address() {
+        assert_eq!(
+            name_and_address("Linus Example <linus@example.com>"),
+            ("Linus Example".into(), Some("linus@example.com".into()))
+        );
+        assert_eq!(
+            name_and_address("\"Lovelace, Ada\" <ada@example.com>"),
+            ("Lovelace, Ada".into(), Some("ada@example.com".into()))
+        );
+        assert_eq!(
+            name_and_address("<bare@example.com>"),
+            ("bare@example.com".into(), None)
+        );
+        assert_eq!(
+            name_and_address("plain@example.com"),
+            ("plain@example.com".into(), None)
+        );
+    }
+
+    #[test]
+    fn the_subject_is_a_heading_above_the_sender() {
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "hello there"));
+        let (harness, _wires) = fx.harness();
+        let subject = harness.get_by_label("hello there").rect();
+        let sender = harness.get_by_label("Sender 1").rect();
+        assert!(
+            subject.bottom() <= sender.top(),
+            "{subject:?} vs {sender:?}"
+        );
+        assert!(harness.query_by_label("Subject").is_none());
+    }
+
+    #[test]
     fn the_cursor_message_shows_headers_and_text() {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "hello there"));
         let (harness, _wires) = fx.harness();
         assert!(harness.query_by_label("Body of 1").is_some());
-        assert!(
-            harness
-                .query_by_label("Sender 1 <sender1@example.com>")
-                .is_some()
-        );
+        assert!(harness.query_by_label("Sender 1").is_some());
+        assert!(harness.query_by_label("sender1@example.com").is_some());
         assert!(harness.query_by_label("hello there").is_some());
     }
 
