@@ -1,8 +1,8 @@
 // Test code: unwrap, expect and panic are how a test fails.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use postbode::config::Config;
-use postbode::rules::{Rule, RuleFile, compile, parse};
+use postvak::config::Config;
+use postvak::rules::{Rule, RuleFile, compile, parse};
 
 fn read(path: &str) -> String {
     std::fs::read_to_string(format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap()
@@ -69,9 +69,9 @@ fn readme_contains_the_book_index() {
 #[cfg(feature = "mcp")]
 #[test]
 fn mcp_page_snippet_matches_install_json() {
-    use postbode::mcp::install::{Entry, json_snippet};
+    use postvak::mcp::install::{Entry, json_snippet};
     let entry = Entry::new(
-        std::path::Path::new("/opt/homebrew/bin/postbode"),
+        std::path::Path::new("/opt/homebrew/bin/postvak"),
         "read,rules:propose",
         &[],
     );
@@ -87,7 +87,7 @@ fn mcp_page_snippet_matches_install_json() {
 #[test]
 fn mcp_page_scope_table_lists_every_scope() {
     let page = read("docs/src/mcp.md");
-    for scope in postbode::mcp::Scope::ALL {
+    for scope in postvak::mcp::Scope::ALL {
         assert!(
             page.contains(&format!("| `{}` |", scope.as_str())),
             "scope {} missing from the table",
@@ -100,11 +100,11 @@ fn mcp_page_scope_table_lists_every_scope() {
 fn the_daemon_page_names_every_daemon_command() {
     let page = read("docs/src/daemon.md");
     for command in [
-        "postbode run",
-        "postbode daemon status",
-        "postbode daemon stop",
-        "postbode service install",
-        "postbode service remove",
+        "postvak run",
+        "postvak daemon status",
+        "postvak daemon stop",
+        "postvak service install",
+        "postvak service remove",
         "daemon.log",
     ] {
         assert!(

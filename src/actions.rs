@@ -16,15 +16,15 @@ pub const RULE_NAME: &str = "cli";
 pub enum ActionError {
     #[error(transparent)]
     Apply(#[from] ApplyError),
-    #[error("{0} changed on the server since the last sync; run `postbode sync` first")]
+    #[error("{0} changed on the server since the last sync; run `postvak sync` first")]
     FolderChanged(String),
     #[error(transparent)]
     Mail(#[from] MailError),
-    #[error("no message {folder}/{uid} in the local store; run `postbode sync` first")]
+    #[error("no message {folder}/{uid} in the local store; run `postvak sync` first")]
     NotFound { folder: String, uid: u32 },
     #[error(transparent)]
     Store(#[from] StoreError),
-    #[error("{0} has not been synced yet; run `postbode sync` first")]
+    #[error("{0} has not been synced yet; run `postvak sync` first")]
     UnknownFolder(String),
 }
 

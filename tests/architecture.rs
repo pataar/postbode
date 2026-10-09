@@ -314,9 +314,9 @@ fn check_mcp(source: &Source) -> Vec<String> {
         return Vec::new();
     }
     let roots: &[&str] = if source.path == "src/mcp/mod.rs" {
-        &["crate::", "postbode::", "super::"]
+        &["crate::", "postvak::", "super::"]
     } else {
-        &["crate::", "postbode::", "super::super::"]
+        &["crate::", "postvak::", "super::super::"]
     };
     let mut out = Vec::new();
     for (at, path) in crate_paths(&source.code, roots) {
@@ -431,7 +431,7 @@ fn check_gui_views(source: &Source) -> Vec<String> {
             "uses the daemon client; return a `UiAction` instead",
         ));
     }
-    for (at, path) in crate_paths(&source.code, &["crate::", "postbode::", "super::super::"]) {
+    for (at, path) in crate_paths(&source.code, &["crate::", "postvak::", "super::super::"]) {
         if path.starts_with("daemon") || path.starts_with("rules::edit") {
             out.push(source.violation(
                 at,

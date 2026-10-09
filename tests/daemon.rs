@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use postbode::daemon::Client;
-use postbode::paths::Paths;
+use postvak::daemon::Client;
+use postvak::paths::Paths;
 use tempfile::TempDir;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,10 +30,10 @@ fn exe() -> &'static Path {
         .get_or_init(|| {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
-            let script = dir.path().join("postbode");
+            let script = dir.path().join("postvak");
             let text = format!(
-                "#!/bin/sh\nPOSTBODE_IDLE_EXIT_SECS=1 exec '{}' \"$@\"\n",
-                env!("CARGO_BIN_EXE_postbode")
+                "#!/bin/sh\nPOSTVAK_IDLE_EXIT_SECS=1 exec '{}' \"$@\"\n",
+                env!("CARGO_BIN_EXE_postvak")
             );
             std::fs::write(&script, text).unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -138,7 +138,7 @@ fn a_newer_daemon_is_left_running_and_named() {
     assert_eq!(
         error.to_string(),
         format!(
-            "the daemon is version {VERSION}, newer than this postbode (0.0.0-old); restart this program"
+            "the daemon is version {VERSION}, newer than this postvak (0.0.0-old); restart this program"
         )
     );
     assert_eq!(daemon.status().unwrap().pid, pid);

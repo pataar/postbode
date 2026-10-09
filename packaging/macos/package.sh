@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build Postbode.app and a DMG holding it; sign and notarize both when the secrets are there.
+# Build Postvak.app and a DMG holding it; sign and notarize both when the secrets are there.
 #
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build]
 #   --arch        what to build (default universal: both architectures joined with lipo)
-#   --skip-build  reuse target/<triple>/release/postbode from an earlier build
+#   --skip-build  reuse target/<triple>/release/postvak from an earlier build
 #
 # Runs on macOS only, with its stock bash 3.2 too (lipo, iconutil, codesign, hdiutil, xcrun). Needs the Rust targets:
 #   rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -15,7 +15,7 @@
 #   APPLE_PASSWORD       app-specific password of that Apple ID
 #   APPLE_TEAM_ID        team id of the Developer ID certificate
 #
-# Writes dist/macos/Postbode.app and dist/macos/postbode-<version>-macos-<arch>.dmg, and prints the DMG's sha256.
+# Writes dist/macos/Postvak.app and dist/macos/postvak-<version>-macos-<arch>.dmg, and prints the DMG's sha256.
 set -euo pipefail
 
 # Keep equal to LSMinimumSystemVersion in Info.plist.in (and the cask's depends_on macos).
@@ -64,22 +64,22 @@ for triple in "${triples[@]}"; do
     if [ "$skip_build" = false ]; then
         cargo build --manifest-path "$root/Cargo.toml" --release --locked --target "$triple"
     fi
-    bin=$root/target/$triple/release/postbode
+    bin=$root/target/$triple/release/postvak
     [ -x "$bin" ] || { echo "missing $bin; build it or drop --skip-build" >&2; exit 1; }
     bins+=("$bin")
 done
 
 # --- bundle ----------------------------------------------------------------------------------------------------
-app=$out/Postbode.app
+app=$out/Postvak.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 if [ "${#bins[@]}" -gt 1 ]; then
-    lipo -create "${bins[@]}" -output "$app/Contents/MacOS/postbode"
+    lipo -create "${bins[@]}" -output "$app/Contents/MacOS/postvak"
 else
-    cp "${bins[0]}" "$app/Contents/MacOS/postbode"
+    cp "${bins[0]}" "$app/Contents/MacOS/postvak"
 fi
-lipo -info "$app/Contents/MacOS/postbode"
-iconutil -c icns "$root/assets/macos.iconset" -o "$app/Contents/Resources/Postbode.icns"
+lipo -info "$app/Contents/MacOS/postvak"
+iconutil -c icns "$root/assets/macos.iconset" -o "$app/Contents/Resources/Postvak.icns"
 sed -e "s/@VERSION@/$version/g" -e "s/@SHORT_VERSION@/$short_version/g" -e "s/@BUILD_SHA@/$build_sha/g" \
     "$here/Info.plist.in" >"$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
@@ -101,7 +101,7 @@ fi
 sign_args+=(--sign "$identity" ${keychain_args[@]+"${keychain_args[@]}"})
 
 # Inside out: the executable, then the bundle. No --deep: it signs nested code with the wrong options.
-codesign "${sign_args[@]}" --entitlements "$here/entitlements.plist" "$app/Contents/MacOS/postbode"
+codesign "${sign_args[@]}" --entitlements "$here/entitlements.plist" "$app/Contents/MacOS/postvak"
 codesign "${sign_args[@]}" --entitlements "$here/entitlements.plist" "$app"
 codesign --verify --strict --deep --verbose=2 "$app"
 
@@ -132,7 +132,7 @@ notarize() {
 }
 
 if [ "$notarize" = true ]; then
-    zip=$out/Postbode.zip
+    zip=$out/Postvak.zip
     rm -f "$zip"
     ditto -c -k --keepParent "$app" "$zip"
     notarize "$zip"
@@ -143,15 +143,15 @@ if [ "$notarize" = true ]; then
 fi
 
 # --- DMG -------------------------------------------------------------------------------------------------------
-dmg=$out/postbode-$version-macos-$arch.dmg
+dmg=$out/postvak-$version-macos-$arch.dmg
 stage=$(mktemp -d)
 raw=$(mktemp -u).dmg
 trap 'rm -rf "$stage" "$raw"' EXIT
-ditto "$app" "$stage/Postbode.app"
+ditto "$app" "$stage/Postvak.app"
 ln -s /Applications "$stage/Applications"
 rm -f "$dmg"
 # makehybrid + convert instead of `hdiutil create -srcfolder`, which fails intermittently on CI runners.
-hdiutil makehybrid -hfs -hfs-volume-name Postbode -hfs-openfolder "$stage" -o "$raw" "$stage"
+hdiutil makehybrid -hfs -hfs-volume-name Postvak -hfs-openfolder "$stage" -o "$raw" "$stage"
 hdiutil convert "$raw" -format UDZO -o "$dmg"
 
 if [ "$identity" != - ]; then

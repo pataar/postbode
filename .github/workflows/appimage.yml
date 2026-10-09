@@ -1,4 +1,4 @@
-# Postbode as an AppImage per Linux architecture, attached to the GitHub release. It repackages dist's release
+# Postvak as an AppImage per Linux architecture, attached to the GitHub release. It repackages dist's release
 # binaries, so nothing compiles twice. Separate from release.yml, which dist generates and owns.
 name: AppImage
 
@@ -72,13 +72,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
-          ARCHIVE: postbode-${{ matrix.arch }}-unknown-linux-gnu.tar.xz
+          ARCHIVE: postvak-${{ matrix.arch }}-unknown-linux-gnu.tar.xz
         run: |
           mkdir -p "$RUNNER_TEMP/release" && cd "$RUNNER_TEMP/release"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ARCHIVE" --pattern "$ARCHIVE.sha256"
           sha256sum -c "$ARCHIVE.sha256"
           tar -xJf "$ARCHIVE"
-          echo "BINARY=$(find "$PWD" -type f -name postbode | head -n1)" >>"$GITHUB_ENV"
+          echo "BINARY=$(find "$PWD" -type f -name postvak | head -n1)" >>"$GITHUB_ENV"
       - name: Download appimagetool and the runtime
         env:
           ARCH: ${{ matrix.arch }}
@@ -97,17 +97,17 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           mkdir -p dist
-          packaging/linux/appimage.sh "$BINARY" "$ARCH" "dist/postbode-$ARCH.AppImage"
+          packaging/linux/appimage.sh "$BINARY" "$ARCH" "dist/postvak-$ARCH.AppImage"
       - name: Smoke test
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          "dist/postbode-$ARCH.AppImage" --version
-          "dist/postbode-$ARCH.AppImage" --help >/dev/null
+          "dist/postvak-$ARCH.AppImage" --version
+          "dist/postvak-$ARCH.AppImage" --help >/dev/null
       - uses: actions/upload-artifact@v7
         with:
           name: appimage-${{ matrix.arch }}
-          path: dist/postbode-${{ matrix.arch }}.AppImage
+          path: dist/postvak-${{ matrix.arch }}.AppImage
           retention-days: 7
           if-no-files-found: error
     outputs:

@@ -103,7 +103,7 @@ img[src$="#gh-dark-mode-only"],
     display: inline;
 }
 
-/* The logo replaces the title text; font-size 0 keeps "Postbode" for screen readers. */
+/* The logo replaces the title text; font-size 0 keeps "Postvak" for screen readers. */
 .menu-title {
     background: url("../logo.svg") center / contain no-repeat;
     font-size: 0;

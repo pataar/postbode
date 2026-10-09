@@ -22,15 +22,15 @@ use std::sync::Once;
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 
-use postbode::daemon::wire::{
+use postvak::daemon::wire::{
     self, AccountStatus, ClientMessage, DaemonMessage, Outcome, Payload, Status,
 };
-use postbode::message::{
+use postvak::message::{
     attachments, bare_addresses, body_text, clean, header_value, html_body, parse_headers,
     save_attachment, thread_id,
 };
-use postbode::rules::{self, Action, HeaderMatch, Match, OneOrMany, Rule, RuleFile, TextMatch};
-use postbode::sync::{Activity, Command, Event};
+use postvak::rules::{self, Action, HeaderMatch, Match, OneOrMany, Rule, RuleFile, TextMatch};
+use postvak::sync::{Activity, Command, Event};
 
 /// Cases per property unless `PROPTEST_CASES` is set.
 const DEFAULT_CASES: u32 = 64;

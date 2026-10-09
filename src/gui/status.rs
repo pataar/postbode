@@ -559,7 +559,7 @@ mod tests {
             .collect();
         assert_eq!(
             opened,
-            ["https://github.com/pataar/postbode/releases/tag/v9.9.9"]
+            ["https://github.com/postvak-app/postvak/releases/tag/v9.9.9"]
         );
     }
 

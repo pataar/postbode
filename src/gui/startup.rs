@@ -10,8 +10,8 @@ use crate::message::clean;
 use super::app::central_panel;
 use super::theme;
 
-/// Where the docs explain `postbode account add` and config.toml.
-pub(crate) const ACCOUNTS_DOCS: &str = "https://postbode.pataar.nl/accounts.html";
+/// Where the docs explain `postvak account add` and config.toml.
+pub(crate) const ACCOUNTS_DOCS: &str = "https://postvak.pataar.nl/accounts.html";
 
 /// config.toml names no account, so the window has nothing to show.
 #[derive(Debug)]
@@ -19,7 +19,7 @@ pub(crate) struct NoAccounts;
 
 impl fmt::Display for NoAccounts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("no accounts configured; run `postbode account add`")
+        f.write_str("no accounts configured; run `postvak account add`")
     }
 }
 
@@ -41,18 +41,18 @@ impl Problem {
     pub fn of(error: &anyhow::Error, log: Option<&Path>) -> Problem {
         if error.is::<NoAccounts>() {
             return Problem {
-                summary: "Postbode has no mail account set up yet.".into(),
-                fix: "Run `postbode account add` in a terminal, then open Postbode again.".into(),
+                summary: "Postvak has no mail account set up yet.".into(),
+                fix: "Run `postvak account add` in a terminal, then open Postvak again.".into(),
                 detail: None,
                 link: Some(("Setting up an account", ACCOUNTS_DOCS)),
             };
         }
         let fix = match log {
             Some(log) => format!("The background sync logs to {}", log.display()),
-            None => "Run `postbode gui` in a terminal to see more.".into(),
+            None => "Run `postvak gui` in a terminal to see more.".into(),
         };
         Problem {
-            summary: "Postbode could not start.".into(),
+            summary: "Postvak could not start.".into(),
             fix,
             detail: Some(clean(&format!("{error:#}"), false)),
             link: None,
@@ -107,8 +107,8 @@ mod tests {
     #[test]
     fn no_accounts_points_to_account_add_and_the_docs() {
         let problem = Problem::of(&anyhow::Error::new(NoAccounts), Some(Path::new("/l")));
-        assert_eq!(problem.summary, "Postbode has no mail account set up yet.");
-        assert!(problem.fix.contains("`postbode account add`"));
+        assert_eq!(problem.summary, "Postvak has no mail account set up yet.");
+        assert!(problem.fix.contains("`postvak account add`"));
         assert_eq!(problem.link, Some(("Setting up an account", ACCOUNTS_DOCS)));
         assert_eq!(problem.detail, None);
     }
@@ -117,14 +117,14 @@ mod tests {
     fn no_accounts_is_found_under_context() {
         let error = anyhow::Error::new(NoAccounts).context("opening the window");
         let problem = Problem::of(&error, None);
-        assert_eq!(problem.summary, "Postbode has no mail account set up yet.");
+        assert_eq!(problem.summary, "Postvak has no mail account set up yet.");
     }
 
     #[test]
     fn other_errors_show_their_text_and_the_daemon_log() {
         let error = anyhow::anyhow!("socket refused").context("could not start the daemon");
         let problem = Problem::of(&error, Some(Path::new("/state/daemon.log")));
-        assert_eq!(problem.summary, "Postbode could not start.");
+        assert_eq!(problem.summary, "Postvak could not start.");
         assert_eq!(problem.fix, "The background sync logs to /state/daemon.log");
         assert_eq!(
             problem.detail.as_deref(),
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn without_paths_the_fix_is_to_run_it_in_a_terminal() {
         let problem = Problem::of(&anyhow::anyhow!("no home directory found"), None);
-        assert_eq!(problem.fix, "Run `postbode gui` in a terminal to see more.");
+        assert_eq!(problem.fix, "Run `postvak gui` in a terminal to see more.");
         assert_eq!(problem.detail.as_deref(), Some("no home directory found"));
         assert_eq!(problem.link, None);
     }
@@ -144,8 +144,8 @@ mod tests {
     fn the_window_states_the_missing_account() {
         let mut harness = harness(Problem::of(&anyhow::Error::new(NoAccounts), None));
         harness.run();
-        harness.get_by_label("Postbode has no mail account set up yet.");
-        harness.get_by_label_contains("Run `postbode account add` in a terminal");
+        harness.get_by_label("Postvak has no mail account set up yet.");
+        harness.get_by_label_contains("Run `postvak account add` in a terminal");
         harness.get_by_label("Close");
     }
 
@@ -173,7 +173,7 @@ mod tests {
         let error = anyhow::anyhow!("could not start the daemon");
         let mut harness = harness(Problem::of(&error, Some(Path::new("/state/daemon.log"))));
         harness.run();
-        harness.get_by_label("Postbode could not start.");
+        harness.get_by_label("Postvak could not start.");
         harness.get_by_label("could not start the daemon");
         harness.get_by_label("The background sync logs to /state/daemon.log");
     }

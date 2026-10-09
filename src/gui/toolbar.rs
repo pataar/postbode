@@ -28,7 +28,7 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
                 }
                 let serif = egui::FontFamily::Name(super::theme::SERIF.into());
                 ui.label(
-                    egui::RichText::new("Postbode")
+                    egui::RichText::new("Postvak")
                         .family(serif)
                         .size(19.0)
                         .strong(),
@@ -195,7 +195,7 @@ mod tests {
     fn the_wordmark_lines_up_with_the_action_buttons() {
         let fx = Fixture::new(&["work"]);
         let (harness, _wires) = fx.harness();
-        let wordmark = harness.get_by_label("Postbode").rect().center().y;
+        let wordmark = harness.get_by_label("Postvak").rect().center().y;
         let archive = harness.get_by_label(ACTIONS[0]).rect().center().y;
         assert!((wordmark - archive).abs() <= 1.0, "{wordmark} vs {archive}");
     }

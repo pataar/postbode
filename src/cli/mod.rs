@@ -6,23 +6,23 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use clap::{Parser, Subcommand};
 
-use postbode::config::{AccountConfig, Config, Identity, PasswordSource};
-use postbode::credentials::{self, Secret};
-use postbode::daemon::Client;
-use postbode::daemon::client::LazyClient;
-use postbode::daemon::wire::{AccountStatus, Status};
-use postbode::mail_ops::MailOps;
-use postbode::message::clean;
-use postbode::paths::Paths;
-use postbode::rules::{Action, CompiledRule, Rule, RuleFile};
-use postbode::store::{Message, Store};
-use postbode::sync::{self, Event};
-use postbode::time;
-use postbode::trash::Trash;
+use postvak::config::{AccountConfig, Config, Identity, PasswordSource};
+use postvak::credentials::{self, Secret};
+use postvak::daemon::Client;
+use postvak::daemon::client::LazyClient;
+use postvak::daemon::wire::{AccountStatus, Status};
+use postvak::mail_ops::MailOps;
+use postvak::message::clean;
+use postvak::paths::Paths;
+use postvak::rules::{Action, CompiledRule, Rule, RuleFile};
+use postvak::store::{Message, Store};
+use postvak::sync::{self, Event};
+use postvak::time;
+use postvak::trash::Trash;
 
 #[derive(Parser)]
 #[command(
-    name = "postbode",
+    name = "postvak",
     version,
     about = "A fast, simple mail client with automatic mailbox rules"
 )]
@@ -88,14 +88,14 @@ enum Command {
         #[command(subcommand)]
         command: RulesCommand,
     },
-    #[command(about = postbode::help::FOLDERS)]
+    #[command(about = postvak::help::FOLDERS)]
     Folders {
         #[arg(long)]
         account: Option<String>,
         #[arg(long)]
         json: bool,
     },
-    #[command(about = postbode::help::LIST)]
+    #[command(about = postvak::help::LIST)]
     List {
         #[arg(long)]
         account: Option<String>,
@@ -109,7 +109,7 @@ enum Command {
         #[arg(long)]
         threads: bool,
     },
-    #[command(about = postbode::help::SEARCH)]
+    #[command(about = postvak::help::SEARCH)]
     Search {
         query: String,
         #[arg(long)]
@@ -124,7 +124,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    #[command(about = postbode::help::SHOW)]
+    #[command(about = postvak::help::SHOW)]
     Show {
         uid: u32,
         #[arg(long)]
@@ -137,31 +137,31 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    #[command(about = postbode::help::MARK)]
+    #[command(about = postvak::help::MARK)]
     Mark {
         #[arg(value_enum)]
         how: Mark,
         #[command(flatten)]
         selection: Selection,
     },
-    #[command(about = postbode::help::MOVE)]
+    #[command(about = postvak::help::MOVE)]
     Move {
         #[arg(long)]
         to: String,
         #[command(flatten)]
         selection: Selection,
     },
-    #[command(about = postbode::help::ARCHIVE)]
+    #[command(about = postvak::help::ARCHIVE)]
     Archive {
         #[command(flatten)]
         selection: Selection,
     },
-    #[command(about = postbode::help::DELETE)]
+    #[command(about = postvak::help::DELETE)]
     Delete {
         #[command(flatten)]
         selection: Selection,
     },
-    #[command(about = postbode::help::LOG)]
+    #[command(about = postvak::help::LOG)]
     Log {
         #[arg(long)]
         account: Option<String>,
@@ -180,13 +180,13 @@ enum Command {
         #[command(subcommand)]
         command: AccountCommand,
     },
-    /// Print the agent guide: how an LLM should drive Postbode
+    /// Print the agent guide: how an LLM should drive Postvak
     Guide,
-    /// Serve Postbode to an agent host over MCP on stdio; hosts start this, see `postbode mcp install`
+    /// Serve Postvak to an agent host over MCP on stdio; hosts start this, see `postvak mcp install`
     #[command(args_conflicts_with_subcommands = true)]
     Mcp {
         /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
-        #[arg(long, default_value = postbode::help::MCP_DEFAULT_SCOPES)]
+        #[arg(long, default_value = postvak::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
         #[arg(long)]
@@ -222,12 +222,12 @@ enum ServiceCommand {
 
 #[derive(Subcommand)]
 enum McpCommand {
-    /// Register `postbode mcp` with an agent host; re-run it to change the scopes
+    /// Register `postvak mcp` with an agent host; re-run it to change the scopes
     Install {
         #[arg(value_enum)]
         target: InstallTarget,
         /// Comma-separated: read, read:bodies, rules:propose, rules:write, mail:modify
-        #[arg(long, default_value = postbode::help::MCP_DEFAULT_SCOPES)]
+        #[arg(long, default_value = postvak::help::MCP_DEFAULT_SCOPES)]
         scopes: String,
         /// Only this account; repeatable; default every account
         #[arg(long)]
@@ -250,7 +250,7 @@ enum InstallTarget {
 
 #[derive(Subcommand)]
 enum AttachmentCommand {
-    #[command(about = postbode::help::ATTACHMENT_LIST)]
+    #[command(about = postvak::help::ATTACHMENT_LIST)]
     List {
         uid: u32,
         #[arg(long)]
@@ -275,7 +275,7 @@ enum AttachmentCommand {
 
 #[derive(Subcommand)]
 enum RulesCommand {
-    #[command(about = postbode::help::RULES_CHECK)]
+    #[command(about = postvak::help::RULES_CHECK)]
     Check,
     /// Dry run: print what each rule would do to the cached messages; naming a rule previews it even while disabled
     Test {
@@ -287,7 +287,7 @@ enum RulesCommand {
         #[arg(long)]
         stdin: bool,
     },
-    #[command(about = postbode::help::RULES_SCHEMA)]
+    #[command(about = postvak::help::RULES_SCHEMA)]
     Schema,
     /// Read one rule as JSON on stdin and add it disabled, for a human to approve
     Propose {
@@ -295,11 +295,11 @@ enum RulesCommand {
         #[arg(long)]
         by: Option<String>,
     },
-    #[command(about = postbode::help::RULES_APPROVE)]
+    #[command(about = postvak::help::RULES_APPROVE)]
     Approve { name: String },
-    #[command(about = postbode::help::RULES_REJECT)]
+    #[command(about = postvak::help::RULES_REJECT)]
     Reject { name: String },
-    #[command(about = postbode::help::RULES_LIST)]
+    #[command(about = postvak::help::RULES_LIST)]
     List {
         #[arg(long)]
         json: bool,
@@ -320,7 +320,7 @@ enum TrashCommand {
         #[arg(long)]
         account: Option<String>,
     },
-    #[command(about = postbode::help::TRASH_RESTORE)]
+    #[command(about = postvak::help::TRASH_RESTORE)]
     Restore {
         file: String,
         #[arg(long)]
@@ -352,7 +352,7 @@ pub fn run() -> Result<()> {
     } else {
         Cli::parse()
     };
-    let paths = match std::env::var_os("POSTBODE_HOME") {
+    let paths = match std::env::var_os("POSTVAK_HOME") {
         Some(home) => Ok(Paths::under(Path::new(&home))),
         None => Paths::discover(),
     };
@@ -377,7 +377,7 @@ pub fn run() -> Result<()> {
                     let total = store.message_count(&f.name)?;
                     let unread = store.unread_count(&f.name)?;
                     if json {
-                        println!("{}", postbode::output::folder(&acc.name, &f, total, unread));
+                        println!("{}", postvak::output::folder(&acc.name, &f, total, unread));
                     } else {
                         println!("{}\t{}\t{total}\t{unread}", acc.name, clean(&f.name, false));
                     }
@@ -396,11 +396,11 @@ pub fn run() -> Result<()> {
                 let store = Store::open_account(&paths, &acc.name)?;
                 if threads {
                     for thread in store.threads(&folder, limit)? {
-                        for (m, depth) in thread.iter().zip(postbode::output::depths(&thread)) {
+                        for (m, depth) in thread.iter().zip(postvak::output::depths(&thread)) {
                             if json {
                                 let mut value = serde_json::to_value(m)?;
                                 value["depth"] = depth.into();
-                                println!("{}", postbode::output::with_account(&acc.name, &value)?);
+                                println!("{}", postvak::output::with_account(&acc.name, &value)?);
                             } else {
                                 println!("{}", message_line(&acc.name, m, depth));
                             }
@@ -410,7 +410,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in store.messages(&folder, limit)? {
                     if json {
-                        println!("{}", postbode::output::with_account(&acc.name, &m)?);
+                        println!("{}", postvak::output::with_account(&acc.name, &m)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -444,7 +444,7 @@ pub fn run() -> Result<()> {
                 }
                 for m in store.search(&query, folder.as_deref(), limit)? {
                     if json {
-                        println!("{}", postbode::output::with_account(&acc.name, &m)?);
+                        println!("{}", postvak::output::with_account(&acc.name, &m)?);
                     } else {
                         println!("{}", message_line(&acc.name, &m, 0));
                     }
@@ -470,7 +470,7 @@ pub fn run() -> Result<()> {
             } else if json {
                 println!(
                     "{}",
-                    serde_json::json!({ "account": acc.name, "message": msg, "body_text": postbode::message::body_text(&body) })
+                    serde_json::json!({ "account": acc.name, "message": msg, "body_text": postvak::message::body_text(&body) })
                 );
             } else {
                 println!(
@@ -479,7 +479,7 @@ pub fn run() -> Result<()> {
                     clean(msg.to_addr.as_deref().unwrap_or(""), false),
                     clean(msg.subject.as_deref().unwrap_or(""), false)
                 );
-                println!("{}", clean(&postbode::message::body_text(&body), true));
+                println!("{}", clean(&postvak::message::body_text(&body), true));
             }
             Ok(())
         }
@@ -509,7 +509,7 @@ pub fn run() -> Result<()> {
                 let store = Store::open_account(&paths, &acc.name)?;
                 for e in store.log(limit)? {
                     if json {
-                        println!("{}", postbode::output::with_account(&acc.name, &e)?);
+                        println!("{}", postvak::output::with_account(&acc.name, &e)?);
                     } else {
                         println!(
                             "{}  {}  {:<20} {:<12} {}/{}  {}",
@@ -532,7 +532,7 @@ pub fn run() -> Result<()> {
             AccountCommand::List { json } => {
                 for acc in &config.accounts {
                     if json {
-                        println!("{}", postbode::output::account(acc));
+                        println!("{}", postvak::output::account(acc));
                     } else {
                         println!(
                             "{}\t{}\t{}:{}",
@@ -569,7 +569,7 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
             match store.message(&selection.folder, uid)? {
                 Some(m) => println!(
                     "{}  {folder}/{uid}  {}",
-                    postbode::actions::planned_effect(&store, &m, &action)?,
+                    postvak::actions::planned_effect(&store, &m, &action)?,
                     clean(m.subject.as_deref().unwrap_or(""), false)
                 ),
                 None => {
@@ -579,7 +579,7 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
             }
         }
         if missing > 0 {
-            bail!("{missing} messages are not in the local store; run `postbode sync` first");
+            bail!("{missing} messages are not in the local store; run `postvak sync` first");
         }
         return Ok(());
     }
@@ -588,7 +588,7 @@ fn cmd_act(config: &Config, paths: &Paths, selection: Selection, action: Action)
         &selection.folder,
         &selection.uids,
         &action,
-        postbode::actions::RULE_NAME,
+        postvak::actions::RULE_NAME,
     )?;
     let mut failed = 0;
     for (uid, result) in &results {
@@ -665,7 +665,7 @@ fn print_new_mail(events: Receiver<Event>, accounts: &[&str]) {
         if let Event::NewMail { account, .. } = &event
             && accounts.contains(&account.as_str())
         {
-            postbode::daemon::report(&event);
+            postvak::daemon::report(&event);
         }
     }
 }
@@ -674,7 +674,7 @@ fn print_new_mail(events: Receiver<Event>, accounts: &[&str]) {
 fn sync_account(client: &Client, name: &str) -> bool {
     match client.request(name, sync::Command::SyncNow) {
         Ok(event) => {
-            postbode::daemon::report(&event);
+            postvak::daemon::report(&event);
             let errors = match &event {
                 Event::Synced { errors, .. } => errors.as_slice(),
                 _ => &[],
@@ -707,8 +707,8 @@ fn cmd_daemon(command: DaemonCommand, paths: &Paths) -> Result<()> {
 
 fn cmd_service(command: ServiceCommand, paths: &Paths) -> Result<()> {
     let text = match command {
-        ServiceCommand::Install { dry_run } => postbode::daemon::service::install(paths, dry_run)?,
-        ServiceCommand::Remove { dry_run } => postbode::daemon::service::remove(dry_run)?,
+        ServiceCommand::Install { dry_run } => postvak::daemon::service::install(paths, dry_run)?,
+        ServiceCommand::Remove { dry_run } => postvak::daemon::service::remove(dry_run)?,
     };
     println!("{text}");
     Ok(())
@@ -766,9 +766,9 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
     let raw = LazyClient::new(paths).raw_message(&acc.name, &store, &msg)?;
     match command {
         AttachmentCommand::List { json, .. } => {
-            for a in postbode::message::attachments(&raw) {
+            for a in postvak::message::attachments(&raw) {
                 if json {
-                    println!("{}", postbode::output::with_account(&acc.name, &a)?);
+                    println!("{}", postvak::output::with_account(&acc.name, &a)?);
                 } else {
                     println!(
                         "{}  {}  {}  {}",
@@ -781,7 +781,7 @@ fn cmd_attachment(command: AttachmentCommand, config: &Config, paths: &Paths) ->
             }
         }
         AttachmentCommand::Save { n, dir, .. } => {
-            let path = postbode::message::save_attachment(&raw, n, &dir)
+            let path = postvak::message::save_attachment(&raw, n, &dir)
                 .with_context(|| format!("saving attachment {n}"))?;
             println!("{}", clean(&path.display().to_string(), false));
         }
@@ -806,7 +806,7 @@ fn single_account<'a>(config: &'a Config, name: Option<&str>) -> Result<&'a Acco
             .account(n)
             .with_context(|| format!("no account named '{n}'")),
         (None, 1) => Ok(&config.accounts[0]),
-        (None, 0) => bail!("no accounts configured; run `postbode account add`"),
+        (None, 0) => bail!("no accounts configured; run `postvak account add`"),
         (None, _) => bail!("several accounts configured; pass --account"),
     }
 }
@@ -838,24 +838,24 @@ fn truncate(s: &str, width: usize) -> String {
     out
 }
 
-/// Finder and the Dock start Postbode.app with no arguments; that opens the window rather than printing help.
+/// Finder and the Dock start Postvak.app with no arguments; that opens the window rather than printing help.
 fn opened_as_mac_app() -> bool {
     use std::io::IsTerminal as _;
     cfg!(target_os = "macos")
         && std::env::current_exe().is_ok_and(|exe| {
             let args: Vec<_> = std::env::args_os().skip(1).collect();
-            postbode::paths::launched_as_app(&exe, &args, io::stdin().is_terminal())
+            postvak::paths::launched_as_app(&exe, &args, io::stdin().is_terminal())
         })
 }
 
 #[cfg(feature = "gui")]
 fn cmd_gui(paths: Result<Paths>) -> Result<()> {
-    postbode::gui::run(paths)
+    postvak::gui::run(paths)
 }
 
 #[cfg(not(feature = "gui"))]
 fn cmd_gui(_paths: Result<Paths>) -> Result<()> {
-    bail!("this postbode was built without the GUI; install it with the default features")
+    bail!("this postvak was built without the GUI; install it with the default features")
 }
 
 #[cfg(feature = "mcp")]
@@ -867,7 +867,7 @@ fn cmd_mcp(
     command: Option<McpCommand>,
 ) -> Result<()> {
     match command {
-        None => postbode::mcp::run(config, paths, scopes, accounts),
+        None => postvak::mcp::run(config, paths, scopes, accounts),
         Some(McpCommand::Install {
             target,
             scopes,
@@ -875,7 +875,7 @@ fn cmd_mcp(
             remove,
             dry_run,
         }) => {
-            use postbode::mcp::install::{Target, install};
+            use postvak::mcp::install::{Target, install};
             if let Some(name) = account.iter().find(|name| config.account(name).is_none()) {
                 bail!("no account named '{name}'");
             }
@@ -902,21 +902,21 @@ fn cmd_mcp(
     _accounts: &[String],
     _command: Option<McpCommand>,
 ) -> Result<()> {
-    bail!("this postbode was built without the MCP server; install it with the default features")
+    bail!("this postvak was built without the MCP server; install it with the default features")
 }
 
 /// Starts even without accounts: a login service would otherwise restart it in a loop, and accounts added to
 /// config.toml later start on their own.
 fn cmd_run(paths: &Paths, idle_exit: Option<u64>) -> Result<()> {
     // Test hook: lets tests idle an auto-started daemon out in seconds.
-    let override_secs = std::env::var("POSTBODE_IDLE_EXIT_SECS")
+    let override_secs = std::env::var("POSTVAK_IDLE_EXIT_SECS")
         .ok()
         .and_then(|secs| secs.parse().ok());
     let options = match idle_exit.map(|secs| override_secs.unwrap_or(secs)) {
-        Some(secs) => postbode::daemon::Options::auto_started(Duration::from_secs(secs)),
-        None => postbode::daemon::Options::foreground(),
+        Some(secs) => postvak::daemon::Options::auto_started(Duration::from_secs(secs)),
+        None => postvak::daemon::Options::foreground(),
     };
-    postbode::daemon::run(paths, options)
+    postvak::daemon::run(paths, options)
 }
 
 fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()> {
@@ -926,10 +926,10 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::List { json } => {
-            let file = postbode::rules::load(&paths.rules_file())?;
+            let file = postvak::rules::load(&paths.rules_file())?;
             for r in &file.rules {
                 if json {
-                    println!("{}", postbode::output::rule(r));
+                    println!("{}", postvak::output::rule(r));
                 } else {
                     println!(
                         "{}\t{}\t{}",
@@ -975,7 +975,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
                     })?;
                 failed |= !errors.is_empty();
                 for message in &errors {
-                    postbode::daemon::report_error(&acc.name, message);
+                    postvak::daemon::report_error(&acc.name, message);
                 }
                 println!("{}: {actions} actions on {evaluated} messages", acc.name);
             }
@@ -992,7 +992,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             let rules = if stdin {
                 let mut rule = read_rule_json()?;
                 rule.enabled = true;
-                postbode::rules::compile(&RuleFile { rules: vec![rule] })?
+                postvak::rules::compile(&RuleFile { rules: vec![rule] })?
             } else {
                 let mut rules = compiled_rules(paths, name.as_deref())?;
                 if name.is_some() {
@@ -1007,16 +1007,16 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Schema => {
-            print!("{}", postbode::rules::schema());
+            print!("{}", postvak::rules::schema());
             Ok(())
         }
         RulesCommand::Propose { by } => {
             let rule = read_rule_json()?;
             let name = rule.name.clone();
             let by = by.map_or_else(|| "cli".to_string(), |who| format!("cli:{who}"));
-            postbode::rules::edit::propose(&paths.rules_file(), rule, &by)?;
+            postvak::rules::edit::propose(&paths.rules_file(), rule, &by)?;
             println!(
-                "proposed '{}'; it stays disabled until a human runs `postbode rules approve`",
+                "proposed '{}'; it stays disabled until a human runs `postvak rules approve`",
                 clean(&name, false)
             );
             Ok(())
@@ -1024,7 +1024,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
         RulesCommand::Approve { name } => {
             let accounts: Vec<String> =
                 config.accounts.iter().map(|acc| acc.name.clone()).collect();
-            postbode::rules::edit::approve_from_now(paths, &accounts, &name, time::now())?;
+            postvak::rules::edit::approve_from_now(paths, &accounts, &name, time::now())?;
             println!(
                 "enabled '{}'; it acts on mail that arrives from now on",
                 clean(&name, false)
@@ -1032,7 +1032,7 @@ fn cmd_rules(command: RulesCommand, config: &Config, paths: &Paths) -> Result<()
             Ok(())
         }
         RulesCommand::Reject { name } => {
-            postbode::rules::edit::reject(&paths.rules_file(), &name)?;
+            postvak::rules::edit::reject(&paths.rules_file(), &name)?;
             println!("removed proposal '{}'", clean(&name, false));
             Ok(())
         }
@@ -1046,8 +1046,8 @@ fn read_rule_json() -> Result<Rule> {
 /// Compiles rules with `first_seen_at` left at 0 and without touching any store, so previews are
 /// side-effect free and cover mail that predates the rule. A `name` that matches no rule is an error.
 fn compiled_rules(paths: &Paths, name: Option<&str>) -> Result<Vec<CompiledRule>> {
-    let file = postbode::rules::load(&paths.rules_file())?;
-    let compiled: Vec<CompiledRule> = postbode::rules::compile(&file)?
+    let file = postvak::rules::load(&paths.rules_file())?;
+    let compiled: Vec<CompiledRule> = postvak::rules::compile(&file)?
         .into_iter()
         .filter(|r| name.is_none_or(|n| n == r.rule.name))
         .collect();
@@ -1065,7 +1065,7 @@ fn print_planned_actions(
     account: &AccountConfig,
     identity: &Identity,
 ) -> Result<()> {
-    for p in postbode::actions::planned(rules, store, account, identity, time::now())? {
+    for p in postvak::actions::planned(rules, store, account, identity, time::now())? {
         println!(
             "{}\t{}/{}\t{}\t{}",
             clean(&p.rule, false),
@@ -1085,7 +1085,7 @@ fn cmd_trash(command: TrashCommand, config: &Config, paths: &Paths) -> Result<()
                 for e in Trash::new(paths.trash_dir(&acc.name)).list()? {
                     let subject = std::fs::read(&e.path)
                         .ok()
-                        .and_then(|raw| postbode::message::parse_headers(&raw).subject)
+                        .and_then(|raw| postvak::message::parse_headers(&raw).subject)
                         .unwrap_or_default();
                     println!(
                         "{}  {}  {}/{}  {}  {}",
@@ -1163,7 +1163,7 @@ fn cmd_account_add(mut config: Config, paths: &Paths) -> Result<()> {
     };
     print!("Testing login... ");
     io::stdout().flush()?;
-    let mut ops = postbode::mail_ops::imap::ImapOps::connect(account, &secret)?;
+    let mut ops = postvak::mail_ops::imap::ImapOps::connect(account, &secret)?;
     let folders = ops.list_folders()?;
     println!("ok, {} folders", folders.len());
     if matches!(account.password, PasswordSource::Keyring { .. }) {
@@ -1190,13 +1190,13 @@ mod tests {
     fn cli_reference_is_current() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src/cli.md");
         let generated = clap_markdown::help_markdown::<Cli>();
-        if std::env::var_os("POSTBODE_BLESS").is_some() {
+        if std::env::var_os("POSTVAK_BLESS").is_some() {
             std::fs::write(path, &generated).unwrap();
         }
         assert_eq!(
             std::fs::read_to_string(path).unwrap(),
             generated,
-            "docs/src/cli.md is stale; run POSTBODE_BLESS=1 cargo test"
+            "docs/src/cli.md is stale; run POSTVAK_BLESS=1 cargo test"
         );
     }
 }

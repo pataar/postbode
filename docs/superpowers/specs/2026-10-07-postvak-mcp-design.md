@@ -1,16 +1,16 @@
-# Postbode MCP design
+# Postvak MCP design
 
-Date: 2026-10-07. Status: draft for review. Phase 3 of `2026-10-06-postbode-core-design.md`; that spec's §17 "MCP server (phase 3)" constraints apply and are restated where this design builds on them.
+Date: 2026-10-07. Status: draft for review. Phase 3 of `2026-10-06-postvak-core-design.md`; that spec's §17 "MCP server (phase 3)" constraints apply and are restated where this design builds on them.
 
 ## 1. Purpose and scope
 
-An agent host (Claude Desktop, Claude Code, or any MCP client) drives Postbode over MCP, both as a rule author and as an inbox assistant: it reads and searches mail, previews and proposes rules a human approves, and, when granted, acts on mail directly. It can do nothing it was not granted.
+An agent host (Claude Desktop, Claude Code, or any MCP client) drives Postvak over MCP, both as a rule author and as an inbox assistant: it reads and searches mail, previews and proposes rules a human approves, and, when granted, acts on mail directly. It can do nothing it was not granted.
 
 In scope:
-- `postbode mcp`: an MCP server on stdio, built on `rmcp` 3.x, speaking protocol `2026-07-28` and the older `initialize` versions `rmcp` supports.
+- `postvak mcp`: an MCP server on stdio, built on `rmcp` 3.x, speaking protocol `2026-07-28` and the older `initialize` versions `rmcp` supports.
 - Scopes and an account filter from the command line, set once in the host's config.
 - Tools mirroring the CLI's agent surface, with results in the CLI's `--json` shapes.
-- `postbode mcp install` for Claude Desktop, Claude Code, and a JSON snippet for other hosts.
+- `postvak mcp install` for Claude Desktop, Claude Code, and a JSON snippet for other hosts.
 - The GUI noticing store writes made by other processes.
 - Website documentation.
 
@@ -28,17 +28,17 @@ Out of scope, recorded in §10: the daemon and socket, saving attachments to dis
 | Scopes | `read`, `read:bodies`, `rules:propose`, `rules:write`, `mail:modify`; default `read,rules:propose` | Per-session grants (the protocol is stateless) |
 | Hidden tools | Tools outside the granted scopes are left out of `tools/list` | Listed but refused |
 | Texts | One source: the agent guide is the server description, the CLI help strings are the tool descriptions, `rules schema` is the propose input schema, CLI `--json` rows are the result rows | MCP-only docs |
-| Install | `postbode mcp install claude-desktop|claude-code|json`, re-runnable, `--remove`, `--dry-run` | Manual setup only |
+| Install | `postvak mcp install claude-desktop|claude-code|json`, re-runnable, `--remove`, `--dry-run` | Manual setup only |
 | Concurrency gap | GUI polls SQLite `data_version` with its 2 s file poll | Accept stale GUI rows until the next sync |
 
 ## 3. Command line
 
 ```
-postbode mcp [--scopes LIST] [--account NAME]...
-postbode mcp install <claude-desktop|claude-code|json> [--scopes LIST] [--account NAME]... [--remove] [--dry-run]
+postvak mcp [--scopes LIST] [--account NAME]...
+postvak mcp install <claude-desktop|claude-code|json> [--scopes LIST] [--account NAME]... [--remove] [--dry-run]
 ```
 
-`postbode mcp` without a subcommand runs the server; hosts call it. `--scopes` is a comma-separated list of the five scopes, default `read,rules:propose`; an unknown scope is an error naming the valid ones. `--account` (repeatable) limits the accounts the server sees at all; a name not in `config.toml` is an error. With no `--account`, every account is visible.
+`postvak mcp` without a subcommand runs the server; hosts call it. `--scopes` is a comma-separated list of the five scopes, default `read,rules:propose`; an unknown scope is an error naming the valid ones. `--account` (repeatable) limits the accounts the server sees at all; a name not in `config.toml` is an error. With no `--account`, every account is visible.
 
 The server exits non-zero at start when no accounts are configured.
 
@@ -49,15 +49,15 @@ src/mcp/
   mod.rs       run(): parse scopes, build Backend, serve rmcp on stdio
   backend.rs   Backend: store reads, actions over a short IMAP connection, sync; the only code touching store or IMAP
   tools.rs     tool definitions, scope filtering, result shaping, untrusted wrapping
-  install.rs   postbode mcp install
+  install.rs   postvak mcp install
 src/help.rs    help strings shared by clap and the MCP tool descriptions
 src/output.rs  JSON row builders shared by the CLI's --json and the MCP results
 ```
 
-- `mcp` is a library module behind a default-on `mcp` cargo feature (`dep:rmcp`); `--no-default-features` builds without it, like `gui`. `postbode mcp` exists in every build and explains when the feature is off, as `postbode gui` does.
+- `mcp` is a library module behind a default-on `mcp` cargo feature (`dep:rmcp`); `--no-default-features` builds without it, like `gui`. `postvak mcp` exists in every build and explains when the feature is off, as `postvak gui` does.
 - The tools never touch `Store`, `MailOps` or `rules.toml` directly; they call `Backend`. When the daemon (§10) exists, `Backend`'s internals send `Command`s over the socket instead, and the tools do not change.
-- `Backend` reuses the library: `Store` for reads, `actions::run` for direct actions (so a delete writes its `.eml` backup exactly as `postbode delete` does), `trash::Trash::restore`, `rules::edit` for proposals and approvals, and `sync::run_once` for `sync`.
-- Refactor of existing code, approved: the CLI's agent-facing help strings move to `postbode::help` constants that the clap derive attributes reference, and the CLI's `--json` row builders move to `postbode::output`. The CLI output and `docs/src/cli.md` do not change.
+- `Backend` reuses the library: `Store` for reads, `actions::run` for direct actions (so a delete writes its `.eml` backup exactly as `postvak delete` does), `trash::Trash::restore`, `rules::edit` for proposals and approvals, and `sync::run_once` for `sync`.
+- Refactor of existing code, approved: the CLI's agent-facing help strings move to `postvak::help` constants that the clap derive attributes reference, and the CLI's `--json` row builders move to `postvak::output`. The CLI output and `docs/src/cli.md` do not change.
 
 ## 5. Tools
 
@@ -92,7 +92,7 @@ Tool names follow the CLI commands so the agent guide's examples carry over. Res
 
 `sync` runs per visible account. It tries the account lock (`<state>/accounts/<name>/sync.lock`):
 - free: take it, run one sync with rules (`sync::run_once`), release it, and report new messages and actions;
-- held: report `{"account": "...", "synced_by": "another Postbode process", "pid": N}` and do not sync, so rules never run twice.
+- held: report `{"account": "...", "synced_by": "another Postvak process", "pid": N}` and do not sync, so rules never run twice.
 
 The lock helper moves from `engine.rs` to a small public function both use.
 
@@ -107,17 +107,17 @@ The lock helper moves from `engine.rs` to a small public function both use.
 - Logs go to stderr only; stdout carries the protocol. No MCP logging capability.
 - The server description in `server/discover` and `initialize` is `docs/src/agent-guide.md`.
 
-## 8. `postbode mcp install`
+## 8. `postvak mcp install`
 
-- The registered command is the absolute path of the running `postbode` binary plus `mcp` and the given `--scopes` and `--account` options. Hosts started from the Dock do not inherit the shell's PATH.
+- The registered command is the absolute path of the running `postvak` binary plus `mcp` and the given `--scopes` and `--account` options. Hosts started from the Dock do not inherit the shell's PATH.
 - `claude-desktop`:
   - edits `claude_desktop_config.json` in `~/Library/Application Support/Claude/` (macOS) or `~/.config/Claude/` (Linux);
-  - sets only `mcpServers.postbode`, keeping every other key;
+  - sets only `mcpServers.postvak`, keeping every other key;
   - copies the old file to `claude_desktop_config.json.bak` first and writes atomically;
   - refuses to touch a file that is not valid JSON;
-  - ends with "Restart Claude Desktop to load Postbode."
-- `claude-code`: runs `claude mcp add --scope user postbode -- <command>` when `claude` is on PATH, replacing an existing `postbode` entry; otherwise prints that command.
-- `json`: prints `{"mcpServers": {"postbode": {"command": …, "args": […]}}}` for other hosts.
+  - ends with "Restart Claude Desktop to load Postvak."
+- `claude-code`: runs `claude mcp add --scope user postvak -- <command>` when `claude` is on PATH, replacing an existing `postvak` entry; otherwise prints that command.
+- `json`: prints `{"mcpServers": {"postvak": {"command": …, "args": […]}}}` for other hosts.
 - `--remove` takes the entry out again. `--dry-run` prints the change and writes nothing.
 - The output always lists the granted scopes and shows how to widen them, for example `--scopes read,read:bodies,rules:propose,mail:modify` for an inbox assistant.
 
@@ -135,16 +135,16 @@ The GUI's 2 s file poll also reads SQLite's `PRAGMA data_version` on each accoun
 ## 11. Documentation
 
 - New page `docs/src/mcp.md`, "Agents over MCP", in `SUMMARY.md` after the agent guide:
-  - setup with `postbode mcp install` and the JSON snippet;
+  - setup with `postvak mcp install` and the JSON snippet;
   - a table of scopes, and three example grants (read-only, rule author, inbox assistant);
   - the tools by scope;
   - safety: untrusted mail, host confirmations, `dry_run`, `--account`;
   - GUI and MCP together, and the `sync` tool;
   - troubleshooting: restart the host, read stderr, widen scopes.
 - `docs/src/agent-guide.md` gains a short "Over MCP" section mapping the CLI commands to the tool names.
-- `docs/src/index.md` and `README.md` replace "An MCP server follows." with a pointer to the MCP page and add `postbode mcp install claude-desktop` to the quickstart.
+- `docs/src/index.md` and `README.md` replace "An MCP server follows." with a pointer to the MCP page and add `postvak mcp install claude-desktop` to the quickstart.
 - `docs/src/cli.md` is regenerated; the `AGENTS.md` module map gains `mcp`, `help` and `output`.
-- Doc tests: the snippet on the MCP page equals `postbode mcp install json` output for the default scopes, and the scopes table lists every scope.
+- Doc tests: the snippet on the MCP page equals `postvak mcp install json` output for the default scopes, and the scopes table lists every scope.
 
 ## 12. Testing
 

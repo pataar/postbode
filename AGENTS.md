@@ -1,6 +1,6 @@
-# Postbode — notes for agents
+# Postvak — notes for agents
 
-Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it before changing behaviour.
+Spec: `docs/superpowers/specs/2026-10-06-postvak-core-design.md`. Read it before changing behaviour.
 
 ## Module map
 - `actions` direct actions on chosen messages (mark, move, archive, delete); same `apply` as rules
@@ -33,7 +33,7 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - Platform coverage reported honestly: say "compiled on" vs "ran on"
 - Every new dependency has a one-line reason in `Cargo.toml`
 - Do not broaden a task into adjacent features
-- After changing CLI flags or rule types, run `POSTBODE_BLESS=1 cargo test` to regenerate `docs/src/cli.md` and `docs/src/rules.schema.json`, and commit them
+- After changing CLI flags or rule types, run `POSTVAK_BLESS=1 cargo test` to regenerate `docs/src/cli.md` and `docs/src/rules.schema.json`, and commit them
 - After GUI work, run `TZ=UTC UPDATE_SNAPSHOTS=1 cargo test gui::snapshots` on Linux with lavapipe (`mesa-vulkan-drivers`) and look at the changed PNGs in `tests/snapshots/`
 - Prose lives in `docs/src/`; `README.md` contains `docs/src/index.md` verbatim
 
@@ -42,11 +42,11 @@ Spec: `docs/superpowers/specs/2026-10-06-postbode-core-design.md`. Read it befor
 - Schema, counts and your own test fixtures are fine
 
 ## Live IMAP tests
-`tests/imap_live.rs` runs against two local Dovecot servers and is skipped unless `POSTBODE_TEST_IMAP_HOST` is set:
+`tests/imap_live.rs` runs against two local Dovecot servers and is skipped unless `POSTVAK_TEST_IMAP_HOST` is set:
 
 ```sh
 docker compose -f tests/dovecot/compose.yml up -d
-POSTBODE_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
+POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 ```
 
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as its own throwaway user. `tests/dovecot/gen-certs.sh` regenerates the test-only CA.
@@ -63,13 +63,13 @@ Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as
 Run `packaging/icons.sh` after changing `assets/icon.svg`, and commit what it writes.
 
 ## Releasing
-Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `pataar/homebrew-tap`. On the tag, `macos-app.yml` runs `packaging/macos/package.sh` on macOS (Postbode.app on a DMG, notarized once the Apple secrets below exist), attaches the DMG to the release and writes `Casks/postbode.rb` in the tap from `packaging/macos/postbode.rb.in`; rerun it for a tag via workflow_dispatch. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand. The same tag starts `appimage.yml`, which waits for that release, repackages its Linux binaries as AppImages (`packaging/linux/appimage.sh`, pinned appimagetool and runtime) and attaches them.
+Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `postvak-app/homebrew-tap`. On the tag, `macos-app.yml` runs `packaging/macos/package.sh` on macOS (Postvak.app on a DMG, notarized once the Apple secrets below exist), attaches the DMG to the release and writes `Casks/postvak.rb` in the tap from `packaging/macos/postvak.rb.in`; rerun it for a tag via workflow_dispatch. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand. The same tag starts `appimage.yml`, which waits for that release, repackages its Linux binaries as AppImages (`packaging/linux/appimage.sh`, pinned appimagetool and runtime) and attaches them.
 
 One-time setup, by the repo owner:
-1. `pataar/homebrew-tap` already exists (it also holds `gast`); dist adds `Formula/postbode.rb` beside the other formulas.
-2. Add repo secret `HOMEBREW_TAP_TOKEN` to `pataar/postbode`: a fine-grained token with Contents read/write on `pataar/homebrew-tap` (the token gast uses for its tap works too).
-3. Add repo secret `RELEASE_PLZ_TOKEN`: a fine-grained token with Contents and Pull requests read/write on `pataar/postbode`.
-4. Publish 0.1.0 by hand (crates.io requires the first publish with a token): `cargo publish`, then `git tag v0.1.0 && git push origin v0.1.0` to run the first dist release.
-5. On crates.io, add a trusted publisher for `postbode`: repository `pataar/postbode`, workflow `release-plz.yml`.
-6. For the macOS app, add repo secrets: `APPLE_CERTIFICATE` (base64 of the Developer ID Application .p12), `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD` (any random string), `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`. Without them the DMG is signed ad hoc, and the cask keeps a `postflight` that clears the quarantine flag (the `@ADHOC@` lines in `packaging/macos/postbode.rb.in`); with them those lines are dropped. The packaging has never run on a Mac before its first PR run; check that DMG by hand once.
+1. Create `postvak-app/homebrew-tap` (public, empty); dist writes `Formula/postvak.rb` and `macos-app.yml` writes `Casks/postvak.rb`.
+2. Add repo secret `HOMEBREW_TAP_TOKEN` to `postvak-app/postvak`: a fine-grained token with Contents read/write on `postvak-app/homebrew-tap`.
+3. Add repo secret `RELEASE_PLZ_TOKEN`: a fine-grained token with Contents and Pull requests read/write on `postvak-app/postvak`.
+4. Publish the current version by hand (crates.io requires the first publish of a crate with a token): `cargo publish`, then `git tag vX.Y.Z && git push origin vX.Y.Z` to run the first dist release.
+5. On crates.io, add a trusted publisher for `postvak`: repository `postvak-app/postvak`, workflow `release-plz.yml`.
+6. For the macOS app, add repo secrets: `APPLE_CERTIFICATE` (base64 of the Developer ID Application .p12), `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD` (any random string), `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`. Without them the DMG is signed ad hoc, and the cask keeps a `postflight` that clears the quarantine flag (the `@ADHOC@` lines in `packaging/macos/postvak.rb.in`); with them those lines are dropped. The packaging has never run on a Mac before its first PR run; check that DMG by hand once.
 7. Under Settings → Code security, enable Dependabot alerts and security updates; version updates come from `.github/dependabot.yml`.

@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 
 use crate::config::{AccountConfig, PasswordSource};
 
-const SERVICE: &str = "postbode";
+const SERVICE: &str = "postvak";
 
 pub struct Secret(Zeroizing<String>);
 
@@ -22,7 +22,7 @@ impl Secret {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialError {
-    #[error("no password stored for account '{0}'; run `postbode account add`")]
+    #[error("no password stored for account '{0}'; run `postvak account add`")]
     NotFound(String),
     #[error("the keyring is locked or denied access")]
     Locked,

@@ -1,14 +1,14 @@
-# Postbode GUI design
+# Postvak GUI design
 
-Date: 2026-10-06. Status: draft for review. Phase 2 of `2026-10-06-postbode-core-design.md`; that spec's §17 constraints apply and are restated where this design builds on them.
+Date: 2026-10-06. Status: draft for review. Phase 2 of `2026-10-06-postvak-core-design.md`; that spec's §17 constraints apply and are restated where this design builds on them.
 
 ## 1. Purpose and scope
 
 A daily mail reader: keyboard-driven triage of the local store, with the sync loop running inside the GUI process. Rule management is secondary and minimal. Sending stays in another client until phase 4.
 
 In scope:
-- `postbode gui`: three-column window (folders, collapsed threads, text body), keyboard actions, local search.
-- A library `engine` that both `postbode run` and the GUI use to run the account threads.
+- `postvak gui`: three-column window (folders, collapsed threads, text body), keyboard actions, local search.
+- A library `engine` that both `postvak run` and the GUI use to run the account threads.
 - Commands from the UI into the account threads, one IMAP connection per account.
 - Live activity and progress, including chunked, resumable first sync.
 - Rules view (proposals, enable switch, open in editor), activity log, trash with restore.
@@ -27,8 +27,8 @@ Out of scope, recorded in §11: compose and send, HTML rendering, unified inbox,
 | Accounts | One tree per account | Unified inbox |
 | Rules UI | Proposals, enable switch, open in editor, log, trash | Rule-from-message form; full form editor |
 | UI to IMAP | Commands into the existing account thread; IDLE woken by a flag | Second action connection per account; connection per action |
-| Packaging | `gui` cargo feature, on by default; `postbode gui` | Separate binary; workspace |
-| Thread spawning | `postbode::engine`, shared by `run` and `gui` | Each front end spawns its own threads |
+| Packaging | `gui` cargo feature, on by default; `postvak gui` | Separate binary; workspace |
+| Thread spawning | `postvak::engine`, shared by `run` and `gui` | Each front end spawns its own threads |
 | Concurrent processes | Per-account lock file; a second process gets that account read-only | Allow, and run rules twice |
 | First sync | `UID SEARCH`, then envelopes 500 messages at a time, one transaction each, resumable | One fetch per folder; 500-UID ranges (sparse UIDs) |
 | Mark read | 1 s after the user opens a message, text on screen | On selection; never automatically |
@@ -41,7 +41,7 @@ The SQLCipher row settles the open question in core §17. The `egui_kittest` row
 
 `Cargo.toml` gains feature `gui = ["dep:eframe"]`, in `default`. `eframe` 0.36 with its default features (wgpu backend, X11 and Wayland loaded at runtime) is the only new runtime dependency. `egui_kittest` 0.36 is a dev-dependency. `cargo build --no-default-features` builds the CLI without the GUI; CI builds it once.
 
-`postbode gui` opens the window. Bare `postbode` keeps printing help.
+`postvak gui` opens the window. Bare `postvak` keeps printing help.
 
 New module `src/engine.rs`:
 
@@ -82,9 +82,9 @@ pub enum Command {
 }
 ```
 
-- `Apply` runs `actions::run`, so a delete writes its `.eml` backup first, exactly like a rule delete or `postbode delete`.
+- `Apply` runs `actions::run`, so a delete writes its `.eml` backup first, exactly like a rule delete or `postvak delete`.
 - `FetchBody` downloads the raw message, stores it and indexes `body_text`, as `ensure_raw` does for rules.
-- `Restore` runs `Trash::restore(ops, file) -> folder`: APPEND with the restored keyword, then remove the file. This logic moves from `cli/mod.rs` into `trash.rs`, and `postbode trash restore` calls it too.
+- `Restore` runs `Trash::restore(ops, file) -> folder`: APPEND with the restored keyword, then remove the file. This logic moves from `cli/mod.rs` into `trash.rs`, and `postvak trash restore` calls it too.
 - `SyncNow` makes the next pass a full one.
 
 `run_loop` takes a `Receiver<Command>` and a per-account `Arc<AtomicBool>` wake flag. The flag is the `interrupt` passed to `MailOps::idle`, so a command ends IDLE within 500 ms. `Engine::stop` sets the shared shutdown flag and every wake flag; the loop tells the two apart by checking shutdown.
@@ -180,7 +180,7 @@ src/gui/
 egui ships light and dark themes, and eframe follows the OS setting when the preference is `System`, switching live when the OS switches.
 - `config.toml` gains an optional `[ui]` table: `theme = "system" | "light" | "dark"`, default `"system"`. Unknown values fail `Config::load` like any other bad field.
 - The status bar has a three-way switch (system, light, dark). Choosing one applies at once through `ctx.set_theme(ThemePreference)` and writes `[ui] theme` with `toml_edit`, keeping comments. The app records the file's new modification time, so its own write does not raise the "config.toml changed" banner.
-- `postbode` without the `gui` feature parses and ignores `[ui]`.
+- `postvak` without the `gui` feature parses and ignores `[ui]`.
 
 ### Visual identity: Ossenbloed
 
@@ -222,7 +222,7 @@ Actions apply to the multi-selection when there is one, else to the current row.
 
 **Search.** `/` opens a field above the list. It runs `store.search` over the current account, at most 500 results, shown as flat rows with their folder. `Esc` returns to the folder. Bodies not yet downloaded are not searched; the result header says so.
 
-**Body panel.** From, To, Cc, Date, Subject, then the selectable text from `body_text` (HTML-only mail shows its extracted text; with the `html` feature, mail with an HTML part shows the HTML view of `2026-10-07-postbode-html-design.md` instead). Links are found by scanning the text for `http://`, `https://` and `mailto:`; only those three schemes are clickable and passed to `ctx.open_url`. Attachments listed by name and size, each with **Save**, writing through `message::save_attachment` into the Downloads dir from `directories::UserDirs` (home if none), never overwriting, and showing the path written. If the body is not stored: "Loading…" and a `FetchBody`; when the account is offline, "Not downloaded; loads when work reconnects."
+**Body panel.** From, To, Cc, Date, Subject, then the selectable text from `body_text` (HTML-only mail shows its extracted text; with the `html` feature, mail with an HTML part shows the HTML view of `2026-10-07-postvak-html-design.md` instead). Links are found by scanning the text for `http://`, `https://` and `mailto:`; only those three schemes are clickable and passed to `ctx.open_url`. Attachments listed by name and size, each with **Save**, writing through `message::save_attachment` into the Downloads dir from `directories::UserDirs` (home if none), never overwriting, and showing the path written. If the body is not stored: "Loading…" and a `FetchBody`; when the account is offline, "Not downloaded; loads when work reconnects."
 
 **Read state.** A message is marked read after the user opens it (by moving to it, clicking it, or landing on it after an archive or delete) and its text has been on screen for 1 s, measured with egui's input time so tests can drive it. A message shown passively (at startup, after a folder switch, or while typing a search) is not marked.
 
@@ -257,8 +257,8 @@ Three fixed entries below the account trees; selecting one replaces the list and
 
 **Applying changes.**
 - The app polls the modification time of `rules.toml` and `config.toml` every 2 s.
-- `rules.toml` changed, or edited from the GUI: reload the Rules view and send `SyncNow` to every running account. Edits from an editor, `postbode rules propose` or an agent take effect within about 2 s. A rule acts on mail from the moment it is enabled; existing mail stays untouched unless `postbode rules apply-existing` is run.
-- `config.toml` changed: a banner, "config.toml changed — restart Postbode to apply". No live reload.
+- `rules.toml` changed, or edited from the GUI: reload the Rules view and send `SyncNow` to every running account. Edits from an editor, `postvak rules propose` or an agent take effect within about 2 s. A rule acts on mail from the moment it is enabled; existing mail stays untouched unless `postvak rules apply-existing` is run.
+- `config.toml` changed: a banner, "config.toml changed — restart Postvak to apply". No live reload.
 
 **Activity.** `store.log` of every account, newest first, merged by time: time, account, rule, action, sender, subject.
 
@@ -269,7 +269,7 @@ Three fixed entries below the account trees; selecting one replaces the list and
 - Every `Error` event lands in the status history and sets the account's line to show the error.
 - Optimistic edits (row removed on archive, move or delete; flag or read toggled) are recorded per uid and rolled back when the matching `ActionDone` result is an error, or when an `Error` arrives for a command with no `ActionDone`.
 - A store that fails to open shows its error under that account in the tree; other accounts work.
-- An account whose lock is held elsewhere opens read-only: its tree shows "synced by another Postbode process (pid N)", reading works, action keys do nothing and say why in the status bar.
+- An account whose lock is held elsewhere opens read-only: its tree shows "synced by another Postvak process (pid N)", reading works, action keys do nothing and say why in the status bar.
 - `open_url` is only called for the three allowed schemes; anything else in a body renders as plain text.
 
 ## 10. Testing
@@ -301,8 +301,8 @@ Not automated: pixels, real windowing, notifications. Reported as ran on macOS, 
 
 ## 11. Later
 
-- Compose and send (phase 4), with the OS integration and bundle. Launching from an `.app` needs either a `postbode-gui` binary target or "no args and no terminal opens the GUI".
-- HTML bodies: designed in `2026-10-07-postbode-html-design.md`, rendered by Blitz inside the body panel (`wry` was dropped).
+- Compose and send (phase 4), with the OS integration and bundle. Launching from an `.app` needs either a `postvak-gui` binary target or "no args and no terminal opens the GUI".
+- HTML bodies: designed in `2026-10-07-postvak-html-design.md`, rendered by Blitz inside the body panel (`wry` was dropped).
 - Fonts beyond egui's defaults: CJK and other scripts render as boxes until system fonts are loaded at startup; egui has no right-to-left shaping.
 - Apply a rule to existing mail from the GUI, with a dry-run count and confirmation.
 - Account setup in the GUI; live reload of `config.toml`.

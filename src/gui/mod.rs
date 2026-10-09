@@ -38,7 +38,7 @@ const WINDOW_ICON: &[u8] = ICON;
 
 /// The Wayland app id and X11 WM class; the Linux desktop entry and icons are named after it, so the compositor can
 /// match the window to them.
-const APP_ID: &str = "io.github.pataar.postbode";
+const APP_ID: &str = "io.github.postvak_app.postvak";
 
 /// Opens the window and returns when it closes. When it cannot start, a small window says why before the error is
 /// returned, since a launch from a desktop entry or Finder has no terminal for stderr.
@@ -102,7 +102,7 @@ fn viewport(size: [f32; 2]) -> egui::ViewportBuilder {
         .with_icon(icon)
         .with_app_id(APP_ID)
         .with_inner_size(size)
-        .with_title("Postbode")
+        .with_title("Postvak")
 }
 
 /// Shows why the mail window could not start until the user closes it, then hands the error back for stderr and the
@@ -110,7 +110,7 @@ fn viewport(size: [f32; 2]) -> egui::ViewportBuilder {
 fn explain(error: anyhow::Error, log: Option<&Path>) -> anyhow::Error {
     let problem = startup::Problem::of(&error, log);
     let shown = eframe::run_native(
-        "Postbode",
+        "Postvak",
         explain_options(),
         Box::new(|cc| {
             theme::install(&cc.egui_ctx);
@@ -166,7 +166,7 @@ fn open(
         ..native_options([1280.0, 800.0])
     };
     eframe::run_native(
-        "Postbode",
+        "Postvak",
         options,
         Box::new(move |cc| {
             let _ = window.set(cc.egui_ctx.clone());
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn the_desktop_entry_names_the_app_id() {
-        let entry = include_str!("../../packaging/linux/io.github.pataar.postbode.desktop");
+        let entry = include_str!("../../packaging/linux/io.github.postvak_app.postvak.desktop");
         for key in ["Icon", "StartupWMClass"] {
             let line = format!("{key}={}", super::APP_ID);
             assert!(

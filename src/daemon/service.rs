@@ -1,4 +1,4 @@
-//! Installs `postbode run` as a login service: a launchd agent on macOS, a systemd user unit on Linux.
+//! Installs `postvak run` as a login service: a launchd agent on macOS, a systemd user unit on Linux.
 use std::fmt::Write as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -9,9 +9,9 @@ use anyhow::{Context, Result, bail};
 use super::Client;
 use crate::paths::{self, Paths};
 
-const LAUNCHD_LABEL: &str = "nl.pataar.postbode";
-const SYSTEMD_UNIT: &str = "postbode";
-const UNSUPPORTED: &str = "postbode service supports macOS and Linux";
+const LAUNCHD_LABEL: &str = "io.github.postvak_app.postvak";
+const SYSTEMD_UNIT: &str = "postvak";
+const UNSUPPORTED: &str = "postvak service supports macOS and Linux";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Target {
@@ -64,8 +64,8 @@ impl Target {
 
     pub fn file_name(self) -> &'static str {
         match self {
-            Target::Launchd => "nl.pataar.postbode.plist",
-            Target::Systemd => "postbode.service",
+            Target::Launchd => "io.github.postvak_app.postvak.plist",
+            Target::Systemd => "postvak.service",
         }
     }
 
@@ -76,11 +76,11 @@ impl Target {
         }
     }
 
-    /// `postbode_home` is the `POSTBODE_HOME` the service's daemon has to use, when one is set.
-    fn text(self, exe: &Path, log: &Path, postbode_home: Option<&Path>) -> String {
+    /// `postvak_home` is the `POSTVAK_HOME` the service's daemon has to use, when one is set.
+    fn text(self, exe: &Path, log: &Path, postvak_home: Option<&Path>) -> String {
         match self {
-            Target::Launchd => plist(exe, log, postbode_home),
-            Target::Systemd => unit(exe, postbode_home),
+            Target::Launchd => plist(exe, log, postvak_home),
+            Target::Systemd => unit(exe, postvak_home),
         }
     }
 
@@ -137,7 +137,7 @@ pub fn install(paths: &Paths, dry_run: bool) -> Result<String> {
     let target = Target::current()?;
     let home = home_dir()?;
     let file = target.file(&home);
-    let exe = paths::stable_exe().context("finding this postbode")?;
+    let exe = paths::stable_exe().context("finding this postvak")?;
     let text = target.text(&exe, &paths.daemon_log(), paths.home.as_deref());
     let steps = target.install_steps(&home, &file)?;
     if !dry_run {
@@ -230,12 +230,12 @@ fn xml_escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-pub fn plist(exe: &Path, log: &Path, postbode_home: Option<&Path>) -> String {
+pub fn plist(exe: &Path, log: &Path, postvak_home: Option<&Path>) -> String {
     plist_with_path(
         exe,
         log,
         std::env::var("PATH").ok().as_deref(),
-        postbode_home,
+        postvak_home,
     )
 }
 
@@ -243,13 +243,13 @@ fn plist_with_path(
     exe: &Path,
     log: &Path,
     path: Option<&str>,
-    postbode_home: Option<&Path>,
+    postvak_home: Option<&Path>,
 ) -> String {
     let exe = xml_escape(&exe.to_string_lossy());
     let log = xml_escape(&log.to_string_lossy());
     let variables: Vec<(&str, String)> = [
         path.map(|path| ("PATH", path.to_string())),
-        postbode_home.map(|home| ("POSTBODE_HOME", home.to_string_lossy().into_owned())),
+        postvak_home.map(|home| ("POSTVAK_HOME", home.to_string_lossy().into_owned())),
     ]
     .into_iter()
     .flatten()
@@ -294,16 +294,16 @@ fn plist_with_path(
     )
 }
 
-pub fn unit(exe: &Path, postbode_home: Option<&Path>) -> String {
+pub fn unit(exe: &Path, postvak_home: Option<&Path>) -> String {
     let exe = systemd_quoted(&exe.to_string_lossy());
-    let environment = postbode_home.map_or_else(String::new, |home| {
+    let environment = postvak_home.map_or_else(String::new, |home| {
         format!(
             "Environment={}\n",
-            systemd_quoted(&format!("POSTBODE_HOME={}", home.to_string_lossy()))
+            systemd_quoted(&format!("POSTVAK_HOME={}", home.to_string_lossy()))
         )
     });
     format!(
-        "[Unit]\nDescription=Postbode mail sync\n\n[Service]\n{environment}ExecStart={exe} run\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Postvak mail sync\n\n[Service]\n{environment}ExecStart={exe} run\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n"
     )
 }
 
@@ -324,13 +324,13 @@ mod tests {
     #[test]
     fn the_launchd_plist_runs_the_binary_at_login_and_keeps_it_alive() {
         let text = plist(
-            Path::new("/opt/homebrew/bin/postbode"),
-            Path::new("/Users/me/Library/Application Support/postbode/daemon.log"),
+            Path::new("/opt/homebrew/bin/postvak"),
+            Path::new("/Users/me/Library/Application Support/postvak/daemon.log"),
             None,
         );
         for needle in [
-            "<string>nl.pataar.postbode</string>",
-            "<string>/opt/homebrew/bin/postbode</string>",
+            "<string>io.github.postvak_app.postvak</string>",
+            "<string>/opt/homebrew/bin/postvak</string>",
             "<string>run</string>",
             "<key>RunAtLoad</key>",
             "<key>KeepAlive</key>",
@@ -343,54 +343,54 @@ mod tests {
 
     #[test]
     fn the_plist_escapes_xml_in_paths() {
-        let text = plist(Path::new("/a&b/postbode"), Path::new("/x/<log>"), None);
-        assert!(text.contains("/a&amp;b/postbode"), "{text}");
+        let text = plist(Path::new("/a&b/postvak"), Path::new("/x/<log>"), None);
+        assert!(text.contains("/a&amp;b/postvak"), "{text}");
         assert!(text.contains("/x/&lt;log&gt;"), "{text}");
     }
 
     #[test]
     fn the_systemd_unit_always_restarts() {
-        let text = unit(Path::new("/home/me/.cargo/bin/postbode"), None);
-        assert!(text.contains("ExecStart=\"/home/me/.cargo/bin/postbode\" run"));
+        let text = unit(Path::new("/home/me/.cargo/bin/postvak"), None);
+        assert!(text.contains("ExecStart=\"/home/me/.cargo/bin/postvak\" run"));
         assert!(text.contains("Restart=always\nRestartSec=10\n"));
         assert!(text.contains("WantedBy=default.target"));
     }
 
     #[test]
     fn the_systemd_exec_start_survives_spaces_and_percent_signs() {
-        let text = unit(Path::new("/home/me/my bin/50%/postbode"), None);
+        let text = unit(Path::new("/home/me/my bin/50%/postvak"), None);
         assert!(
-            text.contains("ExecStart=\"/home/me/my bin/50%%/postbode\" run"),
+            text.contains("ExecStart=\"/home/me/my bin/50%%/postvak\" run"),
             "{text}"
         );
     }
 
     #[test]
     fn the_plist_has_no_environment_without_a_path() {
-        let text = plist_with_path(Path::new("/bin/postbode"), Path::new("/x/log"), None, None);
+        let text = plist_with_path(Path::new("/bin/postvak"), Path::new("/x/log"), None, None);
         assert!(!text.contains("EnvironmentVariables"), "{text}");
         assert!(text.contains("</dict>\n</plist>"), "{text}");
     }
 
     #[test]
-    fn the_service_keeps_a_postbode_home() {
+    fn the_service_keeps_a_postvak_home() {
         let home = Path::new("/tmp/50% <me>");
         let text = plist_with_path(
-            Path::new("/bin/postbode"),
+            Path::new("/bin/postvak"),
             Path::new("/x/log"),
             Some("/bin"),
             Some(home),
         );
         assert!(
-            text.contains("<key>PATH</key>\n        <string>/bin</string>\n        <key>POSTBODE_HOME</key>\n        <string>/tmp/50% &lt;me&gt;</string>\n    </dict>"),
+            text.contains("<key>PATH</key>\n        <string>/bin</string>\n        <key>POSTVAK_HOME</key>\n        <string>/tmp/50% &lt;me&gt;</string>\n    </dict>"),
             "{text}"
         );
-        let text = unit(Path::new("/bin/postbode"), Some(home));
+        let text = unit(Path::new("/bin/postvak"), Some(home));
         assert!(
-            text.contains("Environment=\"POSTBODE_HOME=/tmp/50%% <me>\"\nExecStart="),
+            text.contains("Environment=\"POSTVAK_HOME=/tmp/50%% <me>\"\nExecStart="),
             "{text}"
         );
-        assert!(!unit(Path::new("/bin/postbode"), None).contains("Environment="));
+        assert!(!unit(Path::new("/bin/postvak"), None).contains("Environment="));
     }
 
     #[test]
@@ -400,7 +400,7 @@ mod tests {
         assert_eq!(
             shown,
             [
-                "systemctl --user disable --now postbode",
+                "systemctl --user disable --now postvak",
                 "systemctl --user daemon-reload"
             ]
         );

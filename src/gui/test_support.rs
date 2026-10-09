@@ -1,4 +1,4 @@
-//! A temp Postbode home with stores and an in-memory daemon client, for the GUI tests.
+//! A temp Postvak home with stores and an in-memory daemon client, for the GUI tests.
 use std::sync::mpsc::{Receiver, Sender};
 
 use eframe::egui;

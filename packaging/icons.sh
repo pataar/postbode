@@ -13,10 +13,10 @@
 #                                       the canvas, centred, with a transparent
 #                                       margin. Committed so a macOS runner can
 #                                       run `iconutil -c icns` without resvg.
-#   assets/postbode.icns                only where iconutil exists (macOS)
+#   assets/postvak.icns                only where iconutil exists (macOS)
 set -euo pipefail
 
-app_id=io.github.pataar.postbode
+app_id=io.github.postvak_app.postvak
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 assets=$root/assets
 svg=$assets/icon.svg
@@ -57,7 +57,7 @@ for s in 16 32 128 256 512; do
 done
 
 if command -v iconutil >/dev/null; then
-    iconutil -c icns -o "$assets/postbode.icns" "$iconset"
+    iconutil -c icns -o "$assets/postvak.icns" "$iconset"
 else
-    echo "warning: iconutil not found (macOS only); skipped assets/postbode.icns" >&2
+    echo "warning: iconutil not found (macOS only); skipped assets/postvak.icns" >&2
 fi

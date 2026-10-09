@@ -4,19 +4,19 @@ services:
   dovecot:
     image: dovecot/dovecot:2.4.5
     environment:
-      USER_PASSWORD: postbode-test
+      USER_PASSWORD: postvak-test
     ports:
       - "127.0.0.1:10993:31993"
     volumes:
-      - ./certs:/etc/postbode-test:ro
-      - ./postbode.conf:/etc/dovecot/conf.d/zz-postbode.conf:ro
+      - ./certs:/etc/postvak-test:ro
+      - ./postvak.conf:/etc/dovecot/conf.d/zz-postvak.conf:ro
   dovecot-without-move:
     image: dovecot/dovecot:2.4.5
     environment:
-      USER_PASSWORD: postbode-test
+      USER_PASSWORD: postvak-test
     ports:
       - "127.0.0.1:11993:31993"
     volumes:
-      - ./certs:/etc/postbode-test:ro
-      - ./postbode.conf:/etc/dovecot/conf.d/zz-postbode.conf:ro
+      - ./certs:/etc/postvak-test:ro
+      - ./postvak.conf:/etc/dovecot/conf.d/zz-postvak.conf:ro
       - ./without-move.conf:/etc/dovecot/conf.d/zz-without-move.conf:ro

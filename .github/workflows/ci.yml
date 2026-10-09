@@ -53,13 +53,13 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           docker compose -f tests/dovecot/compose.yml up -d
-          echo "POSTBODE_TEST_IMAP_HOST=localhost" >> "$GITHUB_ENV"
+          echo "POSTVAK_TEST_IMAP_HOST=localhost" >> "$GITHUB_ENV"
       - name: Enable GUI snapshots
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y mesa-vulkan-drivers
-          echo "POSTBODE_SNAPSHOTS=1" >> "$GITHUB_ENV"
+          echo "POSTVAK_SNAPSHOTS=1" >> "$GITHUB_ENV"
           echo "TZ=UTC" >> "$GITHUB_ENV"
       - run: cargo test --all-features
       - name: Upload snapshot diffs

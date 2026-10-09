@@ -75,7 +75,7 @@ pub fn run(paths: &Paths, options: Options) -> anyhow::Result<()> {
     served
 }
 
-/// The `[account] …` line for an event, as `postbode run` and `sync` print it.
+/// The `[account] …` line for an event, as `postvak run` and `sync` print it.
 pub fn report(event: &Event) {
     match event {
         Event::NewMail {

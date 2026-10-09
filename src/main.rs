@@ -1,11 +1,11 @@
 mod cli;
 
 fn main() {
-    logger(env_logger::Env::default().default_filter_or("warn,postbode=info")).init();
+    logger(env_logger::Env::default().default_filter_or("warn,postvak=info")).init();
     if let Err(e) = cli::run() {
         eprintln!(
             "error: {}",
-            postbode::message::clean(&format!("{e:#}"), false)
+            postvak::message::clean(&format!("{e:#}"), false)
         );
         std::process::exit(1);
     }
@@ -28,7 +28,7 @@ mod tests {
     fn rust_log_trace_never_enables_async_imap_traces() {
         for rust_log in ["trace", "async_imap=trace", "async_imap::imap_stream=trace"] {
             let logger =
-                super::logger(env_logger::Env::new().filter_or("POSTBODE_TEST_UNSET", rust_log))
+                super::logger(env_logger::Env::new().filter_or("POSTVAK_TEST_UNSET", rust_log))
                     .build();
             let metadata = log::Metadata::builder()
                 .level(log::Level::Trace)

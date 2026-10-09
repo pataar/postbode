@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 mkdir -p certs
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-openssl req -x509 -newkey rsa:2048 -nodes -days 36500 -subj "/CN=Postbode test CA" \
+openssl req -x509 -newkey rsa:2048 -nodes -days 36500 -subj "/CN=Postvak test CA" \
   -keyout "$tmp/ca.key" -out certs/ca.pem \
   -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
 openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" -keyout certs/tls.key -out "$tmp/tls.csr"

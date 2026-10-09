@@ -532,7 +532,7 @@ mod client {
         assert_eq!(error.to_string(), NO_REPLY);
         assert_eq!(
             NO_REPLY,
-            "no reply from the daemon within 120 s; the command may still run, see `postbode log`"
+            "no reply from the daemon within 120 s; the command may still run, see `postvak log`"
         );
     }
 
@@ -704,7 +704,7 @@ mod client {
         assert_eq!(
             error,
             format!(
-                "daemon is version {} (protocol {}); this postbode is 0.0.0",
+                "daemon is version {} (protocol {}); this postvak is 0.0.0",
                 wire::VERSION,
                 wire::PROTOCOL
             )

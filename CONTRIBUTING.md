@@ -26,7 +26,7 @@ cargo audit
 
 - New logic comes with a test; a bug fix comes with a regression test.
 - Every new dependency gets a one-line comment in `Cargo.toml` saying why it is needed.
-- After changing CLI flags or rule types, run `POSTBODE_BLESS=1 cargo test` and commit the regenerated `docs/src/cli.md` and `docs/src/rules.schema.json`.
+- After changing CLI flags or rule types, run `POSTVAK_BLESS=1 cargo test` and commit the regenerated `docs/src/cli.md` and `docs/src/rules.schema.json`.
 - User-facing prose lives in `docs/src/`. `README.md` contains `docs/src/index.md` verbatim, so edit both together.
 - Keep a pull request to one change.
 
@@ -42,11 +42,11 @@ If it finds a panic, add the input as a named test next to the fix.
 
 ## Live IMAP tests
 
-`tests/imap_live.rs` runs against two local Dovecot servers and is skipped unless `POSTBODE_TEST_IMAP_HOST` is set:
+`tests/imap_live.rs` runs against two local Dovecot servers and is skipped unless `POSTVAK_TEST_IMAP_HOST` is set:
 
 ```sh
 docker compose -f tests/dovecot/compose.yml up -d
-POSTBODE_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
+POSTVAK_TEST_IMAP_HOST=localhost cargo test --features testing --test imap_live
 ```
 
 Port 10993 advertises MOVE and UIDPLUS, port 11993 neither.

@@ -9,7 +9,7 @@ permissions: {}
 jobs:
   release:
     name: Publish and tag
-    if: github.repository_owner == 'pataar'
+    if: github.repository_owner == 'postvak-app'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -32,7 +32,7 @@ jobs:
 
   release-pr:
     name: Release PR
-    if: github.repository_owner == 'pataar'
+    if: github.repository_owner == 'postvak-app'
     runs-on: ubuntu-latest
     permissions:
       contents: write

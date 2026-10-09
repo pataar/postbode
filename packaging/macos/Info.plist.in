@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Template for Postbode.app/Contents/Info.plist; package.sh fills in @VERSION@, @SHORT_VERSION@ and @BUILD_SHA@.
+<!-- Template for Postvak.app/Contents/Info.plist; package.sh fills in @VERSION@, @SHORT_VERSION@ and @BUILD_SHA@.
      Keep LSMinimumSystemVersion equal to MACOSX_DEPLOYMENT_TARGET in package.sh. -->
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleIdentifier</key>
-    <string>io.github.pataar.postbode</string>
+    <string>io.github.postvak_app.postvak</string>
     <key>CFBundleName</key>
-    <string>Postbode</string>
+    <string>Postvak</string>
     <key>CFBundleDisplayName</key>
-    <string>Postbode</string>
+    <string>Postvak</string>
     <key>CFBundleExecutable</key>
-    <string>postbode</string>
+    <string>postvak</string>
     <key>CFBundleIconFile</key>
-    <string>Postbode</string>
+    <string>Postvak</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleSignature</key>
@@ -26,7 +26,7 @@
     <string>@SHORT_VERSION@</string>
     <key>CFBundleVersion</key>
     <string>@VERSION@</string>
-    <key>PostbodeBuildSha</key>
+    <key>PostvakBuildSha</key>
     <string>@BUILD_SHA@</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
@@ -35,6 +35,6 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Postbode contributors. Licensed MIT OR Apache-2.0.</string>
+    <string>Postvak contributors. Licensed MIT OR Apache-2.0.</string>
 </dict>
 </plist>

@@ -1,4 +1,4 @@
-//! Whether a newer Postbode release is out: GitHub's latest release, asked at most once a day. Postbode never updates
+//! Whether a newer Postvak release is out: GitHub's latest release, asked at most once a day. Postvak never updates
 //! itself; the window only links to the release notes.
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
@@ -12,7 +12,7 @@ use crate::paths::write_atomic;
 
 const DAY: i64 = 24 * 60 * 60;
 const HOST: &str = "api.github.com";
-const LATEST: &str = "/repos/pataar/postbode/releases/latest";
+const LATEST: &str = "/repos/postvak-app/postvak/releases/latest";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The last check: when it ran, and the newest stable version it saw as `X.Y.Z`.
@@ -54,7 +54,7 @@ pub fn newer(latest: &str, current: &str) -> bool {
 }
 
 pub fn release_url(version: &str) -> String {
-    format!("https://github.com/pataar/postbode/releases/tag/v{version}")
+    format!("https://github.com/postvak-app/postvak/releases/tag/v{version}")
 }
 
 /// Due with no earlier check, after a day, or when the clock went back past the last one.
@@ -115,7 +115,7 @@ pub fn fetch() -> anyhow::Result<String> {
     let mut tls =
         rustls::StreamOwned::new(rustls::ClientConnection::new(Arc::new(config), name)?, tcp);
     let request = format!(
-        "GET {LATEST} HTTP/1.0\r\nHost: {HOST}\r\nUser-Agent: postbode/{}\r\nAccept: application/vnd.github+json\r\n\r\n",
+        "GET {LATEST} HTTP/1.0\r\nHost: {HOST}\r\nUser-Agent: postvak/{}\r\nAccept: application/vnd.github+json\r\n\r\n",
         env!("CARGO_PKG_VERSION")
     );
     tls.write_all(request.as_bytes())?;
@@ -151,7 +151,7 @@ mod tests {
 
     fn release(tag: &str, draft: bool, prerelease: bool) -> String {
         format!(
-            r#"{{"html_url":"https://github.com/pataar/postbode/releases/tag/{tag}","tag_name":"{tag}","draft":{draft},"prerelease":{prerelease},"assets":[]}}"#
+            r#"{{"html_url":"https://github.com/postvak-app/postvak/releases/tag/{tag}","tag_name":"{tag}","draft":{draft},"prerelease":{prerelease},"assets":[]}}"#
         )
     }
 
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(latest_from_json("<html>"), None);
         assert_eq!(
             release_url("0.3.0"),
-            "https://github.com/pataar/postbode/releases/tag/v0.3.0"
+            "https://github.com/postvak-app/postvak/releases/tag/v0.3.0"
         );
     }
 

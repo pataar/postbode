@@ -1,6 +1,6 @@
 # Agents over MCP
 
-`postbode mcp` lets an agent host such as Claude Desktop or Claude Code read your mail, propose rules and, when you allow it, act on mail. It speaks MCP on stdin and stdout, and the host starts it. It can do nothing you did not grant: each capability is a scope, and the host's config sets the scopes.
+`postvak mcp` lets an agent host such as Claude Desktop or Claude Code read your mail, propose rules and, when you allow it, act on mail. It speaks MCP on stdin and stdout, and the host starts it. It can do nothing you did not grant: each capability is a scope, and the host's config sets the scopes.
 
 The defaults are privacy-friendly. An agent sees folders and headers but no message bodies, cannot change or delete mail, and can only propose rules, which stay off until you approve them. Bodies, acting on mail and approving rules are each a separate scope you add on purpose, and `--account` hides every other account from the agent.
 
@@ -9,42 +9,42 @@ The defaults are privacy-friendly. An agent sees folders and headers but no mess
 For Claude Desktop, register the server and restart the app:
 
 ```sh
-postbode mcp install claude-desktop
+postvak mcp install claude-desktop
 ```
 
 For Claude Code:
 
 ```sh
-postbode mcp install claude-code
+postvak mcp install claude-code
 ```
 
 The Claude Desktop install edits `claude_desktop_config.json` and keeps every other server in it. The file is rewritten pretty-printed with sorted keys, and the original is saved next to it as `claude_desktop_config.json.bak`. Re-running the install does not replace that backup unless you changed the file in between. The Claude Code install runs `claude mcp remove` and then `claude mcp add --scope user`, so a re-run replaces the old entry. With `--dry-run`, or when `claude` is not on your `PATH`, it prints those commands instead of running them.
 
-For any other host, `postbode mcp install json` prints a snippet for its config:
+For any other host, `postvak mcp install json` prints a snippet for its config:
 
 ```json
 {
   "mcpServers": {
-    "postbode": {
+    "postvak": {
       "args": [
         "mcp",
         "--scopes",
         "read,rules:propose"
       ],
-      "command": "/opt/homebrew/bin/postbode"
+      "command": "/opt/homebrew/bin/postvak"
     }
   }
 }
 ```
 
-The `command` is the absolute path of the `postbode` you ran, because hosts started from the Dock do not see your shell's `PATH`: for Homebrew the `opt/` link, which survives `brew upgrade`, and for an AppImage the `.AppImage` file, so run the install again after moving it. The install command fills it in; the path above is an example.
+The `command` is the absolute path of the `postvak` you ran, because hosts started from the Dock do not see your shell's `PATH`: for Homebrew the `opt/` link, which survives `brew upgrade`, and for an AppImage the `.AppImage` file, so run the install again after moving it. The install command fills it in; the path above is an example.
 
-Options for `postbode mcp install`:
+Options for `postvak mcp install`:
 
 - `--scopes` sets the scopes. Run the install again with other scopes to change them.
 - `--account NAME` limits the server to one account. Repeat it for more.
 - `--remove` takes the entry out again.
-- `--dry-run` shows only the postbode entry, or for Claude Code the `claude` commands, and writes nothing.
+- `--dry-run` shows only the postvak entry, or for Claude Code the `claude` commands, and writes nothing.
 
 The install also prints a hint with the granted scopes and how to widen them. It goes to stderr, so the output of `install json` stays pure JSON.
 
@@ -61,7 +61,7 @@ The install also prints a hint with the granted scopes and how to widen them. It
 The default is `read,rules:propose`. Three example grants:
 
 - Read-only: `--scopes read`. `sync` is in this scope and still runs your approved rules.
-- Rule author: the default. The agent proposes, you approve in the window or with `postbode rules approve`.
+- Rule author: the default. The agent proposes, you approve in the window or with `postvak rules approve`.
 - Inbox assistant: `--scopes read,read:bodies,rules:propose,mail:modify`.
 
 `rules:write` lets the agent approve its own rules, and an approved rule can delete mail. Leave it off.
@@ -118,7 +118,7 @@ With more than one visible account, every tool that acts on one message needs `a
 
 ## Alongside the window and the CLI
 
-The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postbode daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list.
+The MCP server reads the same local store as the mail window. Everything that needs the mail server goes through the Postvak daemon, which owns the connections: actions, `trash_restore`, `show` and `attachments` for a message not yet fetched, and `sync`. The first such call starts the daemon if none runs. The window picks up the changes as soon as the daemon reports them, so an archived message disappears from the list.
 
 ## Troubleshooting
 

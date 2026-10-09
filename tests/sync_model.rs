@@ -24,15 +24,15 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use postbode::config::{AccountConfig, Identity, PasswordSource};
-use postbode::mail_ops::{
+use postvak::config::{AccountConfig, Identity, PasswordSource};
+use postvak::mail_ops::{
     Envelope, FlagUpdate, IdleOutcome, MailError, MailOps, MailResult, RecordingOps, RemoteFolder,
     SelectInfo,
 };
-use postbode::rules::engine::Mode;
-use postbode::store::Store;
-use postbode::sync::{Event, RulesRun, load_rules_for, run_rules, sync_all, sync_folder};
-use postbode::trash::Trash;
+use postvak::rules::engine::Mode;
+use postvak::store::Store;
+use postvak::sync::{Event, RulesRun, load_rules_for, run_rules, sync_all, sync_folder};
+use postvak::trash::Trash;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 
