@@ -172,9 +172,32 @@ fn toolbar(body: &BodyState, account: &Account, ui: &mut egui::Ui) -> Vec<UiActi
                     actions.push(action);
                 }
             }
+            if body.html.is_some() {
+                html_switch(body, ui, &mut actions);
+            }
         });
     });
     actions
+}
+
+/// "Text | HTML" for mail with an HTML part; the inactive side sends the same toggle as `v`.
+fn html_switch(body: &BodyState, ui: &mut egui::Ui, actions: &mut Vec<UiAction>) {
+    let html = body.shows_html();
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        // Right to left: HTML is added first so the pair reads "Text | HTML".
+        let mut html_side = ui.add_enabled(
+            body.text_note.is_none(),
+            egui::Button::selectable(html, "HTML"),
+        );
+        if let Some(note) = body.text_note {
+            html_side = html_side.on_disabled_hover_text(note);
+        }
+        let text_side = ui.add(egui::Button::selectable(!html, "Text"));
+        if (html_side.clicked() && !html) || (text_side.clicked() && html) {
+            actions.push(UiAction::ToggleHtml);
+        }
+    });
 }
 
 fn missing_text(account: &Account) -> String {
@@ -1013,5 +1036,64 @@ mod tests {
                 .is_some_and(|b| b.source.is_none())
         );
         assert!(harness.query_by_label("Subject: ]0;pwnedreport").is_none());
+    }
+
+    #[cfg(feature = "html")]
+    #[test]
+    fn the_text_html_switch_toggles_like_v_and_hides_without_html() {
+        use crate::gui::html::view_tests::add_html;
+        let fx = Fixture::new(&["work"]);
+        fx.add("work", message("INBOX", 1, "plain"));
+        add_html(&fx, 2, "<p>rich words</p>", "plain words");
+        let (mut harness, _wires) = fx.harness();
+        let shows_html = |h: &egui_kittest::Harness<'_, crate::gui::App>| {
+            h.state().body.as_ref().is_some_and(|b| b.shows_html())
+        };
+        assert!(shows_html(&harness));
+        harness.get_by_label("Text").click();
+        harness.run();
+        assert!(!shows_html(&harness));
+        assert!(harness.query_by_label("plain words").is_some());
+        harness.get_by_label("HTML").click();
+        harness.run();
+        assert!(shows_html(&harness));
+        harness.event(egui::Event::Text("j".into()));
+        harness.run();
+        assert!(harness.query_by_label("HTML").is_none());
+        assert!(harness.query_by_label("Text").is_none());
+    }
+
+    #[cfg(feature = "html")]
+    #[test]
+    fn html_too_large_to_render_disables_the_html_side() {
+        use crate::gui::html::{MAX_HTML, view_tests::add_html};
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, &"x".repeat(MAX_HTML + 1), "plain words");
+        let (harness, _wires) = fx.harness();
+        assert!(harness.get_by_label("HTML").accesskit_node().is_disabled());
+        assert!(!harness.get_by_label("Text").accesskit_node().is_disabled());
+    }
+
+    #[cfg(feature = "html")]
+    #[test]
+    fn the_source_window_shows_the_raw_message_in_either_view() {
+        use crate::gui::html::view_tests::add_html;
+        let fx = Fixture::new(&["work"]);
+        add_html(&fx, 1, "<p>rich words</p>", "plain words");
+        let (mut harness, _wires) = fx.harness();
+        harness.get_by_label("View source").click();
+        harness.run();
+        let part = "Content-Type: text/html; charset=utf-8";
+        assert!(harness.query_by_label(part).is_some());
+        harness.event(egui::Event::Text("v".into()));
+        harness.run();
+        assert!(
+            harness
+                .state()
+                .body
+                .as_ref()
+                .is_some_and(|b| !b.shows_html())
+        );
+        assert!(harness.query_by_label(part).is_some());
     }
 }

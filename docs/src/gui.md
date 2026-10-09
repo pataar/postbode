@@ -70,3 +70,5 @@ HTML over 2 MB, or a page too tall or too broken to lay out, shows as text with 
 Above the headers, **Save .eml** writes the message exactly as the server sent it to your Downloads folder, named after its subject; when that name is taken it saves beside it as "… (2).eml" and never replaces a file. The line under the attachments says where it went. Until the message is downloaded the button is greyed out and says why on hover.
 
 **View source** opens the message as plain text in a window, with control characters left out; Copy puts that text on the clipboard. Esc or moving to another message closes it.
+
+Mail with an HTML part also has a **Text | HTML** switch there, which does the same as `v`. View source always shows the whole message, whichever is active.
