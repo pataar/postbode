@@ -52,6 +52,18 @@ pub struct Rule {
     pub actions: Vec<Action>,
 }
 
+impl Rule {
+    /// What the rule does, as JSON: editing any of it restarts the rule's clock, so a widened rule never acts on older mail.
+    pub fn definition(&self) -> Result<String, RulesError> {
+        serde_json::to_string(&(&self.account, &self.folder, &self.matches, &self.actions)).map_err(
+            |e| RulesError::Invalid {
+                rule: self.name.clone(),
+                reason: e.to_string(),
+            },
+        )
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Match {

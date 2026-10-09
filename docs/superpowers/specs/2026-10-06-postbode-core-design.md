@@ -169,7 +169,8 @@ CREATE VIRTUAL TABLE messages_fts USING fts5 (
 
 CREATE TABLE rules_seen (
   name           TEXT PRIMARY KEY,
-  first_seen_at  INTEGER NOT NULL
+  first_seen_at  INTEGER NOT NULL,
+  definition     TEXT              -- the rule's account, folder, match and actions as JSON
 );
 
 CREATE TABLE rule_log (
@@ -191,7 +192,7 @@ Threading: on insert, `thread_id` is the first id in `References` if present, el
 
 Special-use folders come from `LIST (SPECIAL-USE)` or the folder attributes in a plain `LIST`. If the server marks none, `Trash`, `Sent`, `Junk`, `Drafts`, `Archive` by name are used as a fallback. Folders marked `\All`, `\Flagged` or `\Important` (Gmail's All Mail, Starred and Important) only repeat messages held elsewhere, so they are not synced.
 
-`rules_seen` records when a rule name was first loaded by this account. A rule only acts on messages whose `internaldate` is at or after its `first_seen_at`, so adding a rule never mass-deletes history. Renaming a rule resets this. `rules apply-existing` is the explicit opt-in to older mail.
+`rules_seen` records when a rule name was first loaded by this account. A rule only acts on messages whose `internaldate` is at or after its `first_seen_at`, so adding a rule never mass-deletes history. Renaming a rule, or changing its account, folder, match or actions, resets this, so a widened rule only acts on mail that arrives after the edit. `rules apply-existing` is the explicit opt-in to older mail.
 
 Disabled rules have no entry: a rule's clock starts the first time it is loaded enabled, or at approval time when `rules approve` enables it, so a proposal approved a week later does not act on that week's mail, and disabling then enabling a rule restarts it.
 
@@ -234,7 +235,7 @@ apply(plan, msg, mail_ops, store, trash) -> Result<()>
 
 Dry runs (`rules test`, `apply-existing --dry-run`) stop after `evaluate` and print the plan; they never call `apply` and never touch `rule_log`. Each real action is written to `rule_log` first, then executed:
 
-- `delete`: fetch raw if missing, write `accounts/<name>/trash/<unix>-<folder>-<uid>.eml`, then `UID STORE +FLAGS \Deleted` and `UID EXPUNGE`. If the trash write fails, the delete does not happen.
+- `delete`: fetch raw if missing, write `accounts/<name>/trash/<unix>-<folder>-<uid>.eml`, then `UID STORE +FLAGS \Deleted` and `UID EXPUNGE`. If the trash write fails, the delete does not happen. Without `UIDPLUS` a plain `EXPUNGE` would also remove mail other clients marked `\Deleted`, so it is refused, as an error, while any other message in the folder carries that flag.
 - `move`: `UID MOVE` if the server advertises `MOVE`, else `COPY` + delete flags + expunge. Create the target folder if missing. Update the local row to the new folder and UID from `COPYUID`, else let the next sync reconcile.
 - `archive`: `move` to the folder with `special_use = Archive`; error if the server has none.
 - `mark_read`, `flag`, `tag`: `UID STORE +FLAGS`. A tag is validated as an IMAP atom because it goes into the command verbatim.
@@ -313,7 +314,7 @@ Plain text, one record per line, so it pipes into grep and fzf. `--json` output 
 - Search: FTS triggers keep the index in sync on insert, update of `body_text`, and delete.
 - Aliases: glob matching, `to_me` against To, Cc and Delivered-To, `alias` with and without wildcard.
 - Notifications: default fires for untouched INBOX mail, moved mail is silent unless `notify`, `silent` suppresses, account `notify = false` leaves only explicit rules, old messages on a resync never notify.
-- **Integration tests against Dovecot** in `tests/imap_live.rs`. `tests/dovecot/compose.yml` runs two Dovecot 2.4 servers on localhost: one advertising MOVE and UIDPLUS (port 10993), one without either (port 11993). Their certificate comes from a test-only CA in `tests/dovecot/certs/`, which test accounts trust through `ca_file`. Each test logs in as its own throwaway user and seeds mail with APPEND, so tests never share a mailbox. They cover special-use detection, flags and keywords, move with and without MOVE, expunge with and without UIDPLUS, IDLE wake, a UIDVALIDITY change, a 1,200-message first sync in chunks, a command waking IDLE through the engine, a rule delete keeping its backup, `delete` to Trash, and `sync` exiting non-zero when a rule fails. The Ubuntu CI job starts the compose file. Locally, run `docker compose -f tests/dovecot/compose.yml up -d` and set `POSTBODE_TEST_IMAP_HOST=localhost`. The tests are skipped, not failed, when that variable is unset or empty.
+- **Integration tests against Dovecot** in `tests/imap_live.rs`. `tests/dovecot/compose.yml` runs two Dovecot 2.4 servers on localhost: one advertising MOVE and UIDPLUS (port 10993), one without either (port 11993). Their certificate comes from a test-only CA in `tests/dovecot/certs/`, which test accounts trust through `ca_file`. Each test logs in as its own throwaway user and seeds mail with APPEND, so tests never share a mailbox. They cover special-use detection, flags and keywords, move with and without MOVE, expunge with and without UIDPLUS, a plain expunge refusing while another message is marked deleted, IDLE wake, a UIDVALIDITY change, a 1,200-message first sync in chunks, a command waking IDLE through the engine, a rule delete keeping its backup, `delete` to Trash, and `sync` exiting non-zero when a rule fails. The Ubuntu CI job starts the compose file. Locally, run `docker compose -f tests/dovecot/compose.yml up -d` and set `POSTBODE_TEST_IMAP_HOST=localhost`. The tests are skipped, not failed, when that variable is unset or empty.
 
 ## 14. Repo conventions and CI
 

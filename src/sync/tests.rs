@@ -40,7 +40,9 @@ fn ops_with_inbox() -> RecordingOps {
 fn rules_from(toml: &str, store: &Store, now: i64) -> Vec<CompiledRule> {
     let mut compiled = compile(&parse(toml).unwrap()).unwrap();
     for r in &mut compiled {
-        r.first_seen_at = store.rule_first_seen(&r.rule.name, now).unwrap();
+        r.first_seen_at = store
+            .rule_first_seen(&r.rule.name, &r.rule.definition().unwrap(), now)
+            .unwrap();
     }
     compiled
 }
@@ -522,6 +524,30 @@ fn disabled_rule_starts_its_clock_when_enabled() {
 }
 
 #[test]
+fn editing_a_rule_in_place_restarts_its_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rules.toml");
+    let store = Store::open_in_memory().unwrap();
+    let rule = |from: &str| {
+        format!(
+            "[[rules]]\nname = \"purge\"\nmatch.from = {{ contains = \"{from}\" }}\nactions = [\"delete\"]\n"
+        )
+    };
+    std::fs::write(&path, rule("noreply@shop.x")).unwrap();
+    load_rules_for(&store, &path, 100).unwrap();
+    assert_eq!(
+        load_rules_for(&store, &path, 200).unwrap()[0].first_seen_at,
+        100
+    );
+    std::fs::write(&path, rule("@")).unwrap();
+    assert_eq!(
+        load_rules_for(&store, &path, 300).unwrap()[0].first_seen_at,
+        300,
+        "a widened rule must not act on mail that arrived before the edit"
+    );
+}
+
+#[test]
 fn removed_rule_forgets_its_first_seen() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open_in_memory().unwrap();
@@ -746,7 +772,7 @@ fn mail_that_arrives_while_the_rules_file_is_invalid_notifies_once_across_restar
     let mut ops = ops_with_inbox();
     sync_all(&mut ops, &state.store).unwrap();
     // The rule ran before the bad edit, so its clock already started.
-    state.store.rule_first_seen("codes", 0).unwrap();
+    state.store.restart_rule_clock("codes", 0).unwrap();
     write_rules(&paths.config_dir, INVALID_RULES);
     ops.add_mail(
         "INBOX",
@@ -797,7 +823,7 @@ fn the_last_good_rules_survive_a_reconnect() {
     let paths = Paths::under(dir.path());
     // The rule ran before, so its clock covers the mail already on the server.
     let store = Store::open_account(&paths, "work").unwrap();
-    store.rule_first_seen("codes", 0).unwrap();
+    store.restart_rule_clock("codes", 0).unwrap();
     write_rules(&paths.config_dir, FLAG_NOREPLY);
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut dropped = ops_with_inbox();

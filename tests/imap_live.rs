@@ -192,6 +192,25 @@ fn expunge_removes_only_the_deleted_message() {
 }
 
 #[test]
+fn plain_expunge_refuses_while_another_message_is_marked_deleted() {
+    let Some(host) = host() else { return };
+    let mut ops = connect(&account(&host, PORT_WITHOUT_MOVE, "expunge-foreign"));
+    ops.append("INBOX", &mail("flagged elsewhere"), &["\\Deleted"])
+        .unwrap();
+    ops.append("INBOX", &mail("ours"), &[]).unwrap();
+    ops.select("INBOX").unwrap();
+    let uids: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+    ops.add_flags(uids[1], &["\\Deleted"]).unwrap();
+    assert!(ops.expunge(uids[1]).is_err());
+    assert!(ops.move_message(uids[1], "Archive").is_err());
+    let left: Vec<u32> = all_envelopes(&mut ops).iter().map(|e| e.uid).collect();
+    assert_eq!(
+        left, uids,
+        "a message another client marked deleted was expunged"
+    );
+}
+
+#[test]
 fn idle_wakes_when_mail_arrives() {
     let Some(host) = host() else { return };
     let account = account(&host, PORT, "idle");
