@@ -322,7 +322,6 @@ fn newsletter(theme: &str, width: f32) -> (Fixture, Harness<'static, App>, Wires
         account: 1,
         folder: "INBOX".into(),
     });
-    harness.run();
     wait_for(&mut harness, painted);
     (fx, harness, wires)
 }
