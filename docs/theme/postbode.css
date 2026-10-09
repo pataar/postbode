@@ -94,6 +94,15 @@ h1, h2, h3, h4 {
     font-weight: 500;
 }
 
+/* Screenshots come in a light and a dark variant, marked the way GitHub switches them; here the theme picks one. */
+img[src$="#gh-dark-mode-only"],
+.ayu img[src$="#gh-light-mode-only"], .coal img[src$="#gh-light-mode-only"], .navy img[src$="#gh-light-mode-only"] {
+    display: none;
+}
+.ayu img[src$="#gh-dark-mode-only"], .coal img[src$="#gh-dark-mode-only"], .navy img[src$="#gh-dark-mode-only"] {
+    display: inline;
+}
+
 /* The logo replaces the title text; font-size 0 keeps "Postbode" for screen readers. */
 .menu-title {
     background: url("../logo.svg") center / contain no-repeat;
