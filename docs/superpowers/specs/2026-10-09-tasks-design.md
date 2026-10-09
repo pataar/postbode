@@ -4,7 +4,7 @@ Status: draft, 2026-10-09
 
 ## Goal
 
-Replace TickTick with tasks that live in the user's own IMAP account. Each task is an email in a `Tasks/` folder, so tasks sync through any IMAP server, survive without Postbode and can be read in any mail client. A future Android app must be able to reuse the engine through Kotlin bindings.
+Replace TickTick with tasks that live in the user's own IMAP account. Each task is an email in a `Tasks/` folder, so tasks sync through any IMAP server, survive without Postvak and can be read in any mail client. A future Android app must be able to reuse the engine through Kotlin bindings.
 
 ## Decisions
 
@@ -22,7 +22,7 @@ Replace TickTick with tasks that live in the user's own IMAP account. Each task 
 
 - The root folder is `Tasks`, configurable as `[tasks] folder` in `config.toml`. It is created when the first task is added.
 - Tasks directly in the root form the **Inbox** list. Each subfolder (`Tasks/Work`) is a list. List create, rename and delete map to IMAP folder operations; deleting a list that isn't empty is refused.
-- `Tasks/Done` is reserved. Completing a task moves it there and records its list as `X-POSTBODE-LIST`. Reopening moves it back, or to Inbox when that list no longer exists.
+- `Tasks/Done` is reserved. Completing a task moves it there and records its list as `X-POSTVAK-LIST`. Reopening moves it back, or to Inbox when that list no longer exists.
 
 ### Message
 
@@ -46,9 +46,9 @@ VTODO properties in the MVP:
 | `CATEGORIES` | Tags |
 | `STATUS`, `COMPLETED` | `NEEDS-ACTION` / `COMPLETED` and when |
 | `VALARM` | Reminder |
-| `X-POSTBODE-LIST` | Original list of a done task |
+| `X-POSTVAK-LIST` | Original list of a done task |
 
-Properties Postbode doesn't understand (`RRULE`, `RELATED-TO`, other apps' `X-` properties) are kept unchanged on every rewrite.
+Properties Postvak doesn't understand (`RRULE`, `RELATED-TO`, other apps' `X-` properties) are kept unchanged on every rewrite.
 
 ### Plain mail as a task
 
@@ -65,7 +65,7 @@ Write first, delete after: a failure in between leaves a duplicate, never a lost
 
 ### Sync and conflicts
 
-- Existing folder sync fetches task messages. **Migration 004** adds a `tasks` table, filled by parsing the VTODO when a message in `Tasks/` is synced.
+- Existing folder sync fetches task messages. **Migration 008** adds a `tasks` table, filled by parsing the VTODO when a message in `Tasks/` is synced.
 - When two messages share a VTODO `UID`, the one with the highest `SEQUENCE`, then the latest `LAST-MODIFIED`, wins and the other is expunged. This covers both a failed expunge and two offline devices editing one task. There is no field-level merge.
 - An unparseable VTODO shows as a read-only task with a warning. Editing it is refused; deleting it is allowed.
 
@@ -85,7 +85,7 @@ Completing a task rewrites it, so its arrival date in `Tasks/Done` is the comple
 
 ## Engine
 
-`postbode::engine::tasks` holds all task logic. GUI, CLI, MCP and the daemon only call it.
+`postvak::engine::tasks` holds all task logic. GUI, CLI, MCP and the daemon only call it.
 
 **Kotlin-ready constraints:** the public API uses plain owned types (structs, enums, `String`, `Vec`, `Option`) with no generics or lifetimes, so UniFFI can expose it later. No platform code (paths, keychain, notifications) in this module. **Verify during planning** that the engine has no desktop-only dependencies on this path. UniFFI itself is not added now.
 
@@ -126,11 +126,11 @@ The rest is the title. Unrecognised tokens stay in the title.
 ### CLI
 
 ```
-postbode task add "<quick add>"
-postbode task list [--today|--overdue|--next7|--list NAME|--tag TAG|--done]
-postbode task done|reopen|rm <id>
-postbode task edit <id> [--title …] [--due …] [--priority …] [--tag …] [--list …] [--notes …]
-postbode task lists
+postvak task add "<quick add>"
+postvak task list [--today|--overdue|--next7|--list NAME|--tag TAG|--done]
+postvak task done|reopen|rm <id>
+postvak task edit <id> [--title …] [--due …] [--priority …] [--tag …] [--list …] [--notes …]
+postvak task lists
 ```
 
 `<id>` is a unique prefix of the VTODO `UID`, like git hashes.
