@@ -1,12 +1,14 @@
 <p align="center"><img src="assets/logo.svg" alt="Postbode" width="400"></p>
 
-[![CI](https://github.com/pataar/postbode/actions/workflows/ci.yml/badge.svg)](https://github.com/pataar/postbode/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-postbode.pataar.nl-orange)](https://postbode.pataar.nl/)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE-MIT)
+<p align="center">
+  <a href="https://github.com/pataar/postbode/actions/workflows/ci.yml"><img src="https://github.com/pataar/postbode/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://postbode.pataar.nl/"><img src="https://img.shields.io/badge/docs-postbode.pataar.nl-orange" alt="Docs"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License: MIT OR Apache-2.0"></a>
+</p>
 
 # Postbode
 
-Rules for your IMAP inbox that you write, or an agent proposes and you approve. Test them with a dry run and undo any delete. Postbode syncs your mail into a local store and runs your rules: move mail into folders, mark it read, or delete transient mail such as sign-in codes and magic links once you no longer need it. Without rules, it leaves your mail alone.
+Rules for your IMAP inbox. Test them with a dry run and undo any delete. Postbode syncs your mail into a local store and runs your rules: move mail into folders, mark it read, or delete transient mail such as sign-in codes and magic links once you no longer need it. Without rules, it leaves your mail alone.
 
 It runs headless as a background service, at login or on a server. On top come a keyboard-driven mail window for reading (`postbode gui`), a full command line, and an MCP server for agents (see [Agents over MCP](https://postbode.pataar.nl/mcp.html)). Postbode reads and sorts mail; it does not send it. It runs on macOS and Linux.
 
@@ -48,7 +50,7 @@ Deleted mail is kept as `.eml` for 30 days: `postbode trash list` and `postbode 
 - Works with any IMAP server, without Sieve or a webmail settings page.
 - Rules run on every sync, not once on delivery, so they can act later: an hour after you read a sign-in code, or once a newsletter is a week old.
 - `rules test` shows what every rule would do before it does it, and deleted mail can be restored.
-- Agents get only the scopes you grant: by default they can read mail and propose rules, not act on it.
+- Agents over MCP get only the scopes you grant, so it stays privacy-friendly: by default they see headers but no message bodies, and propose rules instead of acting on mail.
 - Passwords stay in the macOS Keychain or the Secret Service, or come from a command such as `pass`.
 
 Postbode is licensed under MIT or Apache-2.0, at your option. The mail window's HTML view includes Stylo, the CSS engine from Servo and Firefox, which is under MPL-2.0.
