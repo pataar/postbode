@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use anyrender::ImageRenderer;
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{DEFAULT_CSS, DocumentConfig, FontContext, local_name};
+use blitz_dom::{DEFAULT_CSS, DocumentConfig, FontContext, QualName, local_name, ns};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use eframe::egui;
@@ -154,6 +154,7 @@ fn layout(load: Load) -> (Current, Reply) {
         ..Default::default()
     };
     let mut doc = HtmlDocument::from_html(&load.html, config);
+    font_colours(&mut doc);
     // The provider answered every request synchronously; take its answers before the layout.
     doc.handle_messages();
     doc.resolve(0.0);
@@ -201,6 +202,31 @@ fn paint(current: &mut Current, strip: u32) -> Option<egui::ColorImage> {
     let size = [usize::try_from(width).ok()?, usize::try_from(height).ok()?];
     (rgba.len() == size[0] * size[1] * 4)
         .then(|| egui::ColorImage::from_rgba_premultiplied(size, &rgba))
+}
+
+/// Blitz maps `bgcolor` but not `<font color>`, which mail still uses for coloured text: copy it into the style.
+fn font_colours(doc: &mut HtmlDocument) {
+    let Ok(fonts) = doc.query_selector_all("font[color]") else {
+        return;
+    };
+    let styles: Vec<_> = fonts
+        .into_iter()
+        .filter_map(|id| {
+            let node = doc.get_node(id)?;
+            let colour = node.attr(local_name!("color"))?.trim();
+            // Only a colour name or hex value, so the attribute cannot add other declarations.
+            let plain = !colour.is_empty()
+                && colour
+                    .chars()
+                    .all(|c| c == '#' || c.is_ascii_alphanumeric());
+            let style = node.attr(local_name!("style")).unwrap_or_default();
+            plain.then(|| (id, format!("color: {colour}; {style}")))
+        })
+        .collect();
+    let mut mutator = doc.mutate();
+    for (id, style) in styles {
+        mutator.set_attribute(id, QualName::new(None, ns!(), local_name!("style")), &style);
+    }
 }
 
 /// The `href` of the link under a point in CSS pixels, from the innermost `<a>` around the hit node.
@@ -361,6 +387,29 @@ mod tests {
             .step_by(4)
             .find_map(|y| link(350.0, y as f32));
         assert_eq!(button.as_deref(), Some("https://example.com/cta"));
+    }
+
+    /// Counts the strongly red pixels in the first strip of `html`.
+    fn reds(html: &str) -> usize {
+        let mut current = None;
+        handle(&mut current, load(1, html, 400.0));
+        let paint = Request::Paint {
+            generation: 1,
+            strip: 0,
+        };
+        let Some(Reply::Strip { image, .. }) = handle(&mut current, paint) else {
+            panic!("no strip");
+        };
+        let red = |p: &&egui::Color32| p.r() > 150 && p.g() < 80 && p.b() < 80;
+        image.pixels.iter().filter(red).count()
+    }
+
+    #[test]
+    fn font_colour_attributes_colour_the_text() {
+        assert!(reds("<font color=\"#ff0000\">HELLO</font>") > 50);
+        assert!(reds("<font color=red style=\"font-weight:bold\">HELLO</font>") > 50);
+        // The attribute is a colour, not a place to inject other declarations.
+        assert_eq!(reds("<font color=\"x;background:red\">HELLO</font>"), 0);
     }
 
     #[test]
