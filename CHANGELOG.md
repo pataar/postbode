@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/postvak-app/postvak/compare/v0.3.0...v0.3.1) - 2026-10-09
+
+### Added
+
+- *(gui)* select and copy text in the HTML view, and colour <font color> text ([#117](https://github.com/postvak-app/postvak/pull/117))
+
 ## [0.3.0](https://github.com/postvak-app/postvak/compare/v0.2.0...v0.3.0) - 2026-10-09
 
 ### Changed
