@@ -120,9 +120,23 @@ impl Palette {
     }
 }
 
-/// egui's fonts with the Phosphor icons as the first fallback, so icons mix into ordinary labels.
+const TEXT_FONT: &str = "Ubuntu-Medium";
+
+/// egui's fonts with Ubuntu Medium for text instead of egui's Ubuntu Light, which reads too thin next to native
+/// apps, and the Phosphor icons as the first fallback, so icons mix into ordinary labels.
 pub(crate) fn fonts() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
+    let medium =
+        egui::FontData::from_static(include_bytes!("../../assets/fonts/Ubuntu-Medium.ttf"));
+    fonts
+        .font_data
+        .insert(TEXT_FONT.into(), std::sync::Arc::new(medium));
+    for family in fonts.families.values_mut() {
+        for name in family.iter_mut().filter(|name| *name == "Ubuntu-Light") {
+            *name = TEXT_FONT.into();
+        }
+    }
+    fonts.font_data.remove("Ubuntu-Light");
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     fonts
 }
@@ -198,6 +212,14 @@ mod tests {
         assert!(fonts.font_data.contains_key("phosphor"));
         let proportional = &fonts.families[&egui::FontFamily::Proportional];
         assert_eq!(proportional.get(1).map(String::as_str), Some("phosphor"));
+    }
+
+    #[test]
+    fn text_is_ubuntu_medium_not_light() {
+        let fonts = fonts();
+        let proportional = &fonts.families[&egui::FontFamily::Proportional];
+        assert_eq!(proportional.first().map(String::as_str), Some(TEXT_FONT));
+        assert!(!proportional.iter().any(|name| name == "Ubuntu-Light"));
     }
 
     #[test]
