@@ -34,16 +34,58 @@ fn progress(activity: &Activity) -> Option<f32> {
     }
 }
 
-/// Red for an error, green once the account is up to date, otherwise the default text colour.
-fn line_color(
-    account: &Account,
-    error_color: egui::Color32,
-    palette: &theme::Palette,
-) -> Option<egui::Color32> {
-    match (&account.error, &account.activity) {
-        (Some(_), _) | (None, Some(Activity::NotRunning { .. })) => Some(error_color),
-        (None, Some(Activity::Idle { .. })) => Some(palette.success),
-        _ => None,
+fn failed(account: &Account) -> bool {
+    account.error.is_some() || matches!(account.activity, Some(Activity::NotRunning { .. }))
+}
+
+/// The error colour for an error, otherwise the default text colour.
+fn line_color(account: &Account, error_color: egui::Color32) -> Option<egui::Color32> {
+    failed(account).then_some(error_color)
+}
+
+/// The mark before an account's line.
+#[derive(Debug, PartialEq)]
+struct Dot {
+    color: egui::Color32,
+    filled: bool,
+}
+
+/// A ring in the error colour for an error, a brass ring while offline, a brass dot once up to date, none while it
+/// syncs.
+fn dot(account: &Account, error_color: egui::Color32, palette: &theme::Palette) -> Option<Dot> {
+    if failed(account) {
+        Some(Dot {
+            color: error_color,
+            filled: false,
+        })
+    } else {
+        match account.activity {
+            Some(Activity::Idle { .. }) => Some(Dot {
+                color: palette.highlight,
+                filled: true,
+            }),
+            Some(Activity::Offline { .. }) => Some(Dot {
+                color: palette.highlight,
+                filled: false,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// `dot` in a cell as wide as it is tall, so the lines' text lines up whether or not they have one.
+fn paint_dot(ui: &mut egui::Ui, dot: Option<Dot>) {
+    let size = theme::PAD;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let radius = size / 2.0 - 1.0;
+    let Some(Dot { color, filled }) = dot else {
+        return;
+    };
+    if filled {
+        ui.painter().circle_filled(rect.center(), radius, color);
+    } else {
+        let ring = egui::Stroke::new(1.5, color);
+        ui.painter().circle_stroke(rect.center(), radius, ring);
     }
 }
 
@@ -78,8 +120,9 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             }
             for account in &app.accounts {
                 ui.horizontal(|ui| {
+                    paint_dot(ui, dot(account, error_color, theme::palette(ui)));
                     let mut text = egui::RichText::new(account_line(account));
-                    if let Some(color) = line_color(account, error_color, theme::palette(ui)) {
+                    if let Some(color) = line_color(account, error_color) {
                         text = text.color(color);
                     }
                     if ui
@@ -203,21 +246,33 @@ mod tests {
     use crate::sync::Event;
 
     #[test]
-    fn an_up_to_date_account_line_is_green_and_an_error_wins() {
+    fn an_up_to_date_account_gets_a_brass_dot_and_an_error_wins() {
         let fx = Fixture::new(&["work"]);
         let (mut harness, _wires) = fx.harness();
         let account = &mut harness.state_mut().accounts[0];
-        let (error_color, palette) = (egui::Color32::RED, &theme::MOCHA);
-        assert_eq!(line_color(account, error_color, palette), None);
+        let (error_color, palette) = (egui::Color32::RED, &theme::FRAME_NIGHT);
+        assert_eq!(line_color(account, error_color), None);
+        assert_eq!(dot(account, error_color, palette), None);
         account.activity = Some(Activity::Idle {
             since: 1_790_000_000,
         });
+        assert_eq!(line_color(account, error_color), None);
         assert_eq!(
-            line_color(account, error_color, palette),
-            Some(palette.success)
+            dot(account, error_color, palette),
+            Some(Dot {
+                color: palette.highlight,
+                filled: true
+            })
         );
         account.error = Some("boom".into());
-        assert_eq!(line_color(account, error_color, palette), Some(error_color));
+        assert_eq!(line_color(account, error_color), Some(error_color));
+        assert_eq!(
+            dot(account, error_color, palette),
+            Some(Dot {
+                color: error_color,
+                filled: false
+            })
+        );
     }
 
     #[test]
@@ -286,8 +341,15 @@ mod tests {
         );
         let account = &harness.state().accounts[0];
         assert!(!account.busy());
-        let (error_color, palette) = (egui::Color32::RED, &theme::MOCHA);
-        assert_eq!(line_color(account, error_color, palette), Some(error_color));
+        let (error_color, palette) = (egui::Color32::RED, &theme::FRAME_NIGHT);
+        assert_eq!(line_color(account, error_color), Some(error_color));
+        assert_eq!(
+            dot(account, error_color, palette),
+            Some(Dot {
+                color: error_color,
+                filled: false
+            })
+        );
     }
 
     #[test]

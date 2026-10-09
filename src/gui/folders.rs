@@ -1,11 +1,11 @@
 //! The left column: special folders, then custom folders as a tree, per account, then the Rules, Activity and Backups entries, pinned to the bottom.
-use eframe::egui;
+use eframe::egui::{self, AtomExt as _};
 
 use crate::message::clean;
 use crate::store::Folder;
 
 use super::app::{Account, App, FolderRow, UiAction, View};
-use super::{icons, numbers};
+use super::{icons, numbers, theme};
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
@@ -260,17 +260,23 @@ pub(crate) fn folder_row(
         if indent > 0.0 {
             ui.add_space(indent);
         }
-        let palette = super::theme::palette(ui);
-        let color = if selected {
-            palette.on_accent
+        let palette = theme::palette(ui);
+        let mut icon = egui::RichText::new(icon);
+        let count = count.unwrap_or_default();
+        let count = if selected && !count.is_empty() {
+            icon = icon.color(palette.highlight);
+            egui::RichText::new(format!(" {count} "))
+                .color(palette.background)
+                .background_color(palette.highlight)
         } else {
-            palette.muted
+            egui::RichText::new(count).color(palette.muted)
         };
+        let label = egui::Atom::from(format!("  {label}")).atom_shrink(true);
         // Always a right text, even empty: its grow atom is what keeps the label on the left.
-        let button = egui::Button::selectable(selected, format!("{icon}  {label}"))
+        let button = egui::Button::selectable(selected, (icon, label))
             .truncate()
             .min_size(egui::vec2(ui.available_width(), 0.0))
-            .right_text(egui::RichText::new(count.unwrap_or_default()).color(color));
+            .right_text(count);
         let response = ui.add(button);
         let name = accessible.to_string();
         response.widget_info(|| {
@@ -611,6 +617,44 @@ mod tests {
         let name = find(&|text| text.contains("Receipts")).unwrap();
         let count = find(&|text| text == "123").unwrap();
         assert!(name.right() <= count.left(), "{painted:?}");
+    }
+
+    #[test]
+    fn the_selected_folder_has_a_brass_icon_and_count_badge() {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(200.0, 40.0))
+            .build_ui(|ui| {
+                *ui.visuals_mut() = theme::FRAME.visuals(true);
+                folder_row(
+                    ui,
+                    true,
+                    icons::INBOX,
+                    "INBOX",
+                    0.0,
+                    Some("2".into()),
+                    "INBOX",
+                );
+            });
+        harness.run();
+        let format_of = |wanted: &str| {
+            harness
+                .output()
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.text().trim() == wanted => {
+                        text.galley.job.sections.first().map(|s| s.format.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(format_of(icons::INBOX).color, theme::FRAME.highlight);
+        let badge = format_of("2");
+        assert_eq!(
+            (badge.color, badge.background),
+            (theme::FRAME.background, theme::FRAME.highlight)
+        );
     }
 
     #[test]

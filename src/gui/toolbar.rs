@@ -16,13 +16,20 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         .map_or(FOLDERS_WIDTH, |state| state.outer_rect.width());
     let logo_cell = folders - INSET;
     ui.horizontal(|ui| {
-        ui.allocate_ui(egui::vec2(logo_cell, ui.available_height()), |ui| {
-            ui.set_min_width(logo_cell);
-            ui.horizontal(|ui| {
+        // As tall as the action buttons, so the row centres it on the same line as them.
+        ui.allocate_ui(egui::vec2(logo_cell, CONTROL), |ui| {
+            ui.set_min_size(egui::vec2(logo_cell, CONTROL));
+            ui.horizontal_centered(|ui| {
                 if let Some(logo) = &app.logo {
                     ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(20.0, 20.0)));
                 }
-                ui.label(egui::RichText::new("postbode").monospace().strong());
+                let serif = egui::FontFamily::Name(super::theme::SERIF.into());
+                ui.label(
+                    egui::RichText::new("Postbode")
+                        .family(serif)
+                        .size(19.0)
+                        .strong(),
+                );
             });
         });
         let in_folder = matches!(app.view, View::Folder { .. });
@@ -114,6 +121,15 @@ mod tests {
 
     fn disabled(harness: &egui_kittest::Harness<'_, crate::gui::App>, label: &str) -> bool {
         harness.get_by_label(label).accesskit_node().is_disabled()
+    }
+
+    #[test]
+    fn the_wordmark_lines_up_with_the_action_buttons() {
+        let fx = Fixture::new(&["work"]);
+        let (harness, _wires) = fx.harness();
+        let wordmark = harness.get_by_label("Postbode").rect().center().y;
+        let archive = harness.get_by_label(ACTIONS[0]).rect().center().y;
+        assert!((wordmark - archive).abs() <= 1.0, "{wordmark} vs {archive}");
     }
 
     #[test]
