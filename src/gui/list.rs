@@ -9,14 +9,13 @@ use crate::rules::Action;
 use crate::store::{Message, MessageSummary, ThreadSummary};
 
 use super::app::{App, UiAction, View};
-use super::theme::{self, Palette};
+use super::theme::{self, PAD, Palette, ROW};
 use super::{icons, numbers};
 
 /// Threads loaded per folder. ponytail: older mail is reachable through search; page by date if that is not enough.
 pub(crate) const THREAD_LIMIT: u32 = 10_000;
 /// Results shown for one search.
 pub(crate) const SEARCH_LIMIT: u32 = 500;
-const ROW_HEIGHT: f32 = 22.0;
 
 pub(crate) type RowKey = (String, u32);
 
@@ -212,8 +211,10 @@ pub(crate) struct Columns {
     pub member: bool,
 }
 
-/// The unread dot and the flag or mark, before the sender.
-const MARKERS: f32 = 24.0;
+/// The unread dot's cell, then the flag's or mark's, before the sender.
+const DOT: f32 = 12.0;
+const MARKER: f32 = 20.0;
+const MARKERS: f32 = DOT + MARKER;
 const SENDER: f32 = 130.0;
 const GAP: f32 = 12.0;
 /// Narrower than this, a column is left out: truncating would still draw its "…", over the date.
@@ -308,11 +309,11 @@ fn draw_row(
     }
     let ink = |color| if selected { palette.on_accent } else { color };
     let middle = rect.center().y;
-    let mut x = rect.left() + 6.0;
+    let mut x = rect.left() + PAD;
     if c.unread {
-        painter.circle_filled(egui::pos2(x + 2.0, middle), 3.0, ink(palette.accent));
+        painter.circle_filled(egui::pos2(x + 3.0, middle), 3.0, ink(palette.accent));
     }
-    x += 10.0;
+    x += DOT;
     let marker = if c.marked {
         Some(icons::CHECK)
     } else if c.flagged {
@@ -323,21 +324,21 @@ fn draw_row(
     if let Some(marker) = marker {
         let color = ink(palette.highlight);
         painter.text(
-            egui::pos2(x + 6.0, middle),
+            egui::pos2(x + MARKER / 2.0 - 2.0, middle),
             egui::Align2::CENTER_CENTER,
             marker,
             font.clone(),
             color,
         );
     }
-    x += 14.0;
+    x += MARKER;
     let date_color = ink(palette.muted);
     let date = painter.layout_no_wrap(c.date.clone(), font.clone(), date_color);
     let date_at = egui::pos2(
-        rect.right() - 6.0 - date.size().x,
+        rect.right() - PAD - date.size().x,
         middle - date.size().y / 2.0,
     );
-    let (sender_width, subject_width) = column_widths(rect.width() - 12.0, date.size().x);
+    let (sender_width, subject_width) = column_widths(rect.width() - 2.0 * PAD, date.size().x);
     painter.galley(date_at, date, date_color);
     let text_color = ink(if c.unread {
         palette.text
@@ -408,21 +409,19 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     }
     let mut area = egui::ScrollArea::vertical().auto_shrink(false);
     if list.follow_cursor {
-        let row_height = ROW_HEIGHT + ui.spacing().item_spacing.y;
+        let row_height = ROW + ui.spacing().item_spacing.y;
         let (offset, height) = list.viewport;
         area = area.vertical_scroll_offset(offset_showing(list.cursor, row_height, offset, height));
     }
     let palette = theme::palette(ui);
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let output = area.show_rows(ui, ROW_HEIGHT, list.rows.len(), |ui, range| {
+    let output = area.show_rows(ui, ROW, list.rows.len(), |ui, range| {
         for index in range {
             let row = &list.rows[index];
             let marked = list.marked.contains(&row.key());
             let selected = index == list.cursor || marked;
-            let (rect, response) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), ROW_HEIGHT),
-                egui::Sense::click(),
-            );
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), egui::Sense::click());
             let c = columns(row, marked, recipient, app.search.is_some(), &now);
             draw_row(ui, rect, &c, selected, response.hovered(), palette, &font);
             let mut name = row_text(row, recipient, app.search.is_some(), &now);
@@ -591,7 +590,7 @@ mod tests {
     fn column_widths_keep_the_date_and_never_go_negative() {
         assert_eq!(
             column_widths(600.0, 80.0),
-            (130.0, 600.0 - 24.0 - 130.0 - 12.0 - 80.0 - 12.0)
+            (130.0, 600.0 - 32.0 - 130.0 - 12.0 - 80.0 - 12.0)
         );
         let (sender, subject) = column_widths(150.0, 80.0);
         assert!(sender >= 0.0 && subject >= 0.0);
@@ -727,7 +726,7 @@ mod tests {
                 .with_size(egui::vec2(width + 16.0, 40.0))
                 .build_ui(move |ui| {
                     let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
+                        ui.allocate_exact_size(egui::vec2(width, ROW), egui::Sense::hover());
                     let c = Columns {
                         unread: true,
                         flagged: true,

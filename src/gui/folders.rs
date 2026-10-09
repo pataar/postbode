@@ -24,7 +24,9 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         });
     egui::ScrollArea::vertical().show(ui, |ui| {
         for (index, account) in app.accounts.iter().enumerate() {
+            // Indented like the rows' icons, which sit a button padding inside the row.
             ui.horizontal(|ui| {
+                ui.add_space(ui.spacing().button_padding.x);
                 ui.strong(&account.name);
                 if account.busy() {
                     ui.spinner();

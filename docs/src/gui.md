@@ -45,7 +45,7 @@ Each row shows, in columns: a dot when it is unread, a flag (or a check when mar
 
 ## Status bar
 
-One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. The light and dark themes are Catppuccin Latte and Mocha.
+One line per account says what its sync is doing: connecting, which folder, how many headers or bodies of how many, up to date, or offline and when it retries. Click it for the last 50 lines. The switch on the right picks the System, Light or Dark theme and saves it as `[ui] theme` in `config.toml`. The light and dark themes are Catppuccin Latte and Mocha. Next to the version, a link appears when a newer release is out; it opens that release's notes on GitHub. Postbode does not update itself, and the daily check runs only with `[ui] check_updates = true` in `config.toml` (see [Accounts](accounts.md#appearance)).
 
 ## Rules, Activity and Backups
 

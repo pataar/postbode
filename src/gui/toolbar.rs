@@ -1,20 +1,23 @@
 //! The top bar: the logo, then actions on the cursor row or the selection, then search.
 use eframe::egui;
+use eframe::egui::containers::panel::PanelState;
 
 use crate::rules::Action;
 
-use super::app::{App, UiAction, View};
+use super::app::{App, FOLDERS, FOLDERS_WIDTH, UiAction, View};
 use super::icons;
-use super::theme::CONTROL;
-
-/// As wide as the folder pane's default, so the action buttons line up with the list.
-const LOGO_CELL: f32 = 212.0;
+use super::theme::{CONTROL, INSET};
 
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
+    // As wide as the folder pane (last frame's, so it follows a resize), less the toolbar's margin, so the first
+    // action's glyph lines up with the list's content.
+    let folders = PanelState::load(ui.ctx(), egui::Id::new(FOLDERS))
+        .map_or(FOLDERS_WIDTH, |state| state.outer_rect.width());
+    let logo_cell = folders - INSET;
     ui.horizontal(|ui| {
-        ui.allocate_ui(egui::vec2(LOGO_CELL, ui.available_height()), |ui| {
-            ui.set_min_width(LOGO_CELL);
+        ui.allocate_ui(egui::vec2(logo_cell, ui.available_height()), |ui| {
+            ui.set_min_width(logo_cell);
             ui.horizontal(|ui| {
                 if let Some(logo) = &app.logo {
                     ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(20.0, 20.0)));

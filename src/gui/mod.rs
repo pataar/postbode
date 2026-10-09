@@ -30,6 +30,12 @@ pub use app::App;
 /// The window icon: `assets/icon.svg` rendered to PNG by `packaging/icons.sh`.
 pub(crate) const ICON: &[u8] = include_bytes!("../../assets/icon.png");
 
+/// macOS shows the window icon in the Dock, which expects Apple's grid: the tile at 824/1024 of the canvas.
+#[cfg(target_os = "macos")]
+const WINDOW_ICON: &[u8] = include_bytes!("../../assets/macos.iconset/icon_512x512@2x.png");
+#[cfg(not(target_os = "macos"))]
+const WINDOW_ICON: &[u8] = ICON;
+
 /// The Wayland app id and X11 WM class; the Linux desktop entry and icons are named after it, so the compositor can
 /// match the window to them.
 const APP_ID: &str = "io.github.pataar.postbode";
@@ -88,9 +94,10 @@ fn prefer_integrated_gpu(mut options: eframe::NativeOptions) -> eframe::NativeOp
 
 /// A window with the icon, app id and title, at `size`.
 fn viewport(size: [f32; 2]) -> egui::ViewportBuilder {
-    // ICON is embedded at compile time and decoded by `the_icon_is_a_square_png_with_transparent_corners`.
+    // WINDOW_ICON is embedded at compile time and decoded by `the_window_icon_is_a_valid_png`.
     #[allow(clippy::expect_used)]
-    let icon = eframe::icon_data::from_png_bytes(ICON).expect("assets/icon.png is a valid PNG");
+    let icon =
+        eframe::icon_data::from_png_bytes(WINDOW_ICON).expect("the window icon is a valid PNG");
     egui::ViewportBuilder::default()
         .with_icon(icon)
         .with_app_id(APP_ID)
@@ -191,6 +198,20 @@ mod tests {
         let icon = eframe::icon_data::from_png_bytes(super::ICON).unwrap();
         assert_eq!((icon.width, icon.height), (512, 512));
         assert_eq!(icon.rgba[3], 0, "the top-left pixel must be transparent");
+    }
+
+    #[test]
+    fn the_window_icon_is_a_valid_png() {
+        let icon = eframe::icon_data::from_png_bytes(super::WINDOW_ICON).unwrap();
+        assert_eq!(icon.width, icon.height);
+        if cfg!(target_os = "macos") {
+            let left_middle = (icon.height / 2 * icon.width + icon.width / 20) as usize * 4;
+            assert_eq!(
+                icon.rgba[left_middle + 3],
+                0,
+                "the Dock icon needs Apple's transparent margin"
+            );
+        }
     }
 
     #[test]

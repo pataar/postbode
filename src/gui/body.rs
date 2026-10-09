@@ -87,6 +87,9 @@ pub(crate) fn size(bytes: usize) -> String {
     }
 }
 
+/// The header names' column, wide enough for "Subject".
+const HEADER_NAME: f32 = 56.0;
+
 pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     let mut actions = Vec::new();
     let Some(body) = &app.body else {
@@ -99,21 +102,24 @@ pub(crate) fn show(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
     };
     actions.extend(toolbar(body, &app.accounts[body.account], ui));
     let date = local_time(message.date.unwrap_or(message.internaldate), HEADER_DATE);
-    egui::Grid::new("headers").num_columns(2).show(ui, |ui| {
-        for (name, value) in [
-            ("From", message.from_addr.as_deref()),
-            ("To", message.to_addr.as_deref()),
-            ("Cc", message.cc_addr.as_deref()),
-            ("Date", Some(date.as_str())),
-            ("Subject", message.subject.as_deref()),
-        ] {
-            if let Some(value) = value {
-                ui.strong(name);
-                ui.label(clean(value, false));
-                ui.end_row();
-            }
+    // Not a grid: grid cells do not truncate, so a long header would widen the pane past the window.
+    for (name, value) in [
+        ("From", message.from_addr.as_deref()),
+        ("To", message.to_addr.as_deref()),
+        ("Cc", message.cc_addr.as_deref()),
+        ("Date", Some(date.as_str())),
+        ("Subject", message.subject.as_deref()),
+    ] {
+        if let Some(value) = value {
+            ui.horizontal(|ui| {
+                ui.allocate_ui(egui::vec2(HEADER_NAME, ui.available_height()), |ui| {
+                    ui.set_min_width(HEADER_NAME);
+                    ui.strong(name);
+                });
+                ui.add(egui::Label::new(clean(value, false)).truncate());
+            });
         }
-    });
+    }
     for attachment in &body.attachments {
         ui.horizontal(|ui| {
             let name = attachment
@@ -211,6 +217,8 @@ fn missing_text(account: &Account) -> String {
 /// The body line by line with clickable links. ponytail: every line is laid out each frame; draw only the visible
 /// lines with `show_rows` if long mail scrolls slowly.
 fn show_text(ui: &mut egui::Ui, text: &str) {
+    // Text lines, not rows of controls: a link must not make its line taller.
+    ui.spacing_mut().interact_size.y = 0.0;
     for line in text.lines() {
         if line.trim().is_empty() {
             ui.label(" ");
@@ -391,6 +399,28 @@ mod tests {
                 .is_some()
         );
         assert!(harness.query_by_label("hello there").is_some());
+    }
+
+    /// Regression: a long header widened the reader past the window, clipping the headers and the HTML view.
+    #[test]
+    fn long_headers_truncate_in_a_narrow_reader() {
+        let fx = Fixture::new(&["work"]);
+        let mut long = message("INBOX", 1, "hello there");
+        long.from_addr = Some(format!(
+            "{} <long@example.com>",
+            "Very Long Name ".repeat(10)
+        ));
+        fx.add("work", long);
+        let (mut harness, _wires) = fx.harness();
+        harness.set_size(egui::vec2(900.0, 800.0));
+        harness.run();
+        let subject = harness.get_by_label("hello there").rect();
+        assert!(subject.right() <= 900.0, "{subject:?}");
+        let body = harness.get_by_label("Body of 1").rect();
+        assert!(body.right() <= 900.0, "{body:?}");
+        for node in harness.get_all_by_label_contains("Very Long Name") {
+            assert!(node.rect().right() <= 900.0, "{:?}", node.rect());
+        }
     }
 
     #[test]

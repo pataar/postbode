@@ -12,6 +12,7 @@ use crate::time::local_time;
 use crate::trash::{Trash, TrashEntry};
 
 use super::app::{Account, App, UiAction};
+use super::theme;
 
 /// Entries shown in the Activity view.
 const LOG_LIMIT: u32 = 500;
@@ -101,7 +102,7 @@ pub(crate) fn show_rules(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
             if app.rules.rules.is_empty() {
                 ui.weak("rules.toml has no rules yet.");
             }
-            egui::Grid::new("rules")
+            theme::grid("rules", ui)
                 .striped(true)
                 .num_columns(3)
                 .show(ui, |ui| {
@@ -199,7 +200,7 @@ pub(crate) fn show_activity(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         return Vec::new();
     }
     egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-        egui::Grid::new("log")
+        theme::grid("log", ui)
             .striped(true)
             .num_columns(6)
             .show(ui, |ui| {
@@ -236,7 +237,7 @@ pub(crate) fn show_trash(app: &App, ui: &mut egui::Ui) -> Vec<UiAction> {
         return actions;
     }
     egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-        egui::Grid::new("trash")
+        theme::grid("trash", ui)
             .striped(true)
             .num_columns(6)
             .show(ui, |ui| {
