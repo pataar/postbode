@@ -1075,20 +1075,21 @@ mod tests {
         let fx = Fixture::new(&["work"]);
         fx.add("work", message("INBOX", 1, "plain"));
         add_html(&fx, 2, "<p>rich words</p>", "plain words");
+        // One frame applies each input and the next draws it; `run` would race the render thread's repaints.
         let (mut harness, _wires) = fx.harness();
         let shows_html = |h: &egui_kittest::Harness<'_, crate::gui::App>| {
             h.state().body.as_ref().is_some_and(|b| b.shows_html())
         };
         assert!(shows_html(&harness));
         harness.get_by_label("Text").click();
-        harness.run();
+        harness.run_steps(2);
         assert!(!shows_html(&harness));
         assert!(harness.query_by_label("plain words").is_some());
         harness.get_by_label("HTML").click();
-        harness.run();
+        harness.run_steps(2);
         assert!(shows_html(&harness));
         harness.event(egui::Event::Text("j".into()));
-        harness.run();
+        harness.run_steps(2);
         assert!(harness.query_by_label("HTML").is_none());
         assert!(harness.query_by_label("Text").is_none());
     }
@@ -1110,13 +1111,14 @@ mod tests {
         use crate::gui::html::view_tests::add_html;
         let fx = Fixture::new(&["work"]);
         add_html(&fx, 1, "<p>rich words</p>", "plain words");
+        // One frame applies each input and the next draws it; `run` would race the render thread's repaints.
         let (mut harness, _wires) = fx.harness();
         harness.get_by_label("View source").click();
-        harness.run();
+        harness.run_steps(2);
         let part = "Content-Type: text/html; charset=utf-8";
         assert!(harness.query_by_label(part).is_some());
         harness.event(egui::Event::Text("v".into()));
-        harness.run();
+        harness.run_steps(2);
         assert!(
             harness
                 .state()
