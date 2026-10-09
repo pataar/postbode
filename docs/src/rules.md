@@ -68,7 +68,7 @@ A `delete` wins: when any matching rule deletes a message, no other rule's actio
 - On every sync, in file order. Because rules run again on each sync, `older_than` and `seen` can fire later, for example an hour after you read a sign-in code.
 - A rule acts only on mail that arrived after the rule was enabled, so adding a rule never touches your history. `postbode rules apply-existing NAME` is the explicit opt-in. Run it with `--dry-run` first.
 - A rule approved with `postbode rules approve` acts on mail that arrives after the approval. A rule you add or enable by editing the file acts on mail that arrives after the next sync picks it up.
-- Renaming a rule, or disabling and enabling it again, restarts that clock.
+- Renaming a rule, editing its account, folder, match or actions, or disabling and enabling it again, restarts that clock.
 - Mail restored with `postbode trash restore` carries the `$PostbodeRestored` keyword. Rules never act on it again. This needs a server that accepts custom keywords; without one, the same rule can delete restored mail again.
 
 ## Notifications

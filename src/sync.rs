@@ -335,17 +335,35 @@ pub fn sync_folder_with(
         _ => (0, true),
     };
 
-    let flags_upto = if starts_tracking { 0 } else { last_uid };
-    let updates = if flags_upto > 0 {
-        ops.fetch_flags(flags_upto)?
+    let flag_fetch = if starts_tracking {
+        FlagFetch::None
     } else {
-        Vec::new()
+        flag_fetch(
+            store.flags_synced(&folder.name)?,
+            info.highest_modseq,
+            now(),
+        )
+    };
+    let updates = match flag_fetch {
+        FlagFetch::None => Vec::new(),
+        FlagFetch::All => ops.fetch_flags(last_uid, None)?,
+        FlagFetch::ChangedSince(modseq) => ops.fetch_flags(last_uid, Some(modseq))?,
     };
     let uids: Vec<u32> = ops
         .search_uids(last_uid + 1)?
         .into_iter()
         .filter(|&uid| uid > last_uid)
         .collect();
+    // Without an expunge, the server holds exactly the stored messages plus the new ones.
+    let present: Option<Vec<u32>> = if flag_fetch == FlagFetch::All {
+        Some(updates.iter().map(|u| u.uid).collect())
+    } else if !starts_tracking
+        && info.exists as usize != store.message_count(&folder.name)? as usize + uids.len()
+    {
+        Some(ops.search_uids(1)?)
+    } else {
+        None
+    };
     let row = |last_uid| Folder {
         name: folder.name.clone(),
         uidvalidity: info.uidvalidity,
@@ -364,12 +382,15 @@ pub fn sync_folder_with(
             store.set_rules_uid(&folder.name, 0)?;
             store.set_notified_uid(&folder.name, 0)?;
         }
-        let present: Vec<u32> = updates.iter().map(|u| u.uid).collect();
         for u in &updates {
             store.update_flags(&folder.name, u.uid, &u.flags.join(" "))?;
         }
-        if flags_upto > 0 {
-            store.remove_missing(&folder.name, flags_upto, &present)?;
+        if let Some(present) = &present {
+            store.remove_missing(&folder.name, last_uid, present)?;
+        }
+        // New messages are fetched after the select, so their flags are at least this fresh.
+        if starts_tracking || flag_fetch != FlagFetch::None {
+            store.set_flags_synced(&folder.name, info.highest_modseq.unwrap_or(0), now())?;
         }
         Ok::<_, SyncError>(())
     })?;
@@ -424,6 +445,31 @@ pub fn sync_folder_with(
     Ok(new)
 }
 
+/// Without CONDSTORE, flag changes made elsewhere show up within this long.
+const FULL_FLAGS_EVERY_SECS: i64 = 30 * 60;
+
+#[derive(Debug, PartialEq)]
+enum FlagFetch {
+    None,
+    All,
+    ChangedSince(u64),
+}
+
+/// Which flags a tracked folder needs; a full fetch of a large folder costs megabytes, which Gmail counts against its daily cap.
+fn flag_fetch(
+    (stored_modseq, synced_at): (u64, i64),
+    highest_modseq: Option<u64>,
+    now: i64,
+) -> FlagFetch {
+    match highest_modseq {
+        Some(highest) if stored_modseq == 0 || highest < stored_modseq => FlagFetch::All,
+        Some(highest) if highest == stored_modseq => FlagFetch::None,
+        Some(_) => FlagFetch::ChangedSince(stored_modseq),
+        None if now - synced_at >= FULL_FLAGS_EVERY_SECS => FlagFetch::All,
+        None => FlagFetch::None,
+    }
+}
+
 fn to_message(folder: &str, env: Envelope) -> Message {
     let parsed = parse_headers(&env.headers);
     Message {
@@ -468,6 +514,13 @@ pub fn sync_all_with(
 ) -> Result<(Vec<NewMessageRef>, Vec<String>), SyncError> {
     checkpoint(ops, Activity::ListingFolders)?;
     let mut folders = ops.list_folders()?;
+    // Gmail's All Mail, Starred and Important hold copies of messages in other folders; syncing them doubles the traffic.
+    folders.retain(|f| {
+        !matches!(
+            f.special_use.as_deref(),
+            Some("All" | "Flagged" | "Important")
+        )
+    });
     special_use_by_name(&mut folders);
     let of = folders.len();
     let mut new = Vec::new();
@@ -485,7 +538,22 @@ pub fn sync_all_with(
             Err(e) => errors.push(format!("{}: {e}; skipped this pass", folder.name)),
         }
     }
+    forget_unlisted_folders(store, &folders)?;
     Ok((new, errors))
+}
+
+/// Drops store folders this pass did not sync, with their messages; rule-move placeholders wait for the server to list them.
+fn forget_unlisted_folders(store: &Store, synced: &[RemoteFolder]) -> Result<(), SyncError> {
+    for stored in store.folders()? {
+        if stored.uidvalidity != 0 && !synced.iter().any(|f| f.name == stored.name) {
+            log::info!(
+                "{}: no longer synced, removing it from the store",
+                stored.name
+            );
+            store.remove_folder(&stored.name)?;
+        }
+    }
+    Ok(())
 }
 
 /// Spec section 6: a role no folder is marked with goes to the folder carrying that name, ignoring case.
@@ -521,7 +589,8 @@ pub fn load_rules_for(
         .collect();
     store.forget_rules_except(&enabled)?;
     for rule in compiled.iter_mut().filter(|r| r.rule.enabled) {
-        rule.first_seen_at = store.rule_first_seen(&rule.rule.name, now)?;
+        rule.first_seen_at =
+            store.rule_first_seen(&rule.rule.name, &rule.rule.definition()?, now)?;
     }
     Ok(compiled)
 }

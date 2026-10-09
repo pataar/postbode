@@ -37,7 +37,7 @@ Each account lists its INBOX and special folders (Archive, Drafts, Sent, Junk, T
 
 ## Toolbar and status bar
 
-The toolbar above the panes has buttons for Archive, Move, Delete, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The magnifier on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postbode's version.
+The toolbar above the panes has buttons for Archive, Move, Delete, Flag and Read or unread; hover one to see its key. They act on the selection or the current row, like the keys. The search field on the right starts a search, like `/`. The status bar starts with a sync button (Ctrl+R, Cmd+R on macOS) and ends with Postbode's version.
 
 ## Message list
 

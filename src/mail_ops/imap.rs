@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use async_imap::Session;
 use async_imap::extensions::idle::IdleResponse;
-use async_imap::types::{Fetch, Flag, NameAttribute};
+use async_imap::types::{Capabilities, Fetch, Flag, NameAttribute};
 use futures_util::TryStreamExt;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tokio::net::TcpStream;
@@ -32,6 +32,7 @@ pub struct ImapOps {
     has_idle: bool,
     has_move: bool,
     has_uidplus: bool,
+    has_condstore: bool,
 }
 
 impl ImapOps {
@@ -59,7 +60,7 @@ impl ImapOps {
                     ))
                 })?
         });
-        let (session, has_idle, has_move, has_uidplus) = match opened {
+        let (session, caps) = match opened {
             Ok(opened) => opened,
             Err(error) => {
                 // Dropping the runtime would wait for a blocking DNS lookup past the limit.
@@ -70,9 +71,11 @@ impl ImapOps {
         Ok(ImapOps {
             rt,
             session: Some(session),
-            has_idle,
-            has_move,
-            has_uidplus,
+            has_idle: caps.has_str("IDLE"),
+            has_move: caps.has_str("MOVE"),
+            has_uidplus: caps.has_str("UIDPLUS"),
+            // QRESYNC implies CONDSTORE (RFC 7162).
+            has_condstore: caps.has_str("CONDSTORE") || caps.has_str("QRESYNC"),
         })
     }
 
@@ -117,7 +120,7 @@ fn root_store(ca_file: Option<&Path>) -> MailResult<rustls::RootCertStore> {
 async fn open_session(
     account: &AccountConfig,
     secret: &Secret,
-) -> MailResult<(ImapSession, bool, bool, bool)> {
+) -> MailResult<(ImapSession, Capabilities)> {
     let tcp = TcpStream::connect((account.host.as_str(), account.port))
         .await
         .map_err(|e| MailError::Connect(e.to_string()))?;
@@ -139,10 +142,7 @@ async fn open_session(
         .await
         .map_err(|(e, _)| MailError::Auth(e.to_string()))?;
     let caps = session.capabilities().await.map_err(proto)?;
-    let has_idle = caps.has_str("IDLE");
-    let has_move = caps.has_str("MOVE");
-    let has_uidplus = caps.has_str("UIDPLUS");
-    Ok((session, has_idle, has_move, has_uidplus))
+    Ok((session, caps))
 }
 
 fn enable_keepalive(tcp: &TcpStream) -> std::io::Result<()> {
@@ -180,8 +180,11 @@ fn special_use(attrs: &[NameAttribute<'_>]) -> Option<String> {
         NameAttribute::Junk => Some("Junk".into()),
         NameAttribute::Drafts => Some("Drafts".into()),
         NameAttribute::Archive => Some("Archive".into()),
+        NameAttribute::All => Some("All".into()),
+        NameAttribute::Flagged => Some("Flagged".into()),
         NameAttribute::Extension(s) => match s.trim_start_matches('\\') {
-            x @ ("Trash" | "Sent" | "Junk" | "Drafts" | "Archive") => Some(x.to_string()),
+            x @ ("Trash" | "Sent" | "Junk" | "Drafts" | "Archive" | "All" | "Flagged"
+            | "Important") => Some(x.to_string()),
             _ => None,
         },
         _ => None,
@@ -227,11 +230,19 @@ impl MailOps for ImapOps {
     }
 
     fn select(&mut self, folder: &str) -> MailResult<SelectInfo> {
+        let condstore = self.has_condstore;
         let (rt, session) = self.parts()?;
         rt.block_on(async {
-            let mailbox = session.select(folder).await.map_err(proto)?;
+            let mailbox = if condstore {
+                session.select_condstore(folder).await
+            } else {
+                session.select(folder).await
+            }
+            .map_err(proto)?;
             Ok(SelectInfo {
                 uidvalidity: mailbox.uid_validity.unwrap_or(0),
+                exists: mailbox.exists,
+                highest_modseq: mailbox.highest_modseq,
             })
         })
     }
@@ -270,14 +281,22 @@ impl MailOps for ImapOps {
         })
     }
 
-    fn fetch_flags(&mut self, upto_uid: u32) -> MailResult<Vec<FlagUpdate>> {
+    fn fetch_flags(
+        &mut self,
+        upto_uid: u32,
+        changed_since: Option<u64>,
+    ) -> MailResult<Vec<FlagUpdate>> {
         if upto_uid == 0 {
             return Ok(vec![]);
         }
+        let query = match changed_since {
+            Some(modseq) => format!("(UID FLAGS) (CHANGEDSINCE {modseq})"),
+            None => "(UID FLAGS)".into(),
+        };
         let (rt, session) = self.parts()?;
         rt.block_on(async {
             let fetches: Vec<Fetch> = session
-                .uid_fetch(format!("1:{upto_uid}"), "(UID FLAGS)")
+                .uid_fetch(format!("1:{upto_uid}"), query)
                 .await
                 .map_err(proto)?
                 .try_collect()
@@ -333,6 +352,15 @@ impl MailOps for ImapOps {
                     .await
                     .map_err(proto)?;
             } else {
+                // ponytail: another client can still flag a message between this search and the EXPUNGE.
+                let deleted = session.uid_search("DELETED").await.map_err(proto)?;
+                if deleted.iter().any(|&other| other != uid) {
+                    return Err(MailError::Protocol(format!(
+                        "refusing to expunge uid {uid}: the server lacks UIDPLUS, so EXPUNGE would also \
+                         remove {} other message(s) marked deleted in this folder",
+                        deleted.len() - usize::from(deleted.contains(&uid))
+                    )));
+                }
                 let _: Vec<_> = session
                     .expunge()
                     .await

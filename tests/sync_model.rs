@@ -812,8 +812,12 @@ impl MailOps for Harness<'_> {
         Ok(envelopes)
     }
 
-    fn fetch_flags(&mut self, upto_uid: u32) -> MailResult<Vec<FlagUpdate>> {
-        self.run_selected(|ops| ops.fetch_flags(upto_uid))
+    fn fetch_flags(
+        &mut self,
+        upto_uid: u32,
+        changed_since: Option<u64>,
+    ) -> MailResult<Vec<FlagUpdate>> {
+        self.run_selected(|ops| ops.fetch_flags(upto_uid, changed_since))
     }
 
     fn fetch_raw(&mut self, uid: u32) -> MailResult<Option<Vec<u8>>> {
