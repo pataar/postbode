@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Render every app icon from assets/icon.svg. Run it after changing the SVG
+# Render every app icon from assets/icon.svg, and the logo and social preview from their
+# *.src.svg. Run it after changing any of those SVGs
 # and commit the outputs, so builds never need resvg.
 #
 # Usage: packaging/icons.sh            (from anywhere in the repo)
-# Needs: resvg (cargo install --locked resvg); iconutil (macOS only) for the .icns
+# Needs: resvg and usvg (cargo install --locked resvg usvg); iconutil (macOS only) for the .icns
 #
 # Writes:
 #   assets/icon.png                     512x512 window icon, transparent background
@@ -14,6 +15,8 @@
 #                                       margin. Committed so a macOS runner can
 #                                       run `iconutil -c icns` without resvg.
 #   assets/postvak.icns                only where iconutil exists (macOS)
+#   assets/logo.svg                     the wordmark, text outlined
+#   assets/social-preview.png           2560x1280 link preview
 set -euo pipefail
 
 app_id=io.github.postvak_app.postvak
@@ -61,3 +64,9 @@ if command -v iconutil >/dev/null; then
 else
     echo "warning: iconutil not found (macOS only); skipped assets/postvak.icns" >&2
 fi
+
+# The logo is committed with its text outlined, so it renders the same without the fonts installed.
+command -v usvg >/dev/null || { echo "usvg not found: cargo install --locked usvg" >&2; exit 1; }
+fonts=(--use-fonts-dir "$assets/fonts" --skip-system-fonts)
+usvg "${fonts[@]}" "$assets/logo.src.svg" "$assets/logo.svg"
+resvg "${fonts[@]}" "$assets/social-preview.src.svg" "$assets/social-preview.png"

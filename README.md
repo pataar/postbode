@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.svg" alt="Postvak" width="400"></p>
+<p align="center"><img src="assets/logo.svg" alt="Postvak" width="364"></p>
 
 <p align="center">
   <a href="https://github.com/postvak-app/postvak/actions/workflows/ci.yml"><img src="https://github.com/postvak-app/postvak/actions/workflows/ci.yml/badge.svg" alt="CI"></a>

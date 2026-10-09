@@ -60,7 +60,7 @@ Port 10993 advertises MOVE and UIDPLUS, port 11993 neither. Each test logs in as
 ## Build speed
 `mise install` brings kache, cargo-nextest and actionlint. Run `kache init` once per machine to make kache your `RUSTC_WRAPPER`; it edits your own `~/.cargo/config.toml`, so the repo does not do it for you. Edit loop: `cargo check`, `cargo nextest run`.
 
-Run `packaging/icons.sh` after changing `assets/icon.svg`, and commit what it writes.
+Run `packaging/icons.sh` after changing `assets/icon.svg`, `assets/logo.src.svg` or `assets/social-preview.src.svg`, and commit what it writes.
 
 ## Releasing
 Conventional commits on `main` drive everything. release-plz keeps a release PR open; merging it publishes to crates.io and pushes the `vX.Y.Z` tag, and dist's `release.yml` builds the binaries, creates the GitHub release and updates `postvak-app/homebrew-tap`. On the tag, `macos-app.yml` runs `packaging/macos/package.sh` on macOS (Postvak.app on a DMG, notarized once the Apple secrets below exist), attaches the DMG to the release and writes `Casks/postvak.rb` in the tap from `packaging/macos/postvak.rb.in`; rerun it for a tag via workflow_dispatch. Regenerate `release.yml` with `dist generate` after changing `dist-workspace.toml`; never edit it by hand. The same tag starts `appimage.yml`, which waits for that release, repackages its Linux binaries as AppImages (`packaging/linux/appimage.sh`, pinned appimagetool and runtime) and attaches them.
