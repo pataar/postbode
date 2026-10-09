@@ -1731,8 +1731,9 @@ impl MailOps for QueuesCommandsOnSelect {
     fn fetch_flags(
         &mut self,
         upto_uid: u32,
+        changed_since: Option<u64>,
     ) -> crate::mail_ops::MailResult<Vec<crate::mail_ops::FlagUpdate>> {
-        self.inner.fetch_flags(upto_uid)
+        self.inner.fetch_flags(upto_uid, changed_since)
     }
     fn fetch_raw(&mut self, uid: u32) -> crate::mail_ops::MailResult<Option<Vec<u8>>> {
         self.inner.fetch_raw(uid)
@@ -2891,4 +2892,140 @@ fn a_full_pass_stores_the_delimiter_and_an_inbox_only_pass_keeps_it() {
         )
         .unwrap();
     assert_eq!(delimiter(&state.store).as_deref(), Some("/"));
+}
+
+#[test]
+fn virtual_folders_that_repeat_other_folders_are_not_synced() {
+    let mut ops = ops_with_inbox()
+        .with_folder("[Gmail]/All Mail", Some("All"))
+        .with_folder("[Gmail]/Important", Some("Important"))
+        .with_folder("[Gmail]/Starred", Some("Flagged"));
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    let synced: Vec<String> = store
+        .folders()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    assert_eq!(synced, ["INBOX", "Trash"]);
+    assert!(
+        !ops.calls.iter().any(|c| c.contains("[Gmail]")),
+        "{:?}",
+        ops.calls
+    );
+}
+
+fn calls_after_second_pass(
+    ops: &mut RecordingOps,
+    store: &Store,
+    change: impl FnOnce(&mut RecordingOps),
+) -> Vec<String> {
+    sync_all(ops, store).unwrap();
+    change(ops);
+    ops.calls.clear();
+    sync_all(ops, store).unwrap();
+    std::mem::take(&mut ops.calls)
+}
+
+#[test]
+fn with_condstore_an_unchanged_folder_fetches_no_flags() {
+    let mut ops = ops_with_inbox();
+    let store = Store::open_in_memory().unwrap();
+    let calls = calls_after_second_pass(&mut ops, &store, |_| {});
+    assert!(
+        !calls.iter().any(|c| c.starts_with("fetch_flags")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c == "search_uids INBOX 1"),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn with_condstore_only_changed_flags_are_fetched() {
+    let mut ops = ops_with_inbox();
+    let store = Store::open_in_memory().unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    let (since, _) = store.flags_synced("INBOX").unwrap();
+    assert!(since > 0);
+    let calls = calls_after_second_pass(&mut ops, &store, |ops| {
+        ops.mail.get_mut("INBOX").unwrap()[0]
+            .flags
+            .push("\\Seen".into());
+    });
+    assert!(
+        calls.contains(&format!("fetch_flags INBOX 2 since {since}")),
+        "{calls:?}"
+    );
+    assert!(store.message("INBOX", 1).unwrap().unwrap().is_seen());
+    assert!(store.flags_synced("INBOX").unwrap().0 > since);
+}
+
+#[test]
+fn an_expunge_is_found_by_the_message_count_without_fetching_flags() {
+    let mut ops = ops_with_inbox();
+    let store = Store::open_in_memory().unwrap();
+    let calls = calls_after_second_pass(&mut ops, &store, |ops| {
+        ops.mail.get_mut("INBOX").unwrap().retain(|e| e.uid != 1);
+    });
+    assert_eq!(store.message("INBOX", 1).unwrap(), None);
+    assert!(store.message("INBOX", 2).unwrap().is_some());
+    assert!(
+        calls.iter().any(|c| c == "search_uids INBOX 1"),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("fetch_flags")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn without_condstore_all_flags_are_fetched_only_once_the_interval_passed() {
+    let mut ops = ops_with_inbox();
+    ops.condstore = false;
+    let store = Store::open_in_memory().unwrap();
+    let set_seen = |ops: &mut RecordingOps| {
+        ops.mail.get_mut("INBOX").unwrap()[0]
+            .flags
+            .push("\\Seen".into());
+    };
+    let calls = calls_after_second_pass(&mut ops, &store, set_seen);
+    assert!(
+        !calls.iter().any(|c| c.starts_with("fetch_flags")),
+        "{calls:?}"
+    );
+    assert!(!store.message("INBOX", 1).unwrap().unwrap().is_seen());
+
+    let long_ago = now() - FULL_FLAGS_EVERY_SECS;
+    store.set_flags_synced("INBOX", 0, long_ago).unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    assert!(
+        ops.calls.iter().any(|c| c == "fetch_flags INBOX 2"),
+        "{:?}",
+        ops.calls
+    );
+    assert!(store.message("INBOX", 1).unwrap().unwrap().is_seen());
+    assert!(store.flags_synced("INBOX").unwrap().1 > long_ago);
+}
+
+#[test]
+fn a_folder_without_a_stored_modseq_fetches_all_flags_once() {
+    let mut ops = ops_with_inbox();
+    let store = Store::open_in_memory().unwrap();
+    let calls = calls_after_second_pass(&mut ops, &store, |_| {});
+    assert!(
+        !calls.iter().any(|c| c.starts_with("fetch_flags")),
+        "{calls:?}"
+    );
+    store.set_flags_synced("INBOX", 0, 0).unwrap();
+    sync_all(&mut ops, &store).unwrap();
+    assert!(
+        ops.calls.iter().any(|c| c == "fetch_flags INBOX 2"),
+        "{:?}",
+        ops.calls
+    );
+    assert!(store.flags_synced("INBOX").unwrap().0 > 0);
 }

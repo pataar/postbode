@@ -189,7 +189,7 @@ Migrations are numbered SQL files under `migrations/`, embedded with `include_di
 
 Threading: on insert, `thread_id` is the first id in `References` if present, else `In-Reply-To`, else the own `message_id`. When a message arrives whose `message_id` is some existing row's `thread_id` ancestor, nothing is rewritten; threads are keyed on the root id, which is stable. Messages without a `message_id` get a synthetic `<uid>@<folder>.postbode` id.
 
-Special-use folders come from `LIST (SPECIAL-USE)` or the folder attributes in a plain `LIST`. If the server marks none, `Trash`, `Sent`, `Junk`, `Drafts`, `Archive` by name are used as a fallback.
+Special-use folders come from `LIST (SPECIAL-USE)` or the folder attributes in a plain `LIST`. If the server marks none, `Trash`, `Sent`, `Junk`, `Drafts`, `Archive` by name are used as a fallback. Folders marked `\All`, `\Flagged` or `\Important` (Gmail's All Mail, Starred and Important) only repeat messages held elsewhere, so they are not synced.
 
 `rules_seen` records when a rule name was first loaded by this account. A rule only acts on messages whose `internaldate` is at or after its `first_seen_at`, so adding a rule never mass-deletes history. Renaming a rule resets this. `rules apply-existing` is the explicit opt-in to older mail.
 
@@ -199,7 +199,7 @@ Disabled rules have no entry: a rule's clock starts the first time it is loaded 
 
 One std thread per account owning one IMAP connection on a current-thread tokio runtime. Loop:
 
-1. **Full sync** on start. `LIST` folders. For each folder `SELECT`, compare `UIDVALIDITY`; on change, delete the folder's rows and resync from UID 1. Otherwise `UID FETCH last_uid+1:* (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])` for new rows. The full header block is parsed locally with `mail-parser` and stored, so `header` rules and threading never need a body fetch, `UID FETCH 1:last_uid (UID FLAGS)` to update flags and detect removed UIDs. Store in one transaction per folder.
+1. **Full sync** on start. `LIST` folders. For each folder `SELECT`, compare `UIDVALIDITY`; on change, delete the folder's rows and resync from UID 1. Otherwise `UID FETCH last_uid+1:* (UID FLAGS INTERNALDATE RFC822.SIZE BODY.PEEK[HEADER])` for new rows. The full header block is parsed locally with `mail-parser` and stored, so `header` rules and threading never need a body fetch. Flags: with CONDSTORE the folder is selected with `(CONDSTORE)`; an unchanged `HIGHESTMODSEQ` fetches no flags, a changed one fetches `UID FETCH 1:last_uid (UID FLAGS) (CHANGEDSINCE stored)`, and a folder with no stored modseq fetches all flags once. Without CONDSTORE, `UID FETCH 1:last_uid (UID FLAGS)` runs at most every 30 minutes per folder, so flag changes made elsewhere can lag that long. Removed UIDs: when `EXISTS` differs from the stored rows plus the new UIDs, `UID SEARCH UID 1:*` lists what is left. Store in one transaction per folder.
 2. **Rules pass** for the account (section 8).
 3. **IDLE** on INBOX. Wake on server push, on a timer every `sync_interval_secs`, or on shutdown. IDLE is re-issued before 29 minutes regardless.
 4. On push: sync INBOX only. On timer: sync all folders. Then rules pass. `NewMail` events from the pass go out over an `std::sync::mpsc` channel the account thread was given at start. Back to 3.
@@ -208,7 +208,7 @@ One std thread per account owning one IMAP connection on a current-thread tokio 
 
 The timer stays even with push, because `older_than` rules fire without new mail. Servers without IDLE degrade to the timer loop.
 
-Bodies are fetched on demand with `UID FETCH n BODY.PEEK[]` and stored in `messages.raw`, with `body_text` extracted at the same time: when a rule has a `body` condition, when the CLI shows a message, when `search` is asked to include bodies, and before any delete. The flag-update fetch over `1:last_uid` is O(folder size) per timer tick; ponytail: upgrade to CONDSTORE/QRESYNC when a large folder makes ticks slow.
+Bodies are fetched on demand with `UID FETCH n BODY.PEEK[]` and stored in `messages.raw`, with `body_text` extracted at the same time: when a rule has a `body` condition, when the CLI shows a message, when `search` is asked to include bodies, and before any delete. A removal costs one `UID SEARCH` of the folder, O(folder size) in UIDs only; ponytail: QRESYNC `VANISHED` would make that O(changes).
 
 Per-account failures log with the account name and retry with exponential backoff capped at 5 minutes. One account failing never stops the others.
 

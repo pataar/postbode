@@ -272,6 +272,33 @@ impl Store {
         self.set_folder_uid(folder, "notified_uid", uid)
     }
 
+    /// The HIGHESTMODSEQ (0 when unknown) and Unix time at which `folder`'s flags were last fully up to date.
+    pub fn flags_synced(&self, folder: &str) -> Result<(u64, i64), StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT highest_modseq, flags_synced_at FROM folders WHERE name = ?1",
+                params![folder],
+                |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or((0, 0)))
+    }
+
+    pub fn set_flags_synced(
+        &self,
+        folder: &str,
+        highest_modseq: u64,
+        at: i64,
+    ) -> Result<(), StoreError> {
+        // RFC 7162 caps mod-sequences at 2^63 - 1, so they fit SQLite's signed INTEGER.
+        self.conn.execute(
+            "UPDATE folders SET highest_modseq = ?2, flags_synced_at = ?3 WHERE name = ?1",
+            params![folder, highest_modseq as i64, at],
+        )?;
+        Ok(())
+    }
+
     /// A uid column of the `folders` row; 0 when the folder is untracked.
     fn folder_uid(&self, folder: &str, column: &'static str) -> Result<u32, StoreError> {
         Ok(self
