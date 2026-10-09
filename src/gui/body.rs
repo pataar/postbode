@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn source_rows_split_lines_and_long_lines_on_char_boundaries() {
         assert_eq!(source_rows("ab\ncd"), [0..2, 3..5]);
-        assert_eq!(source_rows(""), [0..0]);
+        assert_eq!(source_rows(""), [Range { start: 0, end: 0 }]);
         let long = "é".repeat(2 * SOURCE_ROW + 500);
         let rows = source_rows(&long);
         let lengths: Vec<usize> = rows
